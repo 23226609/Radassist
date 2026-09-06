@@ -11,7 +11,9 @@ const AI_BASE_URL = process.env.AI_BASE_URL || 'http://localhost:8001';
 /**
  * Ask the FastAPI middleware to analyze an X-ray.
  * @param {{ imagePath: string, patientId?: string, age?: string, sex?: string, history?: string }} opts
- * @returns {Promise<string>} the AI report text
+ * @returns {Promise<{report: string, findings: Array<object>}>}
+ *   The AI middleware returns both the report text AND a list of structured
+ *   findings (label, bbox, confidence, location, size, pattern).
  */
 async function analyzeXray({ imagePath, patientId, age, sex, history }) {
   if (!fs.existsSync(imagePath)) {
@@ -44,12 +46,13 @@ async function analyzeXray({ imagePath, patientId, age, sex, history }) {
   }
 
   const data = await res.json();
-  // Middleware returns { report, case_id, ... } — pull the report text out.
-  const text = data?.report || data?.report_text || data?.choices?.[0]?.message?.content || '';
-  if (!text.trim()) {
+  // Middleware returns { report, findings, ... } — pull both pieces out.
+  const report = data?.report || data?.report_text || data?.choices?.[0]?.message?.content || '';
+  const findings = Array.isArray(data?.findings) ? data.findings : [];
+  if (!report.trim()) {
     throw new Error('AI middleware returned an empty report.');
   }
-  return text.trim();
+  return { report: report.trim(), findings };
 }
 
 module.exports = { analyzeXray };

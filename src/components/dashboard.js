@@ -49,9 +49,10 @@ export async function renderDashboardPage({ target }) {
 
   function deleteCase(c, e) {
     e?.stopPropagation();
-    if (!confirm(`Delete case ${c.caseId} for ${c.patientId}?`)) return;
-    api.deleteCase(c.caseId)
-      .then(() => { toast(`Deleted ${c.caseId}`); refresh(); })
+    const cid = c.caseId || c._id;
+    if (!confirm(`Delete case ${cid} for ${c.patientId}?`)) return;
+    api.deleteCase(cid)
+      .then(() => { toast(`Deleted ${cid}`); refresh(); })
       .catch((err) => toast(err.message));
   }
 
@@ -73,7 +74,7 @@ export async function renderDashboardPage({ target }) {
         "tr",
         {
           class: "border-t cursor-pointer hover:bg-slate-50",
-          onClick: () => { state.selectedCaseId = c.caseId; setPage("review"); },
+          onClick: () => { state.selectedCaseId = c.caseId || c._id; setPage("review"); },
         },
         el("td", { class: "p-4 font-bold text-slate-900" }, c.patientId),
         el("td", { class: "text-slate-600" }, c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : ""),
@@ -82,7 +83,7 @@ export async function renderDashboardPage({ target }) {
         el("td", { class: "space-x-1 whitespace-nowrap" },
           el("button", {
             class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-cyan-700 hover:bg-cyan-50 text-sm",
-            onClick: (e) => { e.stopPropagation(); state.selectedCaseId = c.caseId; setPage("review"); },
+            onClick: (e) => { e.stopPropagation(); state.selectedCaseId = c.caseId || c._id; setPage("review"); },
           }, svgIcon("eye", { size: 16 }), "View"),
           state.user?.role === "admin"
             ? el("button", {

@@ -1,6 +1,20 @@
 // src/components/review.js
-// Single-case review: image from MongoDB GridFS, threshold slider, findings cards,
-// editable report text, save draft + finalize actions.
+// Single-case review page.
+//
+// Workflow mirrors the original Radassist design:
+//   1. AI gives us a free-text radiology report (markdown) in `reportText`
+//      plus optional pre-structured findings in `findings`.
+//   2. On first load we parse the report into finding cards so the clinician
+//      can accept/reject them.  Already-parsed / AI-supplied findings are
+//      never overwritten by the auto-parse.
+//   3. The X-ray is mandatory — it always renders, with bbox overlays from
+//      the visible (above-threshold) findings.
+//   4. The "Final report text" textarea shows the AI's report verbatim —
+//      the clinician can correct typos / add detail before saving.
+//
+// Older cases persisted with `reportText` accidentally JSON-stringified
+// (`{"report":"..."}`) are unwrapped once on load so the rest of this
+// file can assume a clean markdown report.
 
 import { el, mount } from "../dom.js";
 import { state, setPage, toast } from "../state.js";
@@ -79,8 +93,14 @@ export function parseFindingsFromReport(reportText, existingCount = 0) {
 
   // Try numbered headers first:  lines starting with **Finding N:**, "Finding 1:"
   // or markdown headings "## 1. ..." / "### Finding ..."
+  //
+  // Original Radassist regex bug: the inner negative-lookahead used `\s*[:.\-–]`,
+  // which never matched because `\s*` already greedily ate the space and the
+  // character class didn't contain a space.  That made `1.\n2.\n3.` collapse
+  // into a single block.  Adding the space into the class lets the lookahead
+  // hit and split properly.
   const blocks = [];
-  const numberedRx = /(?:^|\n)\s*(?:\*+\s*)?(?:finding\s*\d+|impression\s*\d*|observation\s*\d*|#{2,3}\s*\d+\.?|\d+\.)[:.\s\-–]+([^\n#]+(?:\n(?![\s*]*(?:\*+\s*)?(?:finding\s*\d+|impression|observation|\d+\.)\s*[:.\-–])[^\n#]+)*)/gi;
+  const numberedRx = /(?:^|\n)\s*(?:\*+\s*)?(?:finding\s*\d+|impression\s*\d*|observation\s*\d*|#{2,3}\s*\d+\.?|\d+\.)[:.\s\-–]+([^\n#]+(?:\n(?![*\s]*(?:\*+\s*)?(?:finding\s*\d+|impression|observation|\d+\.)\s*[:\s.\-–])[^\n#]+)*)/gi;
   let m;
   while ((m = numberedRx.exec(text)) !== null) {
     const block = (m[1] || "").trim();
@@ -137,7 +157,7 @@ export function parseFindingsFromReport(reportText, existingCount = 0) {
 
     return {
       _id: "ai-" + Date.now() + "-" + idx + "-" + Math.random().toString(16).slice(2, 6),
-      id: "ai-" + idx,
+      id: "ai-" + (idx + existingCount),
       label: pickLabel(cleaned),
       confidence: Number(conf.toFixed(2)),
       bbox: [10 + idx * 12, 10 + idx * 8, 18, 18],
@@ -153,13 +173,29 @@ export function parseFindingsFromReport(reportText, existingCount = 0) {
   return findings;
 }
 
+// ---------------------------------------------------------------------------
+// Backwards-compat: older / dev-environment cases persisted the AI's raw
+// JSON payload as a string in `reportText` (e.g. `{"report":"1. ... ###"}`)
+// and left `findings` empty.  Detect that shape and unwrap so the rest of
+// this file sees a clean markdown report.  This is purely a one-shot data
+// fixup — it does NOT change how new AI reports are rendered.
+// ---------------------------------------------------------------------------
+function unwrapLegacyReport(raw) {
+  if (!raw || typeof raw.reportText !== "string") return raw;
+  const rt = raw.reportText.trim();
+  // Only treat as the legacy wrapper if it starts with `{"` and contains `"report"`.
+  if (!rt.startsWith("{") || !rt.includes('"report"')) return raw;
+  let parsed;
+  try { parsed = JSON.parse(rt); } catch { return raw; }
+  if (!parsed || typeof parsed !== "object" || typeof parsed.report !== "string") return raw;
+  return { ...raw, reportText: parsed.report };
+}
+
 // Cache of imageId -> object URL so we don't re-fetch on every render().
 const _imageCache = new Map();
 async function getImageObjectUrl(imageId) {
   if (!imageId) return null;
   if (_imageCache.has(imageId)) return _imageCache.get(imageId);
-  const url = _imageCache.get(imageId + ":loading");
-  if (url) return url; // already in-flight
   try {
     const blob = await api.fetchImage(imageId);
     const objUrl = URL.createObjectURL(blob);
@@ -172,8 +208,10 @@ async function getImageObjectUrl(imageId) {
 }
 
 export async function renderReviewPage({ target }) {
-  // Local working copy
-  let localCase = state.cases.find((c) => c.caseId === state.selectedCaseId);
+  // Local working copy.  Support both caseId (new) and _id (legacy).
+  let localCase = state.cases.find(
+    (c) => c.caseId === state.selectedCaseId || c._id === state.selectedCaseId
+  );
   let threshold = 0;
   let busy = false;
   let msg = "";
@@ -181,6 +219,9 @@ export async function renderReviewPage({ target }) {
   // Remember which case we already auto-filled so we only run it once per page open
   // (re-renders, threshold changes, or refresh-from-server shouldn't trigger it again).
   let autoFilledCaseId = null;
+
+  // Effective case ID that works with both caseId (new) and _id (legacy)
+  const getEffectiveCaseId = () => localCase?.caseId || localCase?._id;
 
   // Pull findings out of the AI's markdown report and append them as cards.
   // Idempotent: never replaces manually added or already-AI-derived findings.
@@ -199,15 +240,24 @@ export async function renderReviewPage({ target }) {
   }
 
   async function refreshFromServer() {
-    if (!localCase) return;
+    const caseId = getEffectiveCaseId();
+    if (!caseId) return;
     try {
-      const data = await api.getCase(localCase.caseId);
-      localCase = data.case;
-      const idx = state.cases.findIndex((c) => c.caseId === localCase.caseId);
+      const data = await api.getCase(caseId);
+      localCase = data.case || data;
+      // One-shot fixup: unwrap the legacy `{"report":"..."}` string shape.
+      localCase = unwrapLegacyReport(localCase);
+      // Sync the cache so the rest of the app sees the same case.
+      const idx = state.cases.findIndex(
+        (c) => c.caseId === (localCase.caseId || localCase._id) || c._id === localCase._id
+      );
       if (idx >= 0) state.cases[idx] = localCase;
       // Resolve image to a blob URL the <img> tag can use (auth header handled by fetch).
       if (localCase.imageId) {
         imageSrc = await getImageObjectUrl(localCase.imageId);
+        // If GridFS returned 404 (orphan imageId), drop the imageId so the
+        // X-ray panel falls back to "No image" instead of "Loading image…".
+        if (!imageSrc) localCase = { ...localCase, imageId: null };
       } else {
         imageSrc = null;
       }
@@ -222,8 +272,25 @@ export async function renderReviewPage({ target }) {
     try {
       const list = await api.listCases({});
       state.cases = list.cases || [];
-      localCase = state.cases[0];
-      if (localCase) state.selectedCaseId = localCase.caseId;
+      localCase = state.cases.find(
+        (c) => c.caseId === state.selectedCaseId || c._id === state.selectedCaseId
+      );
+      if (localCase) {
+        // Normalize: ensure we have caseId for consistent handling
+        state.selectedCaseId = localCase.caseId || localCase._id;
+      } else if (state.selectedCaseId) {
+        // Try to fetch the case directly from the server
+        try {
+          const data = await api.getCase(state.selectedCaseId);
+          localCase = data.case || data;
+          if (localCase) {
+            state.cases = [localCase, ...state.cases];
+            state.selectedCaseId = localCase.caseId || localCase._id;
+          }
+        } catch {
+          // Fall through to "not found" message
+        }
+      }
     } catch (err) {
       target.appendChild(el("p", { class: "p-8 text-red-700" }, "Backend unreachable: " + err.message));
       return;
@@ -231,9 +298,12 @@ export async function renderReviewPage({ target }) {
   }
 
   if (!localCase) {
-    target.appendChild(el("p", { class: "p-8 text-slate-500" }, "No case selected."));
+    target.appendChild(el("p", { class: "p-8 text-slate-500" }, "Case not found. Please go back to dashboard and select a case."));
     return;
   }
+  // One-shot fixup on the initial case too (covers the path where the case
+  // came from the local cache rather than a fresh /cases/:id fetch).
+  localCase = unwrapLegacyReport(localCase);
 
   function patchFinding(id, patch) {
     localCase = {
@@ -273,12 +343,12 @@ export async function renderReviewPage({ target }) {
   async function saveDraft() {
     busy = true; render();
     try {
-      const updated = await api.updateCase(localCase.caseId, {
+      const updated = await api.updateCase(getEffectiveCaseId(), {
         diagnosis: localCase.diagnosis,
         reportText: localCase.reportText,
         findings: localCase.findings,
       });
-      localCase = updated.case;
+      localCase = updated.case || updated;
       msg = "Draft saved.";
       toast(msg);
     } catch (err) {
@@ -292,13 +362,13 @@ export async function renderReviewPage({ target }) {
     busy = true; render();
     try {
       // Save findings + text first, then finalize
-      await api.updateCase(localCase.caseId, {
+      await api.updateCase(getEffectiveCaseId(), {
         diagnosis: localCase.diagnosis,
         reportText: localCase.reportText,
         findings: localCase.findings,
       });
-      const data = await api.finalizeCase(localCase.caseId);
-      localCase = data.case;
+      const data = await api.finalizeCase(getEffectiveCaseId());
+      localCase = data.case || data;
       msg = "Report finalized and approved.";
       toast(msg);
     } catch (err) {
@@ -410,7 +480,7 @@ export async function renderReviewPage({ target }) {
             localCase.sex || "?"
           ),
           el("p", { class: "text-xs text-slate-500 mt-1" },
-            "MongoDB case id: ", el("span", { class: "font-mono" }, localCase.caseId || ""),
+            "MongoDB case id: ", el("span", { class: "font-mono" }, localCase.caseId || localCase._id || ""),
             localCase.imageId ? el("span", {}, " · image: ", el("span", { class: "font-mono" }, String(localCase.imageId).slice(-8))) : null
           )
         ),
@@ -500,19 +570,21 @@ export async function renderReviewPage({ target }) {
         )
       ),
 
-      // Final report text editor (always last)
+      // Final report text editor (always last) — the AI's report markdown
+      // lives here verbatim.  Clinicians can edit typos / add detail before
+      // saving; the saved text replaces the AI's output.
       el("section", { class: "card mt-5" },
         el("h2", { class: "text-lg font-bold text-slate-900" }, "Final report text"),
         el("textarea", {
           disabled: !edit,
-          class: "mt-3 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100",
-          rows: 8,
+          class: "mt-3 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100 font-mono text-sm",
+          rows: 10,
           value: localCase.reportText || "",
           onInput: (e) => { localCase.reportText = e.target.value; },
         }),
         el("p", { class: "mt-2 text-xs text-slate-500" },
-          "A clinician may edit this text. Saving the draft writes back to MongoDB; ",
-          "finalizing locks the case for audit purposes."
+          "The AI's report is shown above. A clinician may edit this text. ",
+          "Saving the draft writes back to MongoDB; finalizing locks the case for audit purposes."
         )
       )
     );
@@ -522,9 +594,9 @@ export async function renderReviewPage({ target }) {
 
   // First time we view this case, automatically parse the AI report into cards.
   // Guarded by autoFilledCaseId so threshold/mark changes don't re-trigger it.
-  if (localCase && autoFilledCaseId !== localCase.caseId) {
+  if (localCase && autoFilledCaseId !== (localCase.caseId || localCase._id)) {
     maybeAutoFillFromReport();
-    autoFilledCaseId = localCase.caseId;
+    autoFilledCaseId = localCase.caseId || localCase._id;
   }
 
   await refreshFromServer();

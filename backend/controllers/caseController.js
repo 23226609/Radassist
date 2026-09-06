@@ -77,7 +77,23 @@ exports.listCases = catchAsync(async (req, res) => {
 });
 
 exports.getCase = catchAsync(async (req, res, next) => {
-  const c = await Case.findOne({ caseId: req.params.id }).lean();
+  // Accept both the human-friendly `caseId` (e.g. CASE-MTPHHNL7-O1T) and
+  // a raw Mongo `_id` (legacy / orphaned records where `caseId` is empty
+  // and `_id` is a UUID string rather than an ObjectId).
+  const id = String(req.params.id || "").trim();
+  let c = null;
+  if (id) {
+    c = await Case.findOne({ caseId: id }).lean();
+    if (!c) {
+      // Fall back to a raw lookup that bypasses schema casting so we can
+      // match both ObjectId and string `_id` values.
+      try {
+        c = await mongoose.connection.db.collection("cases").findOne({ _id: id });
+      } catch {
+        c = null;
+      }
+    }
+  }
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
   c.imageUrl = c.imageId ? `/api/images/${c.imageId}` : null;
   res.json({ success: true, case: c });
@@ -108,18 +124,22 @@ exports.createCase = catchAsync(async (req, res, next) => {
   fs.writeFileSync(tmpPath, req.file.buffer);
 
   let reportText = '';
+  let aiFindings = [];
   let aiError = null;
   let aiModel = process.env.AI_MODEL_PATH || '/Users/PHY/CURV-mlx';
 
   try {
-    reportText = await analyzeXray({
+    const aiResult = await analyzeXray({
       imagePath: tmpPath,
       patientId,
       age,
       sex,
       history,
     });
-    await addAuditLog(req.user.userId, 'AI_ANALYZED', `Middleware analysed X-ray for ${patientId}`);
+    // Middleware returns { report, findings } now.
+    reportText = aiResult.report || aiResult.reportText || '';
+    aiFindings = Array.isArray(aiResult.findings) ? aiResult.findings : [];
+    await addAuditLog(req.user.userId, 'AI_ANALYZED', `Middleware analysed X-ray for ${patientId} (${aiFindings.length} findings)`);
   } catch (err) {
     aiError = err.message;
     console.warn('AI middleware call failed:', err.message);
@@ -132,8 +152,24 @@ exports.createCase = catchAsync(async (req, res, next) => {
   const caseId = newCaseId();
   const sentence = (reportText || '').split('.').filter(Boolean)[0] || 'AI report';
 
-  // Findings stay empty here — clinician adds them during review. The AI
-  // report text becomes the "AI initial suggestion" on the review screen.
+  // Findings come straight from the AI service. Don't parse the report —
+  // the AI model produces them as a structured JSON list with bbox / confidence
+  // / location / size / pattern / source. The clinician can edit / accept /
+  // reject each one or add manual findings.
+  const findings = (aiFindings || []).map((f, idx) => ({
+    _id: f._id || `ai-${Date.now()}-${idx}`,
+    id: f.id || `ai-${idx}`,
+    label: f.label || 'AI finding',
+    confidence: typeof f.confidence === 'number' ? f.confidence : 0.5,
+    bbox: Array.isArray(f.bbox) && f.bbox.length === 4 ? f.bbox : [10, 10, 20, 20],
+    location: f.location || '',
+    size: f.size || '',
+    pattern: f.pattern || 'Other',
+    sentence: f.sentence || (reportText ? reportText.slice(0, 240) : ''),
+    status: f.status || 'pending',
+    source: f.source || 'AI',
+  }));
+
   const doc = await Case.create({
     caseId,
     patientId,
@@ -142,7 +178,7 @@ exports.createCase = catchAsync(async (req, res, next) => {
     history: history || '',
     diagnosis: sentence.slice(0, 120),
     reportText,
-    findings: [],
+    findings,
     status: 'completed',
     createdBy: req.user.userId,
     createdByName: req.user.name,
@@ -174,8 +210,29 @@ exports.createCase = catchAsync(async (req, res, next) => {
 // Update (edit findings / save draft / finalize / delete)
 // ---------------------------------------------------------------------------
 
+// Locate a case by either its human-readable `caseId` (CASE-...) or a raw
+// Mongo `_id` (used by legacy / orphaned records where `caseId` is empty
+// and `_id` is a UUID string rather than an ObjectId).  Returns the
+// mongoose model instance so callers can `c.save()`, or `null` if not
+// found.
+async function findCaseByAnyId(id) {
+  const sid = String(id || "").trim();
+  if (!sid) return null;
+  let c = await Case.findOne({ caseId: sid });
+  if (c) return c;
+  try {
+    const raw = await mongoose.connection.db.collection("cases").findOne({ _id: sid });
+    if (!raw) return null;
+    // Re-hydrate through the mongoose model so callers get a save()-able
+    // instance and benefit from schema defaults.
+    return await Case.findById(raw._id);
+  } catch {
+    return null;
+  }
+}
+
 exports.updateCase = catchAsync(async (req, res, next) => {
-  const c = await Case.findOne({ caseId: req.params.id });
+  const c = await findCaseByAnyId(req.params.id);
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
 
   // Only doctors (and admins) can edit case content.
@@ -194,7 +251,7 @@ exports.updateCase = catchAsync(async (req, res, next) => {
   if (oldStatus !== c.status) {
     await addAuditLog(req.user.userId, 'CASE_UPDATED', `Status ${oldStatus} -> ${c.status}`, c.caseId, oldStatus, c.status);
   } else {
-    await addAuditLog(req.user.userId, 'CASE_UPDATED', `Edited case ${c.caseId}`, c.caseId);
+    await addAuditLog(req.user.userId, 'CASE_UPDATED', `Edited case ${c.caseId || c._id}`, c.caseId || String(c._id));
   }
 
   res.json({ success: true, case: { ...c.toObject(), imageUrl: c.imageId ? `/api/images/${c.imageId}` : null } });
@@ -202,29 +259,29 @@ exports.updateCase = catchAsync(async (req, res, next) => {
 
 exports.finalizeCase = catchAsync(async (req, res, next) => {
   if (req.user.role === 'nurse') return next(ApiError.forbidden('Only doctors or admins can finalize.'));
-  const c = await Case.findOne({ caseId: req.params.id });
+  const c = await findCaseByAnyId(req.params.id);
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
 
   c.status = 'finalized';
   c.finalizedBy = req.user.userId;
   c.finalizedByName = req.user.name;
   await c.save();
-  await addAuditLog(req.user.userId, 'CASE_FINALIZED', `Finalized case ${c.caseId}`, c.caseId, null, 'finalized');
+  await addAuditLog(req.user.userId, 'CASE_FINALIZED', `Finalized case ${c.caseId || c._id}`, c.caseId || String(c._id), null, 'finalized');
 
   res.json({ success: true, case: { ...c.toObject(), imageUrl: c.imageId ? `/api/images/${c.imageId}` : null } });
 });
 
 exports.deleteCase = catchAsync(async (req, res, next) => {
   if (req.user.role !== 'admin') return next(ApiError.forbidden('Only admins can delete.'));
-  const c = await Case.findOne({ caseId: req.params.id });
+  const c = await findCaseByAnyId(req.params.id);
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
 
   // Drop the GridFS image too.
   if (c.imageId) {
     try { await bucket().delete(c.imageId); } catch (_) { /* ignore */ }
   }
-  await Case.deleteOne({ caseId: req.params.id });
-  await addAuditLog(req.user.userId, 'CASE_DELETED', `Deleted case ${c.caseId}`, c.caseId);
+  await Case.deleteOne({ _id: c._id });
+  await addAuditLog(req.user.userId, 'CASE_DELETED', `Deleted case ${c.caseId || c._id}`, c.caseId || String(c._id));
   res.json({ success: true });
 });
 
