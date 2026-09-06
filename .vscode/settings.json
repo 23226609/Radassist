@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^cd /Users/PHY/Downloads/radassist-ai-frontend && python - <<'PY'\nfrom pathlib import Path\np=Path\\('src/App\\.jsx'\\)\nfor i,line in enumerate\\(p\\.read_text\\(\\)\\.splitlines\\(\\),1\\):\n    if 90 <= i <= 180:\n        print\\(f'\\{i:4\\}: \\{line\\}'\\)\nPY$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

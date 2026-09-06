@@ -1,0 +1,60 @@
+// models/Case.js
+// A patient X-ray case: holds report text, AI analysis metadata, findings, etc.
+
+const mongoose = require('mongoose');
+
+const STATUS = ['pending', 'completed', 'finalized'];
+
+const findingSchema = new mongoose.Schema(
+  {
+    label: { type: String, required: true },
+    confidence: { type: Number, default: 0.5, min: 0, max: 1 },
+    bbox: {
+      type: [Number],
+      default: [0, 0, 10, 10],
+      validate: (v) => Array.isArray(v) && v.length === 4,
+    },
+    location: { type: String, default: '' },
+    size: { type: String, default: '' },
+    pattern: { type: String, default: 'Other' },
+    sentence: { type: String, default: '' },
+    status: { type: String, enum: ['pending', 'accepted', 'rejected'], default: 'pending' },
+  },
+  { _id: true }
+);
+
+const caseSchema = new mongoose.Schema(
+  {
+    caseId: { type: String, required: true, unique: true, trim: true, index: true },
+    patientId: { type: String, required: true, trim: true, index: true },
+    age: { type: String, default: '' },
+    sex: { type: String, enum: ['Female', 'Male', 'Other', ''], default: '' },
+    history: { type: String, default: '' },
+    diagnosis: { type: String, default: '' },
+    reportText: { type: String, default: '' },
+    findings: { type: [findingSchema], default: [] },
+    status: { type: String, enum: STATUS, default: 'pending' },
+    // Ownership / audit
+    createdBy: { type: String, default: '' }, // userId
+    createdByName: { type: String, default: '' },
+    finalizedBy: { type: String, default: null }, // userId
+    finalizedByName: { type: String, default: null },
+    // Image stored in GridFS
+    imageId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    imageFilename: { type: String, default: '' },
+    imageContentType: { type: String, default: 'image/jpeg' },
+    imageSize: { type: Number, default: 0 },
+    // Metadata about the AI generation, if any
+    aiProvider: { type: String, default: '' },
+    aiModel: { type: String, default: '' },
+  },
+  { timestamps: true }
+);
+
+// Cosmos DB requires explicit indexes for any sort/filter field used by the API.
+caseSchema.index({ status: 1 });
+caseSchema.index({ createdBy: 1 });
+caseSchema.index({ createdAt: 1 });
+
+module.exports = mongoose.model('Case', caseSchema);
+module.exports.STATUS = STATUS;

@@ -1,0 +1,26 @@
+/Users/PHY/Desktop/fyp/middleware.py:46: UserWarning: You appear to be connected to a CosmosDB cluster. For more information regarding feature compatibility and support please visit https://www.mongodb.com/supportability/cosmosdb
+  mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+INFO:     Started server process [48371]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+INFO:     127.0.0.1:61651 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61662 - "GET /health HTTP/1.1" 200 OK
+/Users/PHY/Desktop/fyp/middleware.py:46: UserWarning: You appear to be connected to a CosmosDB cluster. For more information regarding feature compatibility and support please visit https://www.mongodb.com/supportability/cosmosdb
+  mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+INFO:     Started server process [48711]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+INFO:     127.0.0.1:61818 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61827 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61869 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52034 - "GET /health HTTP/1.1" 200 OK
+/Users/PHY/Desktop/fyp/middleware.py:46: UserWarning: You appear to be connected to a CosmosDB cluster. For more information regarding feature compatibility and support please visit https://www.mongodb.com/supportability/cosmosdb
+  mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+INFO:     Started server process [52291]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+INFO:     127.0.0.1:52171 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52175 - "GET /health HTTP/1.1" 200 OK

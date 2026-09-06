@@ -1,0 +1,532 @@
+// src/components/review.js
+// Single-case review: image from MongoDB GridFS, threshold slider, findings cards,
+// editable report text, save draft + finalize actions.
+
+import { el, mount } from "../dom.js";
+import { state, setPage, toast } from "../state.js";
+import { api } from "../api.js";
+import { svgIcon } from "./icons.js";
+
+const PATTERNS = ["Nodular", "Diffuse", "Linear", "Ground-glass", "Consolidation", "Other"];
+
+// ---------------------------------------------------------------------------
+// AI report parser — converts the markdown report produced by the AI into
+// a list of finding cards the clinician can review. Best-effort heuristics:
+//   1. Split on explicit numbered findings:  "Finding 1:",  "1." headers,
+//      or markdown headings ("## 1. ...")
+//   2. Fall back to splitting on section boundaries  ("**Finding**", "Impression")
+//   3. Try to detect: location (lung field, lobe, anatomical phrase),
+//      pattern keyword (one of PATTERNS), and size from the prose.
+// Confidence is derived from how confident the parser is (more matches = higher).
+// ---------------------------------------------------------------------------
+const LOCATION_HINTS = [
+  "right upper lobe", "left upper lobe", "right middle lobe", "right lower lobe",
+  "left lower lobe", "right lung", "left lung", "both lungs", "right hilum",
+  "left hilum", "mediastinum", "right cardiophrenic", "left cardiophrenic",
+  "right costophrenic", "left costophrenic", "perihilar", "retrocardiac",
+  "right apex", "left apex", "right base", "left base",
+];
+const SIZE_REGEX = /(about\s+)?([~]?\s*)([0-9]+(\.[0-9]+)?)\s*(cm|mm|centimeter|millimeter|millimetres?|centimeters?)/i;
+
+function inferPattern(text) {
+  const t = (text || "").toLowerCase();
+  // Nodular first because sentences sometimes mention both nodule and consolidation
+  if (/\bnodul|\bmass\b|\bcoin lesion\b|\bround(?!ed glass)/.test(t)) return "Nodular";
+  if (/ground[- ]?glass|ggo/.test(t)) return "Ground-glass";
+  if (/consolidat|air[- ]?space|airspace/.test(t)) return "Consolidation";
+  if (/opacity|opacit/.test(t)) return "Consolidation";
+  if (/linear|band|streak|septal|kerley/.test(t)) return "Linear";
+  if (/diffus|scattered|bilateral|widespread|throughout/.test(t)) return "Diffuse";
+  return "Other";
+}
+
+function detectLocation(text) {
+  const low = (text || "").toLowerCase();
+  for (const hint of LOCATION_HINTS) {
+    if (low.includes(hint)) return hint.replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+  // Generic "lung field", "right lung", etc.
+  const m = low.match(/\b(the\s+)?(right|left)\s+(lung|hilum|apex|base|hemithorax)\b/);
+  if (m) return m[2] + " " + m[3];
+  return "";
+}
+
+function detectSize(text) {
+  const m = (text || "").match(SIZE_REGEX);
+  if (!m) return "";
+  return `${m[3]} ${m[5].toLowerCase().startsWith("cent") ? "cm" : m[5][0] + "m"}`;
+}
+
+function extractSection(block) {
+  // Strip leading numbering ("1. ", "Finding 2:"), bold asterisks, etc.
+  let b = (block || "").replace(/^\s*(\*{0,2})(finding\s*\d+|impression|conclusion|observations?|notes?)\s*\d*\s*[:.\-–]\s*/i, "");
+  b = b.replace(/^\s*\d+\.\s+/, "");
+  b = b.replace(/^[\*]+/, "").replace(/[\*]+$/, "").trim();
+  return b;
+}
+
+function pickLabel(block) {
+  // Use the first sub-statement as the label, trimmed to ~80 chars.
+  const cleaned = (block || "").replace(/^[\*\s]+/, "");
+  const first = cleaned.split(/[.\n]/).map((s) => s.trim()).find((s) => s.length > 4);
+  if (!first) return "AI finding";
+  return first.length > 80 ? first.slice(0, 77) + "…" : first;
+}
+
+export function parseFindingsFromReport(reportText, existingCount = 0) {
+  if (!reportText || typeof reportText !== "string") return [];
+  const text = reportText.trim();
+
+  // Try numbered headers first:  lines starting with **Finding N:**, "Finding 1:"
+  // or markdown headings "## 1. ..." / "### Finding ..."
+  const blocks = [];
+  const numberedRx = /(?:^|\n)\s*(?:\*+\s*)?(?:finding\s*\d+|impression\s*\d*|observation\s*\d*|#{2,3}\s*\d+\.?|\d+\.)[:.\s\-–]+([^\n#]+(?:\n(?![\s*]*(?:\*+\s*)?(?:finding\s*\d+|impression|observation|\d+\.)\s*[:.\-–])[^\n#]+)*)/gi;
+  let m;
+  while ((m = numberedRx.exec(text)) !== null) {
+    const block = (m[1] || "").trim();
+    if (block.length > 10) blocks.push(block);
+  }
+
+  // Fallback: split on bold "**Finding**" / "**Impression**" sections.
+  if (blocks.length === 0) {
+    const sectionRx = /(\*+\s*(?:findings?|impression|observations?|conclusion|abnormalities?|recommendations?)\s*\*+[:.\s\-–]*)([\s\S]*?)(?=(\n\s*\n|\Z))/gi;
+    let combined = "";
+    while ((m = sectionRx.exec(text)) !== null) {
+      combined += "\n" + (m[2] || "").trim();
+    }
+    if (combined.trim().length > 10) {
+      // Split combined text into sentences/clauses at ". " or "; "
+      const parts = combined
+        .split(/(?<=[.!?])\s+|\n\s*[\-\u2022]\s*/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 20);
+      parts.forEach((p) => blocks.push(p));
+    }
+  }
+
+  // Last resort: split the whole text into sentences.
+  if (blocks.length === 0) {
+    text
+      .split(/(?<=[.!?])\s+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 25 && !/^#{1,6}\s+/.test(s))
+      .forEach((s) => blocks.push(s));
+  }
+
+  // De-dup near-identical blocks.
+  const seen = new Set();
+  const unique = blocks.filter((b) => {
+    const k = b.toLowerCase().slice(0, 60);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+
+  const findings = unique.slice(0, 6).map((block, idx) => {
+    const cleaned = extractSection(block);
+    const pattern = inferPattern(cleaned);
+    const location = detectLocation(cleaned);
+    const size = detectSize(cleaned);
+    const sentence = cleaned.split(/\n/)[0].slice(0, 240);
+    // Confidence: higher when we found strong signals.
+    let conf = 0.45;
+    if (location) conf += 0.15;
+    if (pattern !== "Other") conf += 0.15;
+    if (size) conf += 0.1;
+    conf = Math.min(0.95, Math.max(0.3, conf));
+
+    return {
+      _id: "ai-" + Date.now() + "-" + idx + "-" + Math.random().toString(16).slice(2, 6),
+      id: "ai-" + idx,
+      label: pickLabel(cleaned),
+      confidence: Number(conf.toFixed(2)),
+      bbox: [10 + idx * 12, 10 + idx * 8, 18, 18],
+      location,
+      size,
+      pattern,
+      sentence,
+      status: "pending",
+      source: "AI",
+    };
+  });
+
+  return findings;
+}
+
+// Cache of imageId -> object URL so we don't re-fetch on every render().
+const _imageCache = new Map();
+async function getImageObjectUrl(imageId) {
+  if (!imageId) return null;
+  if (_imageCache.has(imageId)) return _imageCache.get(imageId);
+  const url = _imageCache.get(imageId + ":loading");
+  if (url) return url; // already in-flight
+  try {
+    const blob = await api.fetchImage(imageId);
+    const objUrl = URL.createObjectURL(blob);
+    _imageCache.set(imageId, objUrl);
+    return objUrl;
+  } catch (err) {
+    console.warn("[review] image load failed:", err.message);
+    return null;
+  }
+}
+
+export async function renderReviewPage({ target }) {
+  // Local working copy
+  let localCase = state.cases.find((c) => c.caseId === state.selectedCaseId);
+  let threshold = 0;
+  let busy = false;
+  let msg = "";
+  let imageSrc = null; // resolved object URL once the blob is fetched
+  // Remember which case we already auto-filled so we only run it once per page open
+  // (re-renders, threshold changes, or refresh-from-server shouldn't trigger it again).
+  let autoFilledCaseId = null;
+
+  // Pull findings out of the AI's markdown report and append them as cards.
+  // Idempotent: never replaces manually added or already-AI-derived findings.
+  function maybeAutoFillFromReport() {
+    if (!localCase) return;
+    const report = localCase.reportText || "";
+    if (!report.trim()) return;
+    const existing = localCase.findings || [];
+    const alreadyAiCount = existing.filter(
+      (f) => f.source === "AI" || String(f._id || f.id || "").startsWith("ai-")
+    ).length;
+    if (alreadyAiCount > 0) return;
+    const parsed = parseFindingsFromReport(report, 0);
+    if (parsed.length === 0) return;
+    localCase = { ...localCase, findings: [...existing, ...parsed] };
+  }
+
+  async function refreshFromServer() {
+    if (!localCase) return;
+    try {
+      const data = await api.getCase(localCase.caseId);
+      localCase = data.case;
+      const idx = state.cases.findIndex((c) => c.caseId === localCase.caseId);
+      if (idx >= 0) state.cases[idx] = localCase;
+      // Resolve image to a blob URL the <img> tag can use (auth header handled by fetch).
+      if (localCase.imageId) {
+        imageSrc = await getImageObjectUrl(localCase.imageId);
+      } else {
+        imageSrc = null;
+      }
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  }
+
+  if (!localCase) {
+    // Try fetching from server if not in cache
+    try {
+      const list = await api.listCases({});
+      state.cases = list.cases || [];
+      localCase = state.cases[0];
+      if (localCase) state.selectedCaseId = localCase.caseId;
+    } catch (err) {
+      target.appendChild(el("p", { class: "p-8 text-red-700" }, "Backend unreachable: " + err.message));
+      return;
+    }
+  }
+
+  if (!localCase) {
+    target.appendChild(el("p", { class: "p-8 text-slate-500" }, "No case selected."));
+    return;
+  }
+
+  function patchFinding(id, patch) {
+    localCase = {
+      ...localCase,
+      findings: (localCase.findings || []).map((f) => (f._id === id || f.id === id ? { ...f, ...patch } : f)),
+    };
+    render();
+  }
+
+  function addFinding() {
+    // Generate a stable-ish temp id so the in-memory list works before save.
+    const tempId = "tmp-" + Date.now() + "-" + Math.random().toString(16).slice(2, 8);
+    const newFinding = {
+      _id: tempId,
+      id: tempId,
+      label: "New finding",
+      confidence: 0.5,
+      bbox: [10, 10, 20, 20],
+      location: "",
+      size: "",
+      pattern: "Other",
+      sentence: "",
+      status: "pending",
+    };
+    localCase = { ...localCase, findings: [...(localCase.findings || []), newFinding] };
+    render();
+  }
+
+  function removeFinding(id) {
+    localCase = {
+      ...localCase,
+      findings: (localCase.findings || []).filter((f) => !(f._id === id || f.id === id)),
+    };
+    render();
+  }
+
+  async function saveDraft() {
+    busy = true; render();
+    try {
+      const updated = await api.updateCase(localCase.caseId, {
+        diagnosis: localCase.diagnosis,
+        reportText: localCase.reportText,
+        findings: localCase.findings,
+      });
+      localCase = updated.case;
+      msg = "Draft saved.";
+      toast(msg);
+    } catch (err) {
+      msg = err.message;
+      toast(msg);
+    } finally { busy = false; render(); }
+  }
+
+  async function finalize() {
+    if (!confirm("Finalize this report? Finalized cases are read-only for clinicians.")) return;
+    busy = true; render();
+    try {
+      // Save findings + text first, then finalize
+      await api.updateCase(localCase.caseId, {
+        diagnosis: localCase.diagnosis,
+        reportText: localCase.reportText,
+        findings: localCase.findings,
+      });
+      const data = await api.finalizeCase(localCase.caseId);
+      localCase = data.case;
+      msg = "Report finalized and approved.";
+      toast(msg);
+    } catch (err) {
+      msg = err.message;
+      toast(msg);
+    } finally { busy = false; render(); }
+  }
+
+  function render() {
+    const edit = state.user?.role !== "nurse" && localCase.status !== "finalized";
+    const findings = localCase.findings || [];
+    const visible = findings.filter((f) => (f.confidence ?? 0) * 100 >= threshold);
+
+    function findingCard(f) {
+      const isNew = String(f._id || f.id || "").startsWith("tmp-");
+      return el("article", {
+        class: "card mb-3",
+        dataset: { id: f._id || f.id },
+      },
+        el("div", { class: "flex justify-between items-start gap-2" },
+          el("div", { class: "flex-1" },
+            el("div", { class: "flex items-center gap-2" },
+              el("small", { class: "font-bold text-cyan-700 text-xs" }, isNew ? "NEW FINDING (unsaved)" : `FINDING ${f._id || f.id}`),
+              f.source === "AI" && el("span", { class: "rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700" }, "✦ AI")
+            ),
+            edit
+              ? el("input", {
+                  class: "mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1 outline-none focus:border-cyan-600 font-bold text-slate-900",
+                  value: f.label || "",
+                  onInput: (e) => patchFinding(f._id || f.id, { label: e.target.value }),
+                })
+              : el("h3", { class: "font-bold text-slate-900" }, f.label)
+          ),
+          el("div", { class: "flex flex-col items-end gap-2" },
+            el("b", { class: "rounded-full bg-cyan-50 px-3 py-0.5 text-cyan-700 text-sm" },
+              `${Math.round((f.confidence ?? 0) * 100)}%`
+            ),
+            edit && isNew && el("button", {
+              class: "text-xs text-red-600 hover:text-red-800",
+              onClick: () => removeFinding(f._id || f.id),
+            }, "Remove")
+          )
+        ),
+        edit && el("div", { class: "mt-3" },
+          el("label", { class: "block" },
+            el("span", { class: "text-xs font-semibold text-slate-500" }, "Confidence"),
+            el("input", {
+              type: "range",
+              min: 0,
+              max: 100,
+              value: Math.round((f.confidence ?? 0) * 100),
+              class: "mt-1 w-full accent-cyan-600",
+              onInput: (e) => patchFinding(f._id || f.id, { confidence: (+e.target.value) / 100 }),
+            })
+          )
+        ),
+        !edit ? null : el("div", { class: "mt-3 grid grid-cols-2 gap-2" },
+          ...["location", "size"].map((k) =>
+            el("label", { class: "block" },
+              el("span", { class: "text-xs font-semibold text-slate-500 capitalize" }, k),
+              el("input", {
+                class: "mt-1 w-full rounded-xl border border-slate-300 bg-white px-2 py-1.5 outline-none focus:border-cyan-600",
+                value: f[k] || "",
+                onInput: (e) => patchFinding(f._id || f.id, { [k]: e.target.value }),
+              })
+            )
+          )
+        ),
+        el("label", { class: "block mt-3" },
+          el("span", { class: "text-xs font-semibold text-slate-500 capitalize" }, "Pattern"),
+          el("select", {
+            disabled: !edit,
+            class: "mt-1 w-full rounded-xl border border-slate-300 bg-white px-2 py-1.5 outline-none focus:border-cyan-600 disabled:bg-slate-100",
+            value: f.pattern || "Other",
+            onChange: (e) => patchFinding(f._id || f.id, { pattern: e.target.value }),
+          },
+            ...PATTERNS.map((p) => el("option", { value: p }, p))
+          )
+        ),
+        edit && el("div", { class: "mt-3 grid grid-cols-2 gap-2" },
+          el("button", {
+            class: `rounded-xl px-3 py-2 text-sm font-semibold ${f.status === "accepted" ? "bg-green-600 text-white" : "bg-green-50 text-green-700 hover:bg-green-100"}`,
+            onClick: () => patchFinding(f._id || f.id, { status: "accepted" }),
+          }, "Accept"),
+          el("button", {
+            class: `rounded-xl px-3 py-2 text-sm font-semibold ${f.status === "rejected" ? "bg-red-600 text-white" : "bg-red-50 text-red-700 hover:bg-red-100"}`,
+            onClick: () => patchFinding(f._id || f.id, { status: "rejected" }),
+          }, "Reject")
+        )
+      );
+    }
+
+    const _imageSrc = imageSrc;
+
+    const root = el(
+      "main",
+      { class: "mx-auto max-w-[1450px] px-5 py-7" },
+      el("button", {
+        class: "inline-flex items-center gap-1 text-slate-700 hover:text-slate-900",
+        onClick: () => setPage("dashboard"),
+      }, svgIcon("arrow-left", { size: 16 }), "Dashboard"),
+
+      el("div", { class: "mt-3 flex flex-wrap items-center justify-between gap-3" },
+        el("div", {},
+          el("h1", { class: "text-3xl font-bold text-slate-900" }, "Report review"),
+          el("p", { class: "text-slate-600 mt-1" },
+            localCase.patientId, " · ",
+            localCase.age || "?", " years · ",
+            localCase.sex || "?"
+          ),
+          el("p", { class: "text-xs text-slate-500 mt-1" },
+            "MongoDB case id: ", el("span", { class: "font-mono" }, localCase.caseId || ""),
+            localCase.imageId ? el("span", {}, " · image: ", el("span", { class: "font-mono" }, String(localCase.imageId).slice(-8))) : null
+          )
+        ),
+        el("div", { class: "flex gap-2 flex-wrap" },
+          edit && el("button", {
+            class: "rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50",
+            disabled: busy,
+            onClick: saveDraft,
+          }, "Save draft"),
+          edit && el("button", {
+            class: "rounded-xl bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-700",
+            disabled: busy,
+            onClick: finalize,
+          }, "Finalize & approve"),
+          localCase.status === "finalized"
+            ? el("span", { class: "rounded-full bg-green-50 text-green-700 px-3 py-1 text-xs font-bold" }, "FINALIZED")
+            : null
+        )
+      ),
+
+      msg && el("p", { class: "mt-4 rounded-lg bg-green-50 text-green-700 p-3" }, msg),
+
+      // Image + findings/empty-state — always show the X-ray panel + report editor
+      el("div", { class: "mt-5 grid gap-5 xl:grid-cols-2" },
+        // X-ray image w/ bbox overlays
+        el("section", { class: "rounded-2xl bg-slate-950 p-4 text-white" },
+          el("div", { class: "flex items-baseline gap-2" },
+            el("b", {}, "Chest X-Ray"),
+            el("span", { class: "text-xs text-slate-400" }, _imageSrc ? "· loaded from MongoDB GridFS" : "")
+          ),
+          el("div", { class: "relative mx-auto mt-3 w-full max-h-[560px] overflow-hidden rounded-xl bg-gradient-to-b from-slate-500 to-slate-900" },
+            _imageSrc
+              ? el("img", { src: _imageSrc, class: "block w-full h-auto max-h-[560px] object-contain", alt: "Chest X-ray" })
+              : el("div", { class: "absolute inset-0 flex items-center justify-center text-slate-300 text-sm" }, localCase.imageId ? "Loading image…" : "No image"),
+            visible.length > 0 && visible.map((f) =>
+              el("button", {
+                class: "absolute border-2 border-cyan-400 bg-cyan-300/20 hover:bg-yellow-300/30 hover:border-yellow-300",
+                style: {
+                  left: (f.bbox?.[0] ?? 0) + "%",
+                  top: (f.bbox?.[1] ?? 0) + "%",
+                  width: (f.bbox?.[2] ?? 10) + "%",
+                  height: (f.bbox?.[3] ?? 10) + "%",
+                },
+                title: f.label,
+              },
+                el("span", { class: "absolute -top-5 left-0 bg-black px-1 text-xs text-white" }, `F${f._id || f.id}`)
+              )
+            )
+          )
+        ),
+
+        // Findings + threshold (or empty state)
+        el("section", {},
+          el("div", { class: "card" },
+            el("div", { class: "flex justify-between items-center" },
+              el("b", {}, "Confidence threshold"),
+              el("b", { class: "text-cyan-700" }, `${threshold}%`)
+            ),
+            el("input", {
+              type: "range",
+              min: 0,
+              max: 100,
+              value: threshold,
+              class: "mt-3 w-full accent-cyan-600",
+              onInput: (e) => { threshold = +e.target.value; render(); },
+            })
+          ),
+          findings.length === 0
+            ? el("div", { class: "card mt-3 text-center text-slate-500" },
+                el("p", {}, "No findings yet — review the AI's draft report below, then add findings as you go."),
+                edit && el("div", { class: "mt-3 flex flex-wrap items-center justify-center gap-2" },
+                  el("button", {
+                    class: "inline-flex items-center gap-1 rounded-xl border border-cyan-600 px-4 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50",
+                    onClick: addFinding,
+                  }, "+ Add manually"),
+                )
+              )
+            : el("div", { class: "card mt-3 max-h-[620px] overflow-y-auto pr-1" },
+                visible.length === 0
+                  ? el("p", { class: "text-sm text-slate-400 text-center p-4" }, "No findings match the current threshold.")
+                  : visible.map(findingCard),
+                edit && el("button", {
+                  class: "mt-2 w-full rounded-xl border border-cyan-600 px-3 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50",
+                  onClick: addFinding,
+                }, "+ Add manually")
+              )
+        )
+      ),
+
+      // Final report text editor (always last)
+      el("section", { class: "card mt-5" },
+        el("h2", { class: "text-lg font-bold text-slate-900" }, "Final report text"),
+        el("textarea", {
+          disabled: !edit,
+          class: "mt-3 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100",
+          rows: 8,
+          value: localCase.reportText || "",
+          onInput: (e) => { localCase.reportText = e.target.value; },
+        }),
+        el("p", { class: "mt-2 text-xs text-slate-500" },
+          "A clinician may edit this text. Saving the draft writes back to MongoDB; ",
+          "finalizing locks the case for audit purposes."
+        )
+      )
+    );
+
+    mount(target, root);
+  }
+
+  // First time we view this case, automatically parse the AI report into cards.
+  // Guarded by autoFilledCaseId so threshold/mark changes don't re-trigger it.
+  if (localCase && autoFilledCaseId !== localCase.caseId) {
+    maybeAutoFillFromReport();
+    autoFilledCaseId = localCase.caseId;
+  }
+
+  await refreshFromServer();
+  render();
+}

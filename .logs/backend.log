@@ -1,0 +1,42 @@
+RadAssist backend running on http://localhost:5002
+GET /api/health 200 4.736 ms - 70
+MongoDB connected: east-phy-23226609.mongo.cosmos.azure.com / radassist
+MongoDB connected: east-phy-23226609.mongo.cosmos.azure.com / radassist
+RadAssist backend running on http://localhost:5002
+GET /api/health 200 5.439 ms - 68
+GET /api/health 200 0.202 ms - 68
+POST /api/auth/login 200 709.445 ms - 453
+POST /api/auth/login 200 525.148 ms - 453
+GET /api/auth/me 200 223.016 ms - 226
+GET /api/cases 200 528.039 ms - 17872
+GET /api/stats 200 2234.803 ms - 125
+POST /api/auth/login 200 659.577 ms - 453
+GET /api/cases?status=&q= 200 518.491 ms - 17872
+GET /api/stats 200 2514.128 ms - 125
+GET /api/cases?status=&q= 304 659.544 ms - -
+GET /api/stats 304 558.204 ms - -
+GET /api/auth/me 200 295.235 ms - 226
+GET /api/cases?status=&q= 304 479.641 ms - -
+GET /api/cases?status=&q= 304 488.332 ms - -
+GET /api/cases?status=&q= 304 485.688 ms - -
+GET /api/stats 304 2288.557 ms - -
+GET /api/stats 304 677.681 ms - -
+GET /api/stats 304 494.934 ms - -
+GET /api/auth/me 304 241.312 ms - -
+GET /api/cases?status=&q= 304 541.913 ms - -
+GET /api/cases?status=&q= 304 482.325 ms - -
+GET /api/stats 304 553.661 ms - -
+GET /api/cases?status=&q= 304 485.086 ms - -
+GET /api/stats 304 559.664 ms - -
+GET /api/stats 304 574.052 ms - -
+GET /api/auth/me 304 231.948 ms - -
+GET /api/cases?status=&q= 304 424.299 ms - -
+GET /api/cases?status=&q= 304 442.979 ms - -
+GET /api/stats 304 465.149 ms - -
+GET /api/cases?status=&q= 304 425.646 ms - -
+GET /api/stats 304 548.591 ms - -
+GET /api/stats 304 523.436 ms - -
+GET /api/health 200 0.755 ms - 68
+MongoDB connected: east-phy-23226609.mongo.cosmos.azure.com / radassist
+RadAssist backend running on http://localhost:5002
+[0mGET /api/health [32m200[0m 3.241 ms - 68[0m
