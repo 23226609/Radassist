@@ -19,8 +19,9 @@ MLX_PID=$!
 echo " Waiting for AI Model to load (20s)..."
 sleep 20
 
-# Launch FastAPI middleware (runs in background)
-cd /Users/PHY/Desktop/fyp
+# Launch FastAPI middleware (runs in background).
+# Serve middleware.py from this repo so the AI prompt stays version controlled.
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 "$PY" -m uvicorn middleware:app --port 8001 --host 0.0.0.0 &
 UV_PID=$!
 

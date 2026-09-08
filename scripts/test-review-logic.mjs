@@ -60,11 +60,38 @@ function extractSection(block) {
   return b;
 }
 
+function stripMarkdown(line) {
+  return (line || "")
+    .replace(/^\s*#+\s*/, "")
+    .replace(/^\s*(?:[-+*\u2022]\s+|\d+[.)]\s+)/, "")
+    .replace(/\*+/g, "")
+    .replace(/\s*:\s*$/, "")
+    .trim();
+}
+
+function isSectionLabel(line) {
+  const raw = (line || "").trim();
+  if (!raw || /[.!?]$/.test(raw)) return false;
+  if (!/:\s*\**\s*$/.test(raw)) return false;
+  return stripMarkdown(raw).length < 60;
+}
+
+function splitBlock(block) {
+  const lines = (block || "").split(/\n/).map((l) => l.trim()).filter(Boolean);
+  const header = lines.length && isSectionLabel(lines[0]) ? stripMarkdown(lines[0]) : "";
+  const body = (header ? lines.slice(1) : lines)
+    .map(stripMarkdown)
+    .filter((l) => l.length > 4);
+  return { header, body };
+}
+
 function pickLabel(block) {
-  const cleaned = (block || "").replace(/^[\*\s]+/, "");
-  const first = cleaned.split(/[.\n]/).map((s) => s.trim()).find((s) => s.length > 4);
-  if (!first) return "AI finding";
-  return first.length > 80 ? first.slice(0, 77) + "…" : first;
+  const { header, body } = splitBlock(block);
+  const statement = body
+    .map((line) => line.split(/(?<=[.!?])\s+/)[0].trim())
+    .find((s) => s.length > 4);
+  const label = statement || header || "AI finding";
+  return label.length > 80 ? label.slice(0, 77) + "…" : label;
 }
 
 function parseFindingsFromReport(reportText, existingCount = 0) {
@@ -118,7 +145,7 @@ function parseFindingsFromReport(reportText, existingCount = 0) {
       location: detectLocation(cleaned),
       size: detectSize(cleaned),
       pattern: inferPattern(cleaned),
-      sentence: cleaned.split(/\n/)[0].slice(0, 240),
+      sentence: (splitBlock(cleaned).body.join(" ") || splitBlock(cleaned).header).slice(0, 240),
       status: "pending",
       source: "AI",
     };

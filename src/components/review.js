@@ -79,12 +79,43 @@ function extractSection(block) {
   return b;
 }
 
+// Strip markdown emphasis, heading marks, list markers and a trailing colon.
+function stripMarkdown(line) {
+  return (line || "")
+    .replace(/^\s*#+\s*/, "")
+    .replace(/^\s*(?:[-+*\u2022]\s+|\d+[.)]\s+)/, "")
+    .replace(/\*+/g, "")
+    .replace(/\s*:\s*$/, "")
+    .trim();
+}
+
+// A line such as `**Lungs:**` introduces a section but is not itself a
+// finding — the AI puts the actual observation on the bullets beneath it.
+function isSectionLabel(line) {
+  const raw = (line || "").trim();
+  if (!raw || /[.!?]$/.test(raw)) return false;
+  if (!/:\s*\**\s*$/.test(raw)) return false;
+  return stripMarkdown(raw).length < 60;
+}
+
+// Separate a block into its section heading and the statements below it.
+function splitBlock(block) {
+  const lines = (block || "").split(/\n/).map((l) => l.trim()).filter(Boolean);
+  const header = lines.length && isSectionLabel(lines[0]) ? stripMarkdown(lines[0]) : "";
+  const body = (header ? lines.slice(1) : lines)
+    .map(stripMarkdown)
+    .filter((l) => l.length > 4);
+  return { header, body };
+}
+
 function pickLabel(block) {
-  // Use the first sub-statement as the label, trimmed to ~80 chars.
-  const cleaned = (block || "").replace(/^[\*\s]+/, "");
-  const first = cleaned.split(/[.\n]/).map((s) => s.trim()).find((s) => s.length > 4);
-  if (!first) return "AI finding";
-  return first.length > 80 ? first.slice(0, 77) + "…" : first;
+  // Prefer the first real observation; fall back to the section heading.
+  const { header, body } = splitBlock(block);
+  const statement = body
+    .map((line) => line.split(/(?<=[.!?])\s+/)[0].trim())
+    .find((s) => s.length > 4);
+  const label = statement || header || "AI finding";
+  return label.length > 80 ? label.slice(0, 77) + "…" : label;
 }
 
 export function parseFindingsFromReport(reportText, existingCount = 0) {
@@ -147,7 +178,9 @@ export function parseFindingsFromReport(reportText, existingCount = 0) {
     const pattern = inferPattern(cleaned);
     const location = detectLocation(cleaned);
     const size = detectSize(cleaned);
-    const sentence = cleaned.split(/\n/)[0].slice(0, 240);
+    // Keep the observations, not the section heading, as the quoted text.
+    const { header, body } = splitBlock(cleaned);
+    const sentence = (body.join(" ") || header).slice(0, 240);
     // Confidence: higher when we found strong signals.
     let conf = 0.45;
     if (location) conf += 0.15;
