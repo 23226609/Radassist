@@ -249,6 +249,7 @@ export async function renderReviewPage({ target }) {
   let busy = false;
   let msg = "";
   let imageSrc = null; // resolved object URL once the blob is fetched
+  let carouselIndex = 0; // which finding card the carousel is showing
   // Remember which case we already auto-filled so we only run it once per page open
   // (re-renders, threshold changes, or refresh-from-server shouldn't trigger it again).
   let autoFilledCaseId = null;
@@ -263,8 +264,11 @@ export async function renderReviewPage({ target }) {
     const report = localCase.reportText || "";
     if (!report.trim()) return;
     const existing = localCase.findings || [];
+    // Azure counts here too — once it has summarised the report we must not
+    // pile the local parser's sentence-per-card findings back on top.
     const alreadyAiCount = existing.filter(
-      (f) => f.source === "AI" || String(f._id || f.id || "").startsWith("ai-")
+      (f) => f.source === "AI" || f.source === "Azure" ||
+        /^(ai|az)-/.test(String(f._id || f.id || ""))
     ).length;
     if (alreadyAiCount > 0) return;
     const parsed = parseFindingsFromReport(report, 0);
@@ -410,6 +414,24 @@ export async function renderReviewPage({ target }) {
     } finally { busy = false; render(); }
   }
 
+  // Ask the server to re-derive the finding cards with Azure OpenAI, which
+  // groups the report into a handful of cards instead of one per sentence.
+  async function summariseWithAzure() {
+    busy = true;
+    msg = "Summarising the report with Azure AI…";
+    render();
+    try {
+      const data = await api.summariseFindings(getEffectiveCaseId());
+      localCase = data.case || localCase;
+      carouselIndex = 0;
+      msg = `Azure AI produced ${data.added} finding${data.added === 1 ? "" : "s"}.`;
+      toast(msg);
+    } catch (err) {
+      msg = err.message;
+      toast(msg);
+    } finally { busy = false; render(); }
+  }
+
   function render() {
     const edit = state.user?.role !== "nurse" && localCase.status !== "finalized";
     const findings = localCase.findings || [];
@@ -492,6 +514,73 @@ export async function renderReviewPage({ target }) {
           }, "Reject")
         )
       );
+    }
+
+    // Findings shown one at a time with prev/next and dot indicators, so a
+    // long list of AI findings doesn't push the report off the screen.
+    function findingsCarousel(items) {
+      // The threshold slider can shrink the list under us.
+      if (carouselIndex > items.length - 1) carouselIndex = items.length - 1;
+      if (carouselIndex < 0) carouselIndex = 0;
+
+      const go = (i) => {
+        carouselIndex = (i + items.length) % items.length;
+        render();
+      };
+
+      const statusDot = (f) =>
+        f.status === "accepted" ? "bg-green-500"
+          : f.status === "rejected" ? "bg-red-500"
+            : "bg-slate-300";
+
+      return el("div", {},
+        el("div", { class: "flex items-center justify-between gap-2" },
+          el("b", { class: "text-slate-900" }, "Findings"),
+          el("span", { class: "text-xs font-semibold text-slate-500" },
+            `${carouselIndex + 1} of ${items.length}`
+          )
+        ),
+
+        el("div", { class: "mt-3 flex items-stretch gap-2" },
+          el("button", {
+            class: "shrink-0 rounded-xl border border-slate-300 px-2 text-slate-600 hover:bg-slate-50 disabled:opacity-40",
+            disabled: items.length < 2,
+            title: "Previous finding",
+            onClick: () => go(carouselIndex - 1),
+          }, svgIcon("arrow-left", { size: 16 })),
+
+          el("div", { class: "min-w-0 flex-1" }, findingCard(items[carouselIndex])),
+
+          el("button", {
+            class: "shrink-0 rounded-xl border border-slate-300 px-2 text-slate-600 hover:bg-slate-50 disabled:opacity-40 rotate-180",
+            disabled: items.length < 2,
+            title: "Next finding",
+            onClick: () => go(carouselIndex + 1),
+          }, svgIcon("arrow-left", { size: 16 }))
+        ),
+
+        // Dots double as a status overview: green accepted, red rejected.
+        items.length > 1 && el("div", { class: "mt-1 flex flex-wrap justify-center gap-1.5" },
+          ...items.map((f, i) =>
+            el("button", {
+              class: `h-2.5 rounded-full transition-all ${i === carouselIndex ? "w-6 bg-cyan-600" : `w-2.5 ${statusDot(f)} hover:bg-slate-400`}`,
+              title: `${i + 1}. ${f.label || "Finding"}`,
+              onClick: () => go(i),
+            })
+          )
+        )
+      );
+    }
+
+    // Shown even when Azure isn't configured yet — the server replies with a
+    // clear message pointing at the setup doc, which beats a hidden feature.
+    function azureButton() {
+      return el("button", {
+        class: "rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-60",
+        disabled: busy || !(localCase.reportText || "").trim(),
+        title: "Group the report into a few finding cards using Azure OpenAI",
+        onClick: summariseWithAzure,
+      }, busy ? "Summarising…" : "Summarise with Azure AI");
     }
 
     const _imageSrc = imageSrc;
@@ -589,16 +678,20 @@ export async function renderReviewPage({ target }) {
                     class: "inline-flex items-center gap-1 rounded-xl border border-cyan-600 px-4 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50",
                     onClick: addFinding,
                   }, "+ Add manually"),
+                  azureButton()
                 )
               )
-            : el("div", { class: "card mt-3 max-h-[620px] overflow-y-auto pr-1" },
+            : el("div", { class: "card mt-3" },
                 visible.length === 0
                   ? el("p", { class: "text-sm text-slate-400 text-center p-4" }, "No findings match the current threshold.")
-                  : visible.map(findingCard),
-                edit && el("button", {
-                  class: "mt-2 w-full rounded-xl border border-cyan-600 px-3 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50",
-                  onClick: addFinding,
-                }, "+ Add manually")
+                  : findingsCarousel(visible),
+                edit && el("div", { class: "mt-2 grid gap-2 sm:grid-cols-2" },
+                  el("button", {
+                    class: "rounded-xl border border-cyan-600 px-3 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50",
+                    onClick: addFinding,
+                  }, "+ Add manually"),
+                  azureButton()
+                )
               )
         )
       ),

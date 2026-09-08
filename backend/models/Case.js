@@ -19,6 +19,10 @@ const findingSchema = new mongoose.Schema(
     pattern: { type: String, default: 'Other' },
     sentence: { type: String, default: '' },
     status: { type: String, enum: ['pending', 'accepted', 'rejected'], default: 'pending' },
+    // Who produced this finding. Without these declared, strict mode drops
+    // them on save and the review page can't tell AI findings from manual ones.
+    source: { type: String, default: '' },
+    severity: { type: String, enum: ['normal', 'minor', 'significant', ''], default: '' },
   },
   { _id: true }
 );

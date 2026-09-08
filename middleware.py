@@ -91,6 +91,13 @@ def _build_prompt(patient_id: str = "", age: str = "", sex: str = "", history: s
             "Do not invent any other patient details or clinical history.\n"
             + "\n".join(known)
         )
+
+    # Left to itself the model signs off with "Radiologist: [Your Name]" and
+    # similar bracketed blanks, which read as unfinished in the saved report.
+    prompt += (
+        "\n\nEnd the report after the conclusion. Do not add a signature, "
+        "date or any placeholder written in square brackets."
+    )
     return prompt
 
 
@@ -127,7 +134,7 @@ def _ai_analyze(image_path: str, patient_id: str = "", age: str = "",
     result = response.json()
     content = result["choices"][0]["message"]["content"]
 
-    return {"report": _dedupe_report(content), "findings": []}
+    return {"report": _plain_text(_dedupe_report(content)), "findings": []}
 
 
 # Sentence boundary: a ., ! or ? followed by whitespace.
@@ -214,6 +221,41 @@ def _dedupe_report(text: str) -> str:
         lines.append(prefix + " ".join(kept))
 
     return "\n".join(lines).strip()
+
+
+# A markdown horizontal rule: "---", "***", "___" and friends.
+_HORIZONTAL_RULE = re.compile(r"^\s*(?:[-*_]\s*){3,}$")
+# Emphasis wrapping a run of text, e.g. *stat* — guarded so it ignores a
+# leading "* " bullet and any stray asterisk inside a word.
+_EMPHASIS = re.compile(r"(?<![\w*])([*_])(\S(?:[^*_]*\S)?)\1(?![\w*])")
+
+
+def _plain_text(text: str) -> str:
+    """Turn the model's markdown into clean prose for the stored report.
+
+    Clinicians read and edit this in a plain textarea, so `#` and `**` would
+    show up literally. Numbering and `-` bullets are deliberately kept: they
+    carry the report's structure and the review page parses them into finding
+    cards (see parseFindingsFromReport in review.js).
+    """
+    stripped = []
+    for raw in (text or "").splitlines():
+        if _HORIZONTAL_RULE.match(raw):
+            continue
+        line = raw.replace("**", "").replace("__", "")
+        line = re.sub(r"^(\s*)#{1,6}\s*", r"\1", line)   # heading marks
+        line = _EMPHASIS.sub(r"\2", line)
+        line = line.replace("`", "")
+        line = re.sub(r"^(\s*)[*+]\s+", r"\1- ", line)   # normalise bullets to "-"
+        stripped.append(line.rstrip())
+
+    # Removing rules and headings can leave runs of blank lines behind.
+    out = []
+    for line in stripped:
+        if not line.strip() and out and not out[-1].strip():
+            continue
+        out.append(line)
+    return "\n".join(out).strip()
 
 
 # ---------------------------------------------------------------------------

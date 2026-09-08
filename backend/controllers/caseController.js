@@ -7,6 +7,7 @@ const ApiError = require('../utils/ApiError');
 const catchAsync = require('../utils/catchAsync');
 const addAuditLog = require('../utils/auditLogger');
 const { analyzeXray } = require('../utils/aiService');
+const azureFindings = require('../utils/azureFindings');
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || require('os').tmpdir();
 const path = require('path');
@@ -307,4 +308,55 @@ exports.streamImage = catchAsync(async (req, res, next) => {
     res.set('Content-Length', file.length);
   });
   cursor.pipe(res);
+});
+
+// ---------------------------------------------------------------------------
+// Azure AI findings summary
+// ---------------------------------------------------------------------------
+
+// Replace the case's machine-generated findings with a short, grouped set
+// produced by Azure OpenAI from the report text. Findings the clinician has
+// already accepted, rejected or added by hand are kept.
+exports.summariseFindings = catchAsync(async (req, res, next) => {
+  if (!azureFindings.isConfigured()) {
+    return next(ApiError.badRequest(
+      'Azure OpenAI is not configured on the server. See docs/azure-findings.md.'
+    ));
+  }
+
+  const c = await findCaseByAnyId(req.params.id);
+  if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
+  if (c.status === 'finalized') {
+    return next(ApiError.badRequest('This case is finalized and cannot be changed.'));
+  }
+
+  let summarised;
+  try {
+    summarised = await azureFindings.summariseFindings(c.reportText);
+  } catch (err) {
+    return next(ApiError.badRequest(err.message));
+  }
+  if (summarised.length === 0) {
+    return next(ApiError.badRequest('Azure AI did not return any findings for this report.'));
+  }
+
+  const kept = (c.findings || []).filter(
+    (f) => f.status !== 'pending' || !['AI', 'Azure'].includes(f.source)
+  );
+  c.findings = [...kept, ...summarised];
+  await c.save();
+
+  await addAuditLog(
+    req.user.userId,
+    'CASE_UPDATED',
+    `Azure AI summarised ${summarised.length} findings for ${c.caseId || c._id}`,
+    c.caseId || String(c._id)
+  );
+
+  res.json({
+    success: true,
+    added: summarised.length,
+    kept: kept.length,
+    case: c.toObject(),
+  });
 });

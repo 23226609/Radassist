@@ -78,6 +78,8 @@ export const api = {
     request("POST", "/cases", formData, { headers: {} }), // FormData keeps its own Content-Type
   updateCase: (id, payload) => request("PUT", `/cases/${encodeURIComponent(id)}`, payload),
   finalizeCase: (id) => request("POST", `/cases/${encodeURIComponent(id)}/finalize`),
+  summariseFindings: (id) =>
+    request("POST", `/cases/${encodeURIComponent(id)}/summarise-findings`),
   deleteCase: (id) => request("DELETE", `/cases/${encodeURIComponent(id)}`),
   imageUrl: (imageId) => `${BASE}/images/${imageId}`,
   fetchImage: async (imageId) => {
