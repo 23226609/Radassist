@@ -120,7 +120,7 @@ AZURE_OPENAI_KEY=$KEY
 AZURE_OPENAI_DEPLOYMENT=$DEPLOYMENT
 
 EOF
-echo "Then restart the backend and click \"Summarise with Azure AI\" on a case."
+echo "Then restart the backend and open a case — summarisation runs on page open."
 echo
 echo "To delete everything later (stops all charges):"
 echo "  az group delete --name $RESOURCE_GROUP --yes"

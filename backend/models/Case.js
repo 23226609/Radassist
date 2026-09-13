@@ -23,6 +23,11 @@ const findingSchema = new mongoose.Schema(
     // them on save and the review page can't tell AI findings from manual ones.
     source: { type: String, default: '' },
     severity: { type: String, enum: ['normal', 'minor', 'significant', ''], default: '' },
+    // "vision" = Azure looked at the X-ray; "zone" = anatomical fallback.
+    bboxSource: { type: String, default: '' },
+    languageScore: { type: Number, default: null },
+    imageSupport: { type: Number, default: null },
+    confidenceSource: { type: String, default: '' },
   },
   { _id: true }
 );
@@ -35,7 +40,12 @@ const caseSchema = new mongoose.Schema(
     sex: { type: String, enum: ['Female', 'Male', 'Other', ''], default: '' },
     history: { type: String, default: '' },
     diagnosis: { type: String, default: '' },
+    // "azure" = worklist label from Azure OpenAI; "local" = first-sentence fallback.
+    diagnosisSource: { type: String, default: '' },
     reportText: { type: String, default: '' },
+    // Clinician notes. Also copied into a "Radiologist remarks" block at
+    // the end of reportText when they save, so downloads include them.
+    remarks: { type: String, default: '' },
     findings: { type: [findingSchema], default: [] },
     status: { type: String, enum: STATUS, default: 'pending' },
     // Ownership / audit

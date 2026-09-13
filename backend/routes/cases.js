@@ -12,6 +12,7 @@ router.post('/', authorize('doctor', 'admin'), upload.single('file'), c.createCa
 router.put('/:id', authorize('doctor', 'admin'), c.updateCase);
 router.post('/:id/finalize', authorize('doctor', 'admin'), c.finalizeCase);
 router.post('/:id/summarise-findings', authorize('doctor', 'admin'), c.summariseFindings);
+router.post('/:id/summarise-diagnosis', authorize('doctor', 'admin'), c.summariseDiagnosis);
 router.delete('/:id', authorize('admin'), c.deleteCase);
 
 module.exports = router;

@@ -5,6 +5,7 @@ import { el, mount } from "../dom.js";
 import { state, setPage } from "../state.js";
 import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
+import { paginate, paginationBar } from "../lib/pagination.js";
 
 const ACTION_TONE = {
   LOGIN: "bg-cyan-50 text-cyan-700",
@@ -15,6 +16,7 @@ const ACTION_TONE = {
   CASE_UPDATED: "bg-amber-50 text-amber-700",
   CASE_FINALIZED: "bg-green-50 text-green-700",
   CASE_DELETED: "bg-red-50 text-red-700",
+  PATIENT_UPDATED: "bg-slate-100 text-slate-700",
 };
 
 export async function renderAuditPage({ target }) {
@@ -23,6 +25,7 @@ export async function renderAuditPage({ target }) {
   let action = "";
   let loading = true;
   let error = "";
+  let page = 1;
 
   async function refresh() {
     loading = true; error = ""; render();
@@ -83,13 +86,13 @@ export async function renderAuditPage({ target }) {
               placeholder: "Search details, action, user, case id…",
               value: q,
               onInput: (e) => (q = e.target.value),
-              onChange: refresh,
+              onChange: () => { page = 1; refresh(); },
             })
           ),
           el("select", {
             class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600",
             value: action,
-            onChange: (e) => { action = e.target.value; refresh(); },
+            onChange: (e) => { action = e.target.value; page = 1; refresh(); },
           },
             el("option", { value: "" }, "All actions"),
             ...Object.keys(ACTION_TONE).map((a) => el("option", { value: a }, a))
@@ -102,16 +105,23 @@ export async function renderAuditPage({ target }) {
           ? el("p", { class: "p-10 text-center text-slate-400" }, "Loading…")
           : logs.length === 0
           ? el("p", { class: "p-10 text-center text-slate-400" }, "No matching log entries.")
-          : el("div", { class: "overflow-x-auto" },
-              el("table", { class: "w-full min-w-[820px] text-left text-sm" },
-                el("thead", { class: "bg-slate-50 text-slate-600" },
-                  el("tr", {},
-                    ["Time", "Action", "User", "Details", "Case", "Change"].map((h) => el("th", { class: "p-3" }, h))
+          : (() => {
+              const paged = paginate(logs, page);
+              page = paged.page;
+              return el("div", {},
+                el("div", { class: "overflow-x-auto" },
+                  el("table", { class: "w-full min-w-[820px] text-left text-sm" },
+                    el("thead", { class: "bg-slate-50 text-slate-600" },
+                      el("tr", {},
+                        ["Time", "Action", "User", "Details", "Case", "Change"].map((h) => el("th", { class: "p-3" }, h))
+                      )
+                    ),
+                    el("tbody", {}, ...paged.items.map(row))
                   )
                 ),
-                el("tbody", {}, ...logs.map(row))
-              )
-            )
+                paginationBar({ ...paged, onPage: (n) => { page = n; render(); } })
+              );
+            })()
       )
     );
     mount(target, root);

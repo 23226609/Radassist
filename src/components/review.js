@@ -8,9 +8,10 @@
 //      can accept/reject them.  Already-parsed / AI-supplied findings are
 //      never overwritten by the auto-parse.
 //   3. The X-ray is mandatory — it always renders, with bbox overlays from
-//      the visible (above-threshold) findings.
-//   4. The "Final report text" textarea shows the AI's report verbatim —
-//      the clinician can correct typos / add detail before saving.
+//      the findings.
+//   4. The generated report lives in MongoDB (used by Azure to build
+//      findings). It is not shown on this page — Download pulls it from
+//      the server when someone wants a Word or PDF copy.
 //
 // Older cases persisted with `reportText` accidentally JSON-stringified
 // (`{"report":"..."}`) are unwrapped once on load so the rest of this
@@ -20,8 +21,17 @@ import { el, mount } from "../dom.js";
 import { state, setPage, toast } from "../state.js";
 import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
+import { downloadReportDocx, downloadReportPdf, applyRemarksToReport, splitReportAndRemarks } from "../lib/reportExport.js";
 
 const PATTERNS = ["Nodular", "Diffuse", "Linear", "Ground-glass", "Consolidation", "Other"];
+
+function confidenceTitle(f) {
+  const parts = [];
+  if (f?.languageScore != null) parts.push(`report wording ${Math.round(f.languageScore * 100)}%`);
+  if (f?.imageSupport != null) parts.push(`image ${Math.round(f.imageSupport * 100)}%`);
+  if (!parts.length) return "Clinician-adjustable confidence";
+  return `From ${parts.join(" + ")}`;
+}
 
 // ---------------------------------------------------------------------------
 // AI report parser — converts the markdown report produced by the AI into
@@ -213,7 +223,7 @@ export function parseFindingsFromReport(reportText, existingCount = 0) {
 // this file sees a clean markdown report.  This is purely a one-shot data
 // fixup — it does NOT change how new AI reports are rendered.
 // ---------------------------------------------------------------------------
-function unwrapLegacyReport(raw) {
+export function unwrapLegacyReport(raw) {
   if (!raw || typeof raw.reportText !== "string") return raw;
   const rt = raw.reportText.trim();
   // Only treat as the legacy wrapper if it starts with `{"` and contains `"report"`.
@@ -226,6 +236,9 @@ function unwrapLegacyReport(raw) {
 
 // Cache of imageId -> object URL so we don't re-fetch on every render().
 const _imageCache = new Map();
+// Module-level so a toast / session refresh doesn't re-run Azure and remount
+// the remarks box the clinician is typing in.
+let autoFilledCaseId = null;
 async function getImageObjectUrl(imageId) {
   if (!imageId) return null;
   if (_imageCache.has(imageId)) return _imageCache.get(imageId);
@@ -245,35 +258,79 @@ export async function renderReviewPage({ target }) {
   let localCase = state.cases.find(
     (c) => c.caseId === state.selectedCaseId || c._id === state.selectedCaseId
   );
-  let threshold = 0;
   let busy = false;
   let msg = "";
   let imageSrc = null; // resolved object URL once the blob is fetched
   let carouselIndex = 0; // which finding card the carousel is showing
-  // Remember which case we already auto-filled so we only run it once per page open
-  // (re-renders, threshold changes, or refresh-from-server shouldn't trigger it again).
-  let autoFilledCaseId = null;
+  let remarksDraft = "";
+  let remarksDirty = false;
 
   // Effective case ID that works with both caseId (new) and _id (legacy)
   const getEffectiveCaseId = () => localCase?.caseId || localCase?._id;
 
-  // Pull findings out of the AI's markdown report and append them as cards.
-  // Idempotent: never replaces manually added or already-AI-derived findings.
-  function maybeAutoFillFromReport() {
+  function syncRemarksFromCase() {
+    const split = splitReportAndRemarks(localCase?.reportText || "");
+    remarksDraft = (localCase?.remarks || "").trim() || split.remarks;
+    remarksDirty = false;
+  }
+
+  // Pull findings out of the AI's markdown report and append them as cards,
+  // client-side only (not saved until the clinician hits "Save draft").
+  // Used as the fallback when Azure isn't available — see autoPopulateFindings.
+  function fillFromLocalParser() {
     if (!localCase) return;
     const report = localCase.reportText || "";
     if (!report.trim()) return;
     const existing = localCase.findings || [];
-    // Azure counts here too — once it has summarised the report we must not
-    // pile the local parser's sentence-per-card findings back on top.
-    const alreadyAiCount = existing.filter(
-      (f) => f.source === "AI" || f.source === "Azure" ||
-        /^(ai|az)-/.test(String(f._id || f.id || ""))
-    ).length;
-    if (alreadyAiCount > 0) return;
     const parsed = parseFindingsFromReport(report, 0);
     if (parsed.length === 0) return;
     localCase = { ...localCase, findings: [...existing, ...parsed] };
+  }
+
+  // Runs once per case, right after it loads: summarises the report into a
+  // few grouped cards with Azure AI so the clinician never has to click the
+  // button themselves. Idempotent — skips if AI/Azure findings already
+  // exist, so re-opening an already-summarised case doesn't call Azure again
+  // or duplicate cards.
+  async function autoPopulateFindings() {
+    if (!localCase) return;
+    const report = localCase.reportText || "";
+    if (!report.trim()) return;
+
+    const existing = localCase.findings || [];
+    // Skip only when Azure has already produced cards for this case. Old
+    // Azure cards (no bboxSource) and local-parser cards are re-run so the
+    // boxes get placed on the film instead of the leftover placeholders.
+    const azureReady = existing.some(
+      (f) => f.source === "Azure" &&
+        (f.bboxSource === "vision" || f.bboxSource === "zone") &&
+        f.confidenceSource === "calibrated"
+    );
+    if (azureReady) return;
+
+    // Matches the backend route's own authorization (doctor/admin) and
+    // avoids mutating a finalized case's saved findings.
+    const canUseAzure = ["doctor", "admin"].includes(state.user?.role) &&
+      localCase.status !== "finalized";
+
+    if (canUseAzure) {
+      try {
+        const data = await api.summariseFindings(getEffectiveCaseId());
+        localCase = data.case || localCase;
+        const idx = state.cases.findIndex(
+          (c) => c.caseId === (localCase.caseId || localCase._id) || c._id === localCase._id
+        );
+        if (idx >= 0) state.cases[idx] = localCase;
+        return;
+      } catch (err) {
+        // Most common cause: AZURE_OPENAI_* isn't configured on the server,
+        // which throws a 400 with a clear message — not an error worth
+        // alarming the clinician with on every page they open. Fall back
+        // to the local parser below instead.
+        console.warn("[review] Azure auto-summarise skipped:", err.message);
+      }
+    }
+    fillFromLocalParser();
   }
 
   async function refreshFromServer() {
@@ -284,6 +341,7 @@ export async function renderReviewPage({ target }) {
       localCase = data.case || data;
       // One-shot fixup: unwrap the legacy `{"report":"..."}` string shape.
       localCase = unwrapLegacyReport(localCase);
+      syncRemarksFromCase();
       // Sync the cache so the rest of the app sees the same case.
       const idx = state.cases.findIndex(
         (c) => c.caseId === (localCase.caseId || localCase._id) || c._id === localCase._id
@@ -341,13 +399,16 @@ export async function renderReviewPage({ target }) {
   // One-shot fixup on the initial case too (covers the path where the case
   // came from the local cache rather than a fresh /cases/:id fetch).
   localCase = unwrapLegacyReport(localCase);
+  syncRemarksFromCase();
 
-  function patchFinding(id, patch) {
+  function patchFinding(id, patch, { refresh = false } = {}) {
     localCase = {
       ...localCase,
       findings: (localCase.findings || []).map((f) => (f._id === id || f.id === id ? { ...f, ...patch } : f)),
     };
-    render();
+    // Text fields keep their own caret — remounting on every keystroke made
+    // the remarks box and finding inputs feel like they wouldn't accept typing.
+    if (refresh) render();
   }
 
   function addFinding() {
@@ -414,28 +475,91 @@ export async function renderReviewPage({ target }) {
     } finally { busy = false; render(); }
   }
 
-  // Ask the server to re-derive the finding cards with Azure OpenAI, which
-  // groups the report into a handful of cards instead of one per sentence.
-  async function summariseWithAzure() {
+  function openReport() {
+    const id = getEffectiveCaseId();
+    if (!id) {
+      toast("This case has no id yet.");
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", "report");
+    url.searchParams.set("caseId", id);
+    const popup = window.open(
+      url.toString(),
+      "radassist-report",
+      "popup=yes,width=820,height=920,scrollbars=yes,resizable=yes"
+    );
+    if (!popup) toast("Allow popups to open the report in a new window.");
+  }
+
+  async function saveRemarks() {
     busy = true;
-    msg = "Summarising the report with Azure AI…";
     render();
     try {
-      const data = await api.summariseFindings(getEffectiveCaseId());
-      localCase = data.case || localCase;
-      carouselIndex = 0;
-      msg = `Azure AI produced ${data.added} finding${data.added === 1 ? "" : "s"}.`;
+      const data = await api.getCase(getEffectiveCaseId());
+      const stored = unwrapLegacyReport(data.case || data);
+      const note = String(remarksDraft || "").trim();
+      // Finalized reports are locked. Remarks still save on the case, but
+      // they are not copied into reportText / Word / PDF.
+      const next = stored.status === "finalized"
+        ? { remarks: note }
+        : { ...applyRemarksToReport(stored.reportText, note), findings: localCase.findings };
+      const updated = await api.updateCase(getEffectiveCaseId(), next);
+      localCase = updated.case || { ...localCase, ...next };
+      remarksDraft = localCase.remarks || note;
+      remarksDirty = false;
+      msg = stored.status === "finalized"
+        ? "Remarks saved. The finalized report was not changed."
+        : "Remarks saved and added to the report.";
       toast(msg);
     } catch (err) {
       msg = err.message;
       toast(msg);
-    } finally { busy = false; render(); }
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
+  async function download(kind) {
+    busy = true;
+    render();
+    try {
+      // Persist any unsaved remarks, then read the report back from MongoDB
+      // so Word/PDF always match the latest stored copy.
+      const data = await api.getCase(getEffectiveCaseId());
+      let stored = unwrapLegacyReport(data.case || data);
+      const isNurse = state.user?.role === "nurse";
+      if (!isNurse && remarksDirty) {
+        const note = String(remarksDraft || "").trim();
+        const next = stored.status === "finalized"
+          ? { remarks: note }
+          : { ...applyRemarksToReport(stored.reportText, note), findings: localCase.findings };
+        const updated = await api.updateCase(getEffectiveCaseId(), next);
+        stored = unwrapLegacyReport(updated.case || { ...stored, ...next });
+        localCase = { ...localCase, reportText: stored.reportText, remarks: stored.remarks ?? note };
+        remarksDraft = localCase.remarks || note;
+        remarksDirty = false;
+      }
+      if (!(stored.reportText || "").trim()) {
+        toast("No report has been saved for this case yet.");
+        return;
+      }
+      if (kind === "docx") await downloadReportDocx(stored);
+      else await downloadReportPdf(stored);
+    } catch (err) {
+      toast(err.message || "Download failed.");
+    } finally {
+      busy = false;
+      render();
+    }
   }
 
   function render() {
     const edit = state.user?.role !== "nurse" && localCase.status !== "finalized";
+    const canRemark = state.user?.role !== "nurse";
     const findings = localCase.findings || [];
-    const visible = findings.filter((f) => (f.confidence ?? 0) * 100 >= threshold);
+    const visible = findings;
 
     function findingCard(f) {
       const isNew = String(f._id || f.id || "").startsWith("tmp-");
@@ -447,10 +571,10 @@ export async function renderReviewPage({ target }) {
           el("div", { class: "flex-1" },
             el("div", { class: "flex items-center gap-2" },
               el("small", { class: "font-bold text-cyan-700 text-xs" }, isNew ? "NEW FINDING (unsaved)" : `FINDING ${f._id || f.id}`),
-              f.source === "AI" && el("span", { class: "rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700" }, "✦ AI")
             ),
             edit
               ? el("input", {
+                  id: `finding-label-${f._id || f.id}`,
                   class: "mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1 outline-none focus:border-cyan-600 font-bold text-slate-900",
                   value: f.label || "",
                   onInput: (e) => patchFinding(f._id || f.id, { label: e.target.value }),
@@ -458,26 +582,14 @@ export async function renderReviewPage({ target }) {
               : el("h3", { class: "font-bold text-slate-900" }, f.label)
           ),
           el("div", { class: "flex flex-col items-end gap-2" },
-            el("b", { class: "rounded-full bg-cyan-50 px-3 py-0.5 text-cyan-700 text-sm" },
-              `${Math.round((f.confidence ?? 0) * 100)}%`
-            ),
+            el("b", {
+              class: "rounded-full bg-cyan-50 px-3 py-0.5 text-cyan-700 text-sm",
+              title: confidenceTitle(f),
+            }, `${Math.round((f.confidence ?? 0) * 100)}%`),
             edit && isNew && el("button", {
               class: "text-xs text-red-600 hover:text-red-800",
               onClick: () => removeFinding(f._id || f.id),
             }, "Remove")
-          )
-        ),
-        edit && el("div", { class: "mt-3" },
-          el("label", { class: "block" },
-            el("span", { class: "text-xs font-semibold text-slate-500" }, "Confidence"),
-            el("input", {
-              type: "range",
-              min: 0,
-              max: 100,
-              value: Math.round((f.confidence ?? 0) * 100),
-              class: "mt-1 w-full accent-cyan-600",
-              onInput: (e) => patchFinding(f._id || f.id, { confidence: (+e.target.value) / 100 }),
-            })
           )
         ),
         !edit ? null : el("div", { class: "mt-3 grid grid-cols-2 gap-2" },
@@ -485,6 +597,7 @@ export async function renderReviewPage({ target }) {
             el("label", { class: "block" },
               el("span", { class: "text-xs font-semibold text-slate-500 capitalize" }, k),
               el("input", {
+                id: `finding-${k}-${f._id || f.id}`,
                 class: "mt-1 w-full rounded-xl border border-slate-300 bg-white px-2 py-1.5 outline-none focus:border-cyan-600",
                 value: f[k] || "",
                 onInput: (e) => patchFinding(f._id || f.id, { [k]: e.target.value }),
@@ -498,20 +611,10 @@ export async function renderReviewPage({ target }) {
             disabled: !edit,
             class: "mt-1 w-full rounded-xl border border-slate-300 bg-white px-2 py-1.5 outline-none focus:border-cyan-600 disabled:bg-slate-100",
             value: f.pattern || "Other",
-            onChange: (e) => patchFinding(f._id || f.id, { pattern: e.target.value }),
+            onChange: (e) => patchFinding(f._id || f.id, { pattern: e.target.value }, { refresh: true }),
           },
             ...PATTERNS.map((p) => el("option", { value: p }, p))
           )
-        ),
-        edit && el("div", { class: "mt-3 grid grid-cols-2 gap-2" },
-          el("button", {
-            class: `rounded-xl px-3 py-2 text-sm font-semibold ${f.status === "accepted" ? "bg-green-600 text-white" : "bg-green-50 text-green-700 hover:bg-green-100"}`,
-            onClick: () => patchFinding(f._id || f.id, { status: "accepted" }),
-          }, "Accept"),
-          el("button", {
-            class: `rounded-xl px-3 py-2 text-sm font-semibold ${f.status === "rejected" ? "bg-red-600 text-white" : "bg-red-50 text-red-700 hover:bg-red-100"}`,
-            onClick: () => patchFinding(f._id || f.id, { status: "rejected" }),
-          }, "Reject")
         )
       );
     }
@@ -519,7 +622,6 @@ export async function renderReviewPage({ target }) {
     // Findings shown one at a time with prev/next and dot indicators, so a
     // long list of AI findings doesn't push the report off the screen.
     function findingsCarousel(items) {
-      // The threshold slider can shrink the list under us.
       if (carouselIndex > items.length - 1) carouselIndex = items.length - 1;
       if (carouselIndex < 0) carouselIndex = 0;
 
@@ -527,11 +629,6 @@ export async function renderReviewPage({ target }) {
         carouselIndex = (i + items.length) % items.length;
         render();
       };
-
-      const statusDot = (f) =>
-        f.status === "accepted" ? "bg-green-500"
-          : f.status === "rejected" ? "bg-red-500"
-            : "bg-slate-300";
 
       return el("div", {},
         el("div", { class: "flex items-center justify-between gap-2" },
@@ -559,28 +656,16 @@ export async function renderReviewPage({ target }) {
           }, svgIcon("arrow-left", { size: 16 }))
         ),
 
-        // Dots double as a status overview: green accepted, red rejected.
         items.length > 1 && el("div", { class: "mt-1 flex flex-wrap justify-center gap-1.5" },
           ...items.map((f, i) =>
             el("button", {
-              class: `h-2.5 rounded-full transition-all ${i === carouselIndex ? "w-6 bg-cyan-600" : `w-2.5 ${statusDot(f)} hover:bg-slate-400`}`,
+              class: `h-2.5 rounded-full transition-all ${i === carouselIndex ? "w-6 bg-cyan-600" : "w-2.5 bg-slate-300 hover:bg-slate-400"}`,
               title: `${i + 1}. ${f.label || "Finding"}`,
               onClick: () => go(i),
             })
           )
         )
       );
-    }
-
-    // Shown even when Azure isn't configured yet — the server replies with a
-    // clear message pointing at the setup doc, which beats a hidden feature.
-    function azureButton() {
-      return el("button", {
-        class: "rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-60",
-        disabled: busy || !(localCase.reportText || "").trim(),
-        title: "Group the report into a few finding cards using Azure OpenAI",
-        onClick: summariseWithAzure,
-      }, busy ? "Summarising…" : "Summarise with Azure AI");
     }
 
     const _imageSrc = imageSrc;
@@ -597,7 +682,14 @@ export async function renderReviewPage({ target }) {
         el("div", {},
           el("h1", { class: "text-3xl font-bold text-slate-900" }, "Report review"),
           el("p", { class: "text-slate-600 mt-1" },
-            localCase.patientId, " · ",
+            el("button", {
+              class: "font-semibold hover:text-cyan-700 hover:underline",
+              onClick: () => {
+                state.selectedPatientId = localCase.patientId;
+                setPage("patient");
+              },
+            }, localCase.patientId),
+            " · ",
             localCase.age || "?", " years · ",
             localCase.sex || "?"
           ),
@@ -607,6 +699,21 @@ export async function renderReviewPage({ target }) {
           )
         ),
         el("div", { class: "flex gap-2 flex-wrap" },
+          el("button", {
+            class: "inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50",
+            disabled: busy,
+            onClick: openReport,
+          }, svgIcon("file-text", { size: 16 }), "Report"),
+          el("button", {
+            class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
+            disabled: busy,
+            onClick: () => download("docx"),
+          }, svgIcon("download", { size: 16 }), "Word"),
+          el("button", {
+            class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
+            disabled: busy,
+            onClick: () => download("pdf"),
+          }, svgIcon("download", { size: 16 }), "PDF"),
           edit && el("button", {
             class: "rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50",
             disabled: busy,
@@ -625,7 +732,8 @@ export async function renderReviewPage({ target }) {
 
       msg && el("p", { class: "mt-4 rounded-lg bg-green-50 text-green-700 p-3" }, msg),
 
-      // Image + findings/empty-state — always show the X-ray panel + report editor
+      // Image + findings — the report itself stays in MongoDB and is only
+      // pulled out when someone downloads it.
       el("div", { class: "mt-5 grid gap-5 xl:grid-cols-2" },
         // X-ray image w/ bbox overlays
         el("section", { class: "rounded-2xl bg-slate-950 p-4 text-white" },
@@ -633,84 +741,75 @@ export async function renderReviewPage({ target }) {
             el("b", {}, "Chest X-Ray"),
             el("span", { class: "text-xs text-slate-400" }, _imageSrc ? "· loaded from MongoDB GridFS" : "")
           ),
-          el("div", { class: "relative mx-auto mt-3 w-full max-h-[560px] overflow-hidden rounded-xl bg-gradient-to-b from-slate-500 to-slate-900" },
-            _imageSrc
-              ? el("img", { src: _imageSrc, class: "block w-full h-auto max-h-[560px] object-contain", alt: "Chest X-ray" })
-              : el("div", { class: "absolute inset-0 flex items-center justify-center text-slate-300 text-sm" }, localCase.imageId ? "Loading image…" : "No image"),
-            visible.length > 0 && visible.map((f) =>
-              el("button", {
-                class: "absolute border-2 border-cyan-400 bg-cyan-300/20 hover:bg-yellow-300/30 hover:border-yellow-300",
-                style: {
-                  left: (f.bbox?.[0] ?? 0) + "%",
-                  top: (f.bbox?.[1] ?? 0) + "%",
-                  width: (f.bbox?.[2] ?? 10) + "%",
-                  height: (f.bbox?.[3] ?? 10) + "%",
+          el("div", { class: "mt-3 flex justify-center rounded-xl bg-gradient-to-b from-slate-500 to-slate-900" },
+            el("div", { class: "relative inline-block max-w-full" },
+              _imageSrc
+                ? el("img", { src: _imageSrc, class: "block max-h-[560px] max-w-full h-auto w-auto", alt: "Chest X-ray" })
+                : el("div", { class: "flex h-[320px] w-full min-w-[240px] items-center justify-center text-slate-300 text-sm" }, localCase.imageId ? "Loading image…" : "No image"),
+              visible.length > 0 && visible.map((f, i) =>
+                el("button", {
+                  class: `absolute border-2 ${i === carouselIndex ? "border-yellow-300 bg-yellow-300/25" : "border-cyan-400 bg-cyan-300/20 hover:bg-yellow-300/30 hover:border-yellow-300"}`,
+                  style: {
+                    left: (f.bbox?.[0] ?? 0) + "%",
+                    top: (f.bbox?.[1] ?? 0) + "%",
+                    width: (f.bbox?.[2] ?? 10) + "%",
+                    height: (f.bbox?.[3] ?? 10) + "%",
+                  },
+                  title: f.label,
+                  onClick: () => { carouselIndex = i; render(); },
                 },
-                title: f.label,
-              },
-                el("span", { class: "absolute -top-5 left-0 bg-black px-1 text-xs text-white" }, `F${f._id || f.id}`)
+                  el("span", { class: "absolute -top-5 left-0 bg-black px-1 text-xs text-white" }, `F${i + 1}`)
+                )
               )
             )
           )
         ),
 
-        // Findings + threshold (or empty state)
-        el("section", {},
-          el("div", { class: "card" },
-            el("div", { class: "flex justify-between items-center" },
-              el("b", {}, "Confidence threshold"),
-              el("b", { class: "text-cyan-700" }, `${threshold}%`)
-            ),
-            el("input", {
-              type: "range",
-              min: 0,
-              max: 100,
-              value: threshold,
-              class: "mt-3 w-full accent-cyan-600",
-              onInput: (e) => { threshold = +e.target.value; render(); },
-            })
-          ),
+        el("section", { class: "flex flex-col gap-5" },
           findings.length === 0
-            ? el("div", { class: "card mt-3 text-center text-slate-500" },
-                el("p", {}, "No findings yet — review the AI's draft report below, then add findings as you go."),
-                edit && el("div", { class: "mt-3 flex flex-wrap items-center justify-center gap-2" },
+            ? el("div", { class: "card text-center text-slate-500" },
+                el("p", {}, busy
+                  ? "Summarising findings…"
+                  : "No findings yet — they will be summarised from the saved report, or add one by hand."),
+                edit && !busy && el("div", { class: "mt-3 flex flex-wrap items-center justify-center gap-2" },
                   el("button", {
                     class: "inline-flex items-center gap-1 rounded-xl border border-cyan-600 px-4 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50",
                     onClick: addFinding,
                   }, "+ Add manually"),
-                  azureButton()
                 )
               )
-            : el("div", { class: "card mt-3" },
-                visible.length === 0
-                  ? el("p", { class: "text-sm text-slate-400 text-center p-4" }, "No findings match the current threshold.")
-                  : findingsCarousel(visible),
-                edit && el("div", { class: "mt-2 grid gap-2 sm:grid-cols-2" },
-                  el("button", {
-                    class: "rounded-xl border border-cyan-600 px-3 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50",
-                    onClick: addFinding,
-                  }, "+ Add manually"),
-                  azureButton()
-                )
-              )
-        )
-      ),
-
-      // Final report text editor (always last) — the AI's report markdown
-      // lives here verbatim.  Clinicians can edit typos / add detail before
-      // saving; the saved text replaces the AI's output.
-      el("section", { class: "card mt-5" },
-        el("h2", { class: "text-lg font-bold text-slate-900" }, "Final report text"),
-        el("textarea", {
-          disabled: !edit,
-          class: "mt-3 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100 font-mono text-sm",
-          rows: 10,
-          value: localCase.reportText || "",
-          onInput: (e) => { localCase.reportText = e.target.value; },
-        }),
-        el("p", { class: "mt-2 text-xs text-slate-500" },
-          "The AI's report is shown above. A clinician may edit this text. ",
-          "Saving the draft writes back to MongoDB; finalizing locks the case for audit purposes."
+            : el("div", { class: "card" },
+                findingsCarousel(visible),
+                edit && el("button", {
+                  class: "mt-2 w-full rounded-xl border border-cyan-600 px-3 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50",
+                  onClick: addFinding,
+                }, "+ Add manually")
+              ),
+          el("div", { class: "card flex-1" },
+            el("div", { class: "flex flex-wrap items-center justify-between gap-2" },
+              el("h2", { class: "text-lg font-bold text-slate-900" }, "Remarks"),
+              canRemark && el("button", {
+                class: "rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50",
+                disabled: busy,
+                onClick: saveRemarks,
+              }, "Save remarks")
+            ),
+            el("textarea", {
+              id: "remarks-box",
+              class: "input mt-3 min-h-[180px]",
+              rows: 8,
+              readOnly: !canRemark,
+              placeholder: localCase.status === "finalized"
+                ? "Notes stay on this case. They are not added to the finalized report…"
+                : "Notes or extra findings to add to the report…",
+              onInput: (e) => { remarksDraft = e.target.value; remarksDirty = true; },
+            }, remarksDraft),
+            el("p", { class: "mt-2 text-xs text-slate-500" },
+              localCase.status === "finalized"
+                ? "This case is finalized. Remarks are saved as notes only and are not written into the report, Word, or PDF."
+                : "Saving adds these remarks to the stored report. Word and PDF always download that latest saved copy."
+            )
+          )
         )
       )
     );
@@ -718,13 +817,22 @@ export async function renderReviewPage({ target }) {
     mount(target, root);
   }
 
-  // First time we view this case, automatically parse the AI report into cards.
-  // Guarded by autoFilledCaseId so threshold/mark changes don't re-trigger it.
+  await refreshFromServer();
+
+  // First time we view this case, automatically summarise the report into
+  // findings — Azure AI first, falling back to the local text parser — so
+  // the clinician never has to click a button. Guarded by autoFilledCaseId,
+  // and autoPopulateFindings itself skips once real findings already exist,
+  // so this can't re-trigger on every re-render or re-summarise on reopen.
   if (localCase && autoFilledCaseId !== (localCase.caseId || localCase._id)) {
-    maybeAutoFillFromReport();
     autoFilledCaseId = localCase.caseId || localCase._id;
+    busy = true;
+    msg = "Summarising findings…";
+    render();
+    await autoPopulateFindings();
+    busy = false;
+    msg = "";
   }
 
-  await refreshFromServer();
   render();
 }

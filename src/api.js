@@ -80,6 +80,8 @@ export const api = {
   finalizeCase: (id) => request("POST", `/cases/${encodeURIComponent(id)}/finalize`),
   summariseFindings: (id) =>
     request("POST", `/cases/${encodeURIComponent(id)}/summarise-findings`),
+  summariseDiagnosis: (id) =>
+    request("POST", `/cases/${encodeURIComponent(id)}/summarise-diagnosis`),
   deleteCase: (id) => request("DELETE", `/cases/${encodeURIComponent(id)}`),
   imageUrl: (imageId) => `${BASE}/images/${imageId}`,
   fetchImage: async (imageId) => {
@@ -87,6 +89,14 @@ export const api = {
     if (!res.ok) throw new Error(`Image fetch failed: HTTP ${res.status}`);
     return res.blob();
   },
+
+  // Patients
+  listPatients: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return request("GET", `/patients${q ? "?" + q : ""}`);
+  },
+  getPatient: (id) => request("GET", `/patients/${encodeURIComponent(id)}`),
+  updatePatient: (id, payload) => request("PUT", `/patients/${encodeURIComponent(id)}`, payload),
 
   // Users
   listUsers: (params = {}) => {

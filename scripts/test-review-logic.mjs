@@ -301,15 +301,13 @@ test("legacy wrapped report flows through parseFindingsFromReport cleanly", () =
   assert.equal(findings[1].pattern, "Diffuse");
 });
 
-test("view page textarea content matches the unwrapped report", () => {
-  // Simulates exactly what the textarea in renderReviewPage() will display.
+test("downloaded report text is the unwrapped MongoDB report", () => {
   const wrapped = `{"report":"1. No acute cardiopulmonary findings identified.\\n\\nIMPRESSION: No acute process."}`;
   const step1 = unwrapLegacyReport({ reportText: wrapped });
-  // This is what the user will literally see in the textarea:
-  const textareaValue = step1.reportText;
-  assert.ok(textareaValue.startsWith("1. No acute"), "textarea should show clean report, not JSON");
-  assert.ok(!textareaValue.includes("{"), "textarea should not contain JSON braces");
-  assert.ok(!textareaValue.includes("\\n"), "textarea should contain real newlines, not escaped");
+  const stored = step1.reportText;
+  assert.ok(stored.startsWith("1. No acute"), "download should use the clean report, not JSON");
+  assert.ok(!stored.includes("{"), "stored report should not contain JSON braces");
+  assert.ok(!stored.includes("\\n"), "stored report should contain real newlines, not escaped");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

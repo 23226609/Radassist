@@ -25,6 +25,20 @@ globalThis.localStorage = {
   setItem() {},
   removeItem() {},
 };
+globalThis.URL = URL;
+try {
+  window.location.href = "http://localhost:5173/";
+} catch {
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: new URL("http://localhost:5173/"),
+  });
+}
+let openedPopup = null;
+window.open = (url, name, features) => {
+  openedPopup = { url: String(url), name, features };
+  return { closed: false };
+};
 
 // linkedom exposes select.value as getter-only; real browsers let you assign
 // it, which is what dom.js does when building the pattern dropdown.
@@ -95,6 +109,7 @@ api.getCase = async () => ({ case: structuredClone(testCase) });
 api.fetchImage = async () => {
   throw new Error("no image in test");
 };
+api.summariseFindings = async () => ({ added: 0, kept: 3, case: structuredClone(testCase) });
 
 const root = document.getElementById("root");
 await renderReviewPage({ target: root });
@@ -153,24 +168,116 @@ test("clicking a dot jumps straight to that finding", () => {
   assert.ok(text().includes("Low confidence item"));
 });
 
-test("offers the Azure summarise action alongside the carousel", () => {
+test("does not require a Summarise with Azure AI button", () => {
   const btn = [...root.querySelectorAll("button")].find((b) =>
     /Summarise with Azure AI/.test(b.textContent)
   );
-  assert.ok(btn, "Azure summarise button is missing");
-  assert.ok(!btn.disabled, "button should be enabled when the case has report text");
+  assert.equal(btn, undefined, "manual Azure button should be gone — summarisation runs on page open");
 });
 
-test("raising the threshold drops filtered findings and clamps the index", () => {
-  // Currently parked on finding 3 (confidence 0.2). A 50% threshold removes
-  // it, so the carousel must fall back to a valid index instead of blanking.
-  const slider = root.querySelector('input[type="range"]');
-  slider.value = "50";
-  slider.dispatchEvent(new window.Event("input"));
-  assert.ok(text().includes("of 2"), `expected 2 remaining findings, got: ${text().slice(0, 160)}`);
-  assert.equal(cards().length, 1, "expected a single card after filtering");
-  assert.ok(!text().includes("Low confidence item"), "filtered finding still visible");
+test("findings have no Accept or Reject actions", () => {
+  const labels = [...root.querySelectorAll("button")].map((b) => b.textContent.trim());
+  assert.ok(!labels.includes("Accept"), "Accept should be gone");
+  assert.ok(!labels.includes("Reject"), "Reject should be gone");
 });
+
+test("the confidence threshold slider is gone", () => {
+  assert.ok(!text().includes("Confidence threshold"), "threshold slider should be gone");
+});
+
+test("the review page offers Word and PDF downloads of the report", () => {
+  const labels = [...root.querySelectorAll("button")].map((b) => b.textContent.trim());
+  assert.ok(labels.includes("Word"), "Word download missing");
+  assert.ok(labels.includes("PDF"), "PDF download missing");
+});
+
+test("does not show the full report on the view page", () => {
+  assert.ok(!text().includes("Final report text"), "report editor should not be on the view page");
+  assert.equal(root.querySelector('[aria-label="Report"]'), null, "report should open in a new window, not an overlay");
+});
+
+test("the remarks box sits under the findings in the right column", () => {
+  const column = root.querySelector("section.flex.flex-col");
+  assert.ok(column, "findings column missing");
+  const cardsInColumn = [...column.querySelectorAll(":scope > .card")];
+  assert.ok(cardsInColumn.length >= 2, "expected findings and remarks cards");
+  assert.ok(cardsInColumn[0].textContent.includes("Finding") || cardsInColumn[0].textContent.includes("of"),
+    "findings card should be first in the right column");
+  assert.ok(cardsInColumn.at(-1).textContent.includes("Remarks"),
+    "remarks should sit under the findings");
+  const remarksBox = cardsInColumn.at(-1).querySelector("textarea");
+  assert.ok(remarksBox, "remarks box missing");
+  assert.ok(!remarksBox.disabled && !remarksBox.hasAttribute("readonly") && !remarksBox.hasAttribute("disabled"),
+    "doctors must be able to type remarks");
+});
+
+test("Report opens a new window for the stored report", () => {
+  const btn = [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === "Report");
+  assert.ok(btn, "Report button missing");
+  openedPopup = null;
+  btn.dispatchEvent(new window.Event("click"));
+  assert.ok(openedPopup, "window.open was not called");
+  assert.ok(/view=report/.test(openedPopup.url), `expected view=report in ${openedPopup.url}`);
+  assert.ok(/caseId=CASE-CAROUSEL-1/.test(openedPopup.url), `expected case id in ${openedPopup.url}`);
+});
+
+{
+  let saved = null;
+  api.updateCase = async (_id, payload) => {
+    saved = payload;
+    return { case: { ...structuredClone(testCase), ...payload } };
+  };
+  const box = root.querySelector("textarea");
+  box.value = "Possible old rib fracture on the left.";
+  box.dispatchEvent(new window.Event("input"));
+  const saveBtn = [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === "Save remarks");
+  saveBtn.dispatchEvent(new window.Event("click"));
+  await new Promise((r) => setTimeout(r, 0));
+
+  test("saving remarks writes them into the MongoDB report", () => {
+    assert.ok(saved, "updateCase was not called");
+    assert.ok(saved.reportText.includes("Radiologist remarks"), "remarks heading missing from report");
+    assert.ok(saved.reportText.includes("Possible old rib fracture on the left."), "remarks text missing from report");
+    assert.equal(saved.remarks, "Possible old rib fracture on the left.");
+  });
+}
+
+{
+  const finalized = { ...structuredClone(testCase), status: "finalized", remarks: "" };
+  state.cases = [finalized];
+  state.selectedCaseId = finalized.caseId;
+  api.getCase = async () => ({ case: structuredClone(finalized) });
+  let saved = null;
+  api.updateCase = async (_id, payload) => {
+    saved = payload;
+    return { case: { ...structuredClone(finalized), ...payload } };
+  };
+  const finRoot = document.createElement("div");
+  document.body.appendChild(finRoot);
+  await renderReviewPage({ target: finRoot });
+
+  test("finalized cases still have a writable remarks box", () => {
+    const box = finRoot.querySelector("#remarks-box");
+    assert.ok(box, "remarks box missing on finalized case");
+    assert.ok(!box.disabled && !box.hasAttribute("readonly"), "remarks must stay writable after finalize");
+    assert.ok([...finRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Save remarks"));
+    assert.ok(![...finRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Finalize & approve"));
+  });
+
+  const box = finRoot.querySelector("#remarks-box");
+  box.value = "Follow up in clinic.";
+  box.dispatchEvent(new window.Event("input"));
+  [...finRoot.querySelectorAll("button")].find((b) => b.textContent.trim() === "Save remarks")
+    .dispatchEvent(new window.Event("click"));
+  await new Promise((r) => setTimeout(r, 0));
+
+  test("finalized remarks save as notes and do not rewrite the report", () => {
+    assert.ok(saved, "updateCase was not called");
+    assert.equal(saved.remarks, "Follow up in clinic.");
+    assert.equal(saved.reportText, undefined, "finalized report text must stay locked");
+    assert.equal(saved.findings, undefined, "finalized findings must stay locked");
+  });
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

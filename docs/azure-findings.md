@@ -17,31 +17,31 @@ parser, so the project still runs on a laptop with no Azure account.
 
 ```
 Chest X-ray  ──►  Qwen2.5-VL (local, port 8080)  ──►  free-text report
-                                                            │
-                                                            ▼
-                                        Azure OpenAI gpt-4o-mini  (this doc)
-                                                            │
-                                                            ▼
-                                          6 findings as JSON  ──►  carousel
+      │                                                     │
+      │                                                     ▼
+      └──────────►  Azure OpenAI (vision)  ──►  6 findings + boxes
+                    gpt-4.1-mini / gpt-4o-mini
 ```
 
-The local model writes the report. Azure only reads that **text** — it never
-sees the X-ray image. That matters for three reasons:
+The local model writes the report. Opening the review page then sends that
+**text plus the X-ray image** to Azure so each finding card can be drawn over
+the matching anatomy. The same call (and a cheaper text-only call from the
+dashboard) also writes the short **Diagnosis** label shown in the case list.
+If the image cannot be loaded, Azure still summarises the text and the boxes
+fall back to anatomical zones (heart, lungs, and so on).
 
-- It is cheap. A report is roughly 700 tokens, so a summary costs a fraction of
-  a cent with `gpt-4o-mini`.
-- It needs no GPU quota, unlike hosting a vision model on Azure.
-- It cannot draw bounding boxes, because it never sees the image. The boxes on
-  Azure findings are placeholders for the clinician to drag into place.
+This is still cheap — a report plus one downsized film is a few thousand
+tokens, well under a cent — and it needs no GPU quota of its own.
 
 Relevant files:
 
 | File | Role |
 | --- | --- |
 | `backend/utils/azureFindings.js` | Builds the prompt, calls Azure, validates the JSON |
-| `backend/controllers/caseController.js` | `summariseFindings` — saves the result to the case |
-| `backend/routes/cases.js` | `POST /api/cases/:id/summarise-findings` |
-| `src/components/review.js` | "Summarise with Azure AI" button and the carousel |
+| `backend/controllers/caseController.js` | `summariseFindings` / `summariseDiagnosis` — saves the result to the case |
+| `backend/routes/cases.js` | `POST /api/cases/:id/summarise-findings` and `…/summarise-diagnosis` |
+| `src/components/review.js` | Auto-runs the summary when the review page opens, and draws the boxes on the film |
+| `src/components/dashboard.js` | Fills the Diagnosis column with Azure when the label is still the old first-sentence fallback |
 | `scripts/setup-azure-openai.sh` | Creates the Azure resources for you |
 
 ---
@@ -94,9 +94,11 @@ AZURE_OPENAI_DEPLOYMENT=gpt-4o-mini
 ./start-all.sh
 ```
 
-Open a case, then click **Summarise with Azure AI** under the findings
-carousel. Existing findings you have already accepted, rejected or typed in
-by hand are kept; only the untouched machine-generated ones are replaced.
+Open a case. The review page calls Azure on its own — there is no button to
+click. Existing findings you have already accepted, rejected or typed in by
+hand are kept; only the untouched machine-generated ones are replaced. A case
+that already has Azure boxes (`bboxSource` of `vision` or `zone`) is not sent
+again.
 
 ---
 
@@ -106,14 +108,17 @@ The full prompt lives in `SYSTEM_PROMPT` in `backend/utils/azureFindings.js`.
 It asks for strict JSON:
 
 ```json
-{"findings": [
+{"diagnosis": "No acute cardiopulmonary findings",
+ "findings": [
   {"label": "Clear lung fields",
    "detail": "The lungs are clear bilaterally without consolidation.",
    "location": "Both lungs",
    "size": "",
    "pattern": "Other",
    "confidence": 0.92,
-   "severity": "normal"}
+   "severity": "normal",
+   "zone": "both_lungs",
+   "bbox": [6, 12, 88, 60]}
 ]}
 ```
 
@@ -125,9 +130,15 @@ Two settings keep the output stable:
   effectively the same cards each time.
 
 The backend does not trust the response. `normalise()` in `azureFindings.js`
-caps the list at 6, forces `pattern` to one of the allowed values, clamps
-`confidence` into 0–1 (models often answer `92` when asked for `0.92`), and
-drops any finding with no label.
+caps the list at 6, forces `pattern` to one of the allowed values, and drops
+any finding with no label.
+
+Confidence is **not** the number Azure invented. Models score themselves at
+100% because they are quoting the report. `backend/utils/confidence.js`
+computes the badge from report hedges/certainty plus `imageSupport` (how
+clearly the film shows it). Routine "normal" image scores are capped, so the
+threshold slider can hide weaker cards. Hover a percentage on the review page
+to see the split.
 
 ### Tuning the cards
 

@@ -26,6 +26,14 @@ export function Header({ onLogout }) {
       el(
         "div",
         { class: "flex items-center gap-4 text-sm" },
+        el("button", {
+          class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-slate-700 hover:bg-slate-50",
+          onClick: () => setPage("patients"),
+        }, svgIcon("users", { size: 16 }), "Patients"),
+        el("button", {
+          class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-slate-700 hover:bg-slate-50",
+          onClick: () => setPage("cases"),
+        }, svgIcon("file-text", { size: 16 }), "Cases"),
         el("div", { class: "flex items-center gap-2 text-slate-700" },
           el("span", { class: "inline-flex items-center justify-center w-7 h-7 rounded-full bg-slate-900 text-white text-xs font-bold" },
             (state.user?.name || "?").charAt(0).toUpperCase()

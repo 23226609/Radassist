@@ -9,6 +9,9 @@ import { renderDashboardPage } from "./components/dashboard.js";
 import { renderNewCasePage } from "./components/newCase.js";
 import { renderReviewPage } from "./components/review.js";
 import { renderAuditPage } from "./components/audit.js";
+import { renderPatientsPage, renderPatientPage } from "./components/patients.js";
+import { renderCasesPage, renderCasePage } from "./components/cases.js";
+import { isReportPopup, renderReportViewPage } from "./components/reportView.js";
 import { el, mount } from "./dom.js";
 import "./index.css";
 
@@ -43,6 +46,20 @@ function render() {
     return;
   }
 
+  // ?view=report&caseId=... is opened as its own browser window.
+  // Don't remount if it's already up — a second pass (session refresh)
+  // would destroy the textareas the doctor is typing in.
+  if (isReportPopup()) {
+    if (app.dataset.reportPopup === "1") return;
+    app.dataset.reportPopup = "1";
+    const target = el("div");
+    mount(app,
+      el("div", { class: "min-h-screen bg-slate-50 text-slate-900" }, target)
+    );
+    renderReportViewPage({ target });
+    return;
+  }
+
   const target = el("div");
   let pageNode;
 
@@ -53,19 +70,16 @@ function render() {
     case "new":       pageNode = "new";       break;
     case "review":    pageNode = "review";    break;
     case "audit":     pageNode = "audit";     break;
+    case "patients":  pageNode = "patients";  break;
+    case "patient":   pageNode = "patient";   break;
+    case "cases":     pageNode = "cases";     break;
+    case "case":      pageNode = "case";      break;
     default:          pageNode = "dashboard";
   }
-
-  // Toast banner
-  const toastEl = state.toast
-    ? el("div", { class: "fixed top-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-lg shadow z-50" },
-        state.toast)
-    : null;
 
   mount(app,
     el("div", { class: "min-h-screen bg-slate-50 text-slate-900" },
       header,
-      toastEl,
       target
     )
   );
@@ -79,6 +93,14 @@ function render() {
     renderReviewPage({ target });
   } else if (pageNode === "audit") {
     renderAuditPage({ target });
+  } else if (pageNode === "patients") {
+    renderPatientsPage({ target });
+  } else if (pageNode === "patient") {
+    renderPatientPage({ target });
+  } else if (pageNode === "cases") {
+    renderCasesPage({ target });
+  } else if (pageNode === "case") {
+    renderCasePage({ target });
   }
 }
 

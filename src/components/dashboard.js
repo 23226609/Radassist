@@ -5,6 +5,11 @@ import { el, mount } from "../dom.js";
 import { state, setPage, toast } from "../state.js";
 import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
+import { needsAzureDiagnosis } from "../lib/diagnosis.js";
+import { paginate, paginationBar } from "../lib/pagination.js";
+
+const diagnosisRequested = new Set();
+const diagnosisPending = new Set();
 
 const STATUS_BADGE = {
   pending:    "bg-amber-50 text-amber-700",
@@ -30,6 +35,7 @@ export async function renderDashboardPage({ target }) {
   let loading = true;
   let error = "";
   let online = null;
+  let page = 1;
 
   async function refresh() {
     loading = true; error = ""; render();
@@ -39,12 +45,43 @@ export async function renderDashboardPage({ target }) {
       state.cases = cases;
       try { stats = (await api.stats()).stats; } catch { stats = null; }
       online = true;
+      fillDiagnoses(cases);
     } catch (err) {
       error = err.message; online = false;
     } finally {
       loading = false;
       render();
     }
+  }
+
+  async function fillDiagnoses(list) {
+    if (!["doctor", "admin"].includes(state.user?.role)) return;
+    const todo = (list || []).filter((c) => {
+      const id = c.caseId || c._id;
+      return id && needsAzureDiagnosis(c) && !diagnosisRequested.has(id);
+    });
+    await Promise.all(todo.slice(0, 6).map(async (c) => {
+      const id = c.caseId || c._id;
+      diagnosisRequested.add(id);
+      diagnosisPending.add(id);
+      render();
+      try {
+        const data = await api.summariseDiagnosis(id);
+        const updated = data.case;
+        if (updated) {
+          cases = cases.map((row) =>
+            (row.caseId === id || row._id === id) ? { ...row, ...updated } : row
+          );
+          const idx = state.cases.findIndex((row) => row.caseId === id || row._id === id);
+          if (idx >= 0) state.cases[idx] = { ...state.cases[idx], ...updated };
+        }
+      } catch (err) {
+        console.warn("[dashboard] Azure diagnosis skipped:", err.message);
+      } finally {
+        diagnosisPending.delete(id);
+        render();
+      }
+    }));
   }
 
   function deleteCase(c, e) {
@@ -69,21 +106,39 @@ export async function renderDashboardPage({ target }) {
       );
     }
 
+    function diagnosisCell(c) {
+      const id = c.caseId || c._id;
+      if (diagnosisPending.has(id)) {
+        return el("em", { class: "text-slate-400" }, "Summarising…");
+      }
+      if (c.diagnosis) return c.diagnosis;
+      return el("em", { class: "text-slate-400" }, "—");
+    }
+
     function row(c) {
       return el(
         "tr",
         {
           class: "border-t cursor-pointer hover:bg-slate-50",
-          onClick: () => { state.selectedCaseId = c.caseId || c._id; setPage("review"); },
+          onClick: () => { state.selectedCaseId = c.caseId || c._id; setPage("case"); },
         },
-        el("td", { class: "p-4 font-bold text-slate-900" }, c.patientId),
+        el("td", { class: "p-4 font-bold text-slate-900" },
+          el("button", {
+            class: "hover:text-cyan-700 hover:underline",
+            onClick: (e) => {
+              e.stopPropagation();
+              state.selectedPatientId = c.patientId;
+              setPage("patient");
+            },
+          }, c.patientId)
+        ),
         el("td", { class: "text-slate-600" }, c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : ""),
         el("td", {}, statusBadge(c.status)),
-        el("td", { class: "max-w-md" }, c.diagnosis || el("em", { class: "text-slate-400" }, "—")),
+        el("td", { class: "max-w-md" }, diagnosisCell(c)),
         el("td", { class: "space-x-1 whitespace-nowrap" },
           el("button", {
             class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-cyan-700 hover:bg-cyan-50 text-sm",
-            onClick: (e) => { e.stopPropagation(); state.selectedCaseId = c.caseId || c._id; setPage("review"); },
+            onClick: (e) => { e.stopPropagation(); state.selectedCaseId = c.caseId || c._id; setPage("case"); },
           }, svgIcon("eye", { size: 16 }), "View"),
           state.user?.role === "admin"
             ? el("button", {
@@ -95,7 +150,8 @@ export async function renderDashboardPage({ target }) {
       );
     }
 
-    const filtered = cases; // already filtered server-side
+    const filtered = paginate(cases, page);
+    page = filtered.page;
 
     const root = el(
       "main",
@@ -110,6 +166,14 @@ export async function renderDashboardPage({ target }) {
         el("div", { class: "flex gap-2" },
           el("button", {
             class: "inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50",
+            onClick: () => setPage("patients"),
+          }, svgIcon("users", { size: 16 }), "Patients"),
+          el("button", {
+            class: "inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50",
+            onClick: () => setPage("cases"),
+          }, svgIcon("file-text", { size: 16 }), "Cases"),
+          el("button", {
+            class: "inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50",
             onClick: () => setPage("audit"),
           }, svgIcon("list", { size: 16 }), "Audit log"),
           state.user?.role !== "nurse"
@@ -121,13 +185,9 @@ export async function renderDashboardPage({ target }) {
         )
       ),
 
-      // Status pill
-      el("div", { class: "mt-4" },
-        online === false
-          ? el("span", { class: "inline-block rounded-full bg-amber-50 text-amber-700 px-3 py-1 text-xs font-bold" },
-              "Backend offline — show cached data")
-          : el("span", { class: "inline-block rounded-full bg-green-50 text-green-700 px-3 py-1 text-xs font-bold" },
-              "Connected to RadAssist backend")
+      online === false && el("div", { class: "mt-4" },
+        el("span", { class: "inline-block rounded-full bg-amber-50 text-amber-700 px-3 py-1 text-xs font-bold" },
+          "Backend offline — show cached data")
       ),
 
       // Metric tiles
@@ -147,7 +207,7 @@ export async function renderDashboardPage({ target }) {
               placeholder: "Search Patient ID, case, diagnosis…",
               value: q,
               onInput: (e) => { q = e.target.value; state.pendingFilter.q = q; },
-              onChange: () => refresh(),
+              onChange: () => { page = 1; refresh(); },
             })
           ),
           el("div", { class: "flex items-center gap-2" },
@@ -155,7 +215,7 @@ export async function renderDashboardPage({ target }) {
             el("select", {
               class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600",
               value: status,
-              onChange: (e) => { status = e.target.value; state.pendingFilter.status = status; refresh(); },
+              onChange: (e) => { status = e.target.value; state.pendingFilter.status = status; page = 1; refresh(); },
             },
               el("option", { value: "all" }, "All statuses"),
               el("option", { value: "pending" }, "Pending"),
@@ -173,19 +233,22 @@ export async function renderDashboardPage({ target }) {
             )
           : loading
           ? el("div", { class: "p-10 text-center text-slate-400" }, "Loading cases…")
-          : filtered.length === 0
+          : filtered.total === 0
           ? el("div", { class: "p-10 text-center text-slate-400" }, "No cases match your filter.")
-          : el("div", { class: "overflow-x-auto" },
-              el("table", { class: "w-full min-w-[760px] text-left text-sm" },
-                el("thead", { class: "bg-slate-50 text-slate-600" },
-                  el("tr", {},
-                    ["Patient ID", "Date", "Status", "Diagnosis", "Actions"].map((h) =>
-                      el("th", { class: "p-4" }, h)
+          : el("div", {},
+              el("div", { class: "overflow-x-auto" },
+                el("table", { class: "w-full min-w-[760px] text-left text-sm" },
+                  el("thead", { class: "bg-slate-50 text-slate-600" },
+                    el("tr", {},
+                      ["Patient ID", "Date", "Status", "Diagnosis", "Actions"].map((h) =>
+                        el("th", { class: "p-4" }, h)
+                      )
                     )
-                  )
-                ),
-                el("tbody", {}, ...filtered.map(row))
-              )
+                  ),
+                  el("tbody", {}, ...filtered.items.map(row))
+                )
+              ),
+              paginationBar({ ...filtered, onPage: (n) => { page = n; render(); } })
             )
       )
     );

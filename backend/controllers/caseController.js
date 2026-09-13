@@ -8,6 +8,8 @@ const catchAsync = require('../utils/catchAsync');
 const addAuditLog = require('../utils/auditLogger');
 const { analyzeXray } = require('../utils/aiService');
 const azureFindings = require('../utils/azureFindings');
+const { downloadImage } = require('./_gridfs');
+const { upsertPatientFromCase } = require('./patientController');
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || require('os').tmpdir();
 const path = require('path');
@@ -152,6 +154,16 @@ exports.createCase = catchAsync(async (req, res, next) => {
 
   const caseId = newCaseId();
   const sentence = (reportText || '').split('.').filter(Boolean)[0] || 'AI report';
+  let diagnosis = sentence.slice(0, 120);
+  let diagnosisSource = 'local';
+  if (azureFindings.isConfigured() && (reportText || '').trim()) {
+    try {
+      diagnosis = await azureFindings.summariseDiagnosis(reportText);
+      diagnosisSource = 'azure';
+    } catch (err) {
+      console.warn('[createCase] Azure diagnosis skipped:', err.message);
+    }
+  }
 
   // Findings come straight from the AI service. Don't parse the report —
   // the AI model produces them as a structured JSON list with bbox / confidence
@@ -177,7 +189,8 @@ exports.createCase = catchAsync(async (req, res, next) => {
     age: age || '',
     sex: ['Female', 'Male', 'Other'].includes(sex) ? sex : '',
     history: history || '',
-    diagnosis: sentence.slice(0, 120),
+    diagnosis,
+    diagnosisSource,
     reportText,
     findings,
     status: 'completed',
@@ -190,6 +203,10 @@ exports.createCase = catchAsync(async (req, res, next) => {
     aiProvider: aiError ? '' : 'mlx_vlm',
     aiModel: aiError ? '' : aiModel,
   });
+
+  try { await upsertPatientFromCase(doc); } catch (err) {
+    console.warn('[createCase] patient upsert skipped:', err.message);
+  }
 
   await addAuditLog(
     req.user.userId,
@@ -242,10 +259,17 @@ exports.updateCase = catchAsync(async (req, res, next) => {
   }
 
   const oldStatus = c.status;
-  const { diagnosis, reportText, findings } = req.body || {};
-  if (diagnosis !== undefined) c.diagnosis = diagnosis;
-  if (reportText !== undefined) c.reportText = reportText;
-  if (Array.isArray(findings)) c.findings = findings;
+  const { diagnosis, reportText, findings, remarks } = req.body || {};
+  // A finalized report is locked. Clinicians can still leave remarks, but
+  // those notes must not rewrite the stored report or findings.
+  if (c.status === 'finalized') {
+    if (remarks !== undefined) c.remarks = remarks;
+  } else {
+    if (diagnosis !== undefined) c.diagnosis = diagnosis;
+    if (reportText !== undefined) c.reportText = reportText;
+    if (remarks !== undefined) c.remarks = remarks;
+    if (Array.isArray(findings)) c.findings = findings;
+  }
 
   await c.save();
 
@@ -332,31 +356,73 @@ exports.summariseFindings = catchAsync(async (req, res, next) => {
 
   let summarised;
   try {
-    summarised = await azureFindings.summariseFindings(c.reportText);
+    const image = await downloadImage(c.imageId);
+    summarised = await azureFindings.summariseFindings(c.reportText, image);
   } catch (err) {
     return next(ApiError.badRequest(err.message));
   }
-  if (summarised.length === 0) {
+  const findings = summarised.findings || [];
+  if (findings.length === 0) {
     return next(ApiError.badRequest('Azure AI did not return any findings for this report.'));
   }
 
   const kept = (c.findings || []).filter(
     (f) => f.status !== 'pending' || !['AI', 'Azure'].includes(f.source)
   );
-  c.findings = [...kept, ...summarised];
+  c.findings = [...kept, ...findings];
+  if (summarised.diagnosis) {
+    c.diagnosis = summarised.diagnosis;
+    c.diagnosisSource = 'azure';
+  }
   await c.save();
 
   await addAuditLog(
     req.user.userId,
     'CASE_UPDATED',
-    `Azure AI summarised ${summarised.length} findings for ${c.caseId || c._id}`,
+    `Azure AI summarised ${findings.length} findings for ${c.caseId || c._id}`,
     c.caseId || String(c._id)
   );
 
   res.json({
     success: true,
-    added: summarised.length,
+    added: findings.length,
     kept: kept.length,
     case: c.toObject(),
   });
+});
+
+// Dashboard Diagnosis column. Text-only, cheap, and allowed on finalized
+// cases because it does not rewrite the stored report.
+exports.summariseDiagnosis = catchAsync(async (req, res, next) => {
+  if (!azureFindings.isConfigured()) {
+    return next(ApiError.badRequest(
+      'Azure OpenAI is not configured on the server. See docs/azure-findings.md.'
+    ));
+  }
+
+  const c = await findCaseByAnyId(req.params.id);
+  if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
+  if (c.diagnosisSource === 'azure' && String(c.diagnosis || '').trim()) {
+    return res.json({ success: true, reused: true, case: c.toObject() });
+  }
+
+  let diagnosis;
+  try {
+    diagnosis = await azureFindings.summariseDiagnosis(c.reportText);
+  } catch (err) {
+    return next(ApiError.badRequest(err.message));
+  }
+
+  c.diagnosis = diagnosis;
+  c.diagnosisSource = 'azure';
+  await c.save();
+
+  await addAuditLog(
+    req.user.userId,
+    'CASE_UPDATED',
+    `Azure AI wrote diagnosis for ${c.caseId || c._id}`,
+    c.caseId || String(c._id)
+  );
+
+  res.json({ success: true, case: c.toObject() });
 });

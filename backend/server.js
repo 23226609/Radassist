@@ -13,6 +13,7 @@ const ApiError = require('./utils/ApiError');
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const caseRoutes = require('./routes/cases');
+const patientRoutes = require('./routes/patients');
 const imageRoutes = require('./routes/images');
 const auditRoutes = require('./routes/auditLogs');
 const statsRoutes = require('./routes/stats');
@@ -62,6 +63,7 @@ app.get('/api/health', async (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/cases', caseRoutes);
+app.use('/api/patients', patientRoutes);
 app.use('/api/images', imageRoutes);
 app.use('/api/audit-logs', auditRoutes);
 app.use('/api/stats', statsRoutes);
