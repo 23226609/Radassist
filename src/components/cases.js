@@ -242,29 +242,53 @@ export async function renderCasePage({ target }) {
     error = err.message || "Could not load this case.";
   }
 
-  async function saveRemarks() {
+  let saveTimer = null;
+  let persistChain = Promise.resolve();
+
+  function queueRemarksSync() {
     if (!localCase || !canRemark()) return;
-    busy = true;
-    paint();
-    try {
-      const data = await api.getCase(localCase.caseId || localCase._id);
-      const stored = unwrapLegacyReport(data.case || data);
-      const note = String(remarksDraft || "").trim();
-      const next = stored.status === "finalized"
-        ? { remarks: note }
-        : applyRemarksToReport(stored.reportText, note);
-      const updated = await api.updateCase(localCase.caseId || localCase._id, next);
-      localCase = unwrapLegacyReport(updated.case || { ...localCase, ...next });
-      remarksDraft = localCase.remarks || note;
-      toast(stored.status === "finalized"
-        ? "Remarks saved. The finalized report was not changed."
-        : "Remarks saved and added to the report.");
-    } catch (err) {
-      toast(err.message || "Could not save remarks.");
-    } finally {
-      busy = false;
-      paint();
-    }
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveRemarks({ silent: true }).catch(() => {});
+    }, 450);
+  }
+
+  async function saveRemarks({ silent } = {}) {
+    if (!localCase || !canRemark()) return;
+    clearTimeout(saveTimer);
+    const run = async () => {
+      if (!silent) {
+        busy = true;
+        paint();
+      }
+      try {
+        const data = await api.getCase(localCase.caseId || localCase._id);
+        const stored = unwrapLegacyReport(data.case || data);
+        const note = String(remarksDraft || "").trim();
+        const next = stored.status === "finalized"
+          ? { remarks: note }
+          : applyRemarksToReport(stored.reportText, note);
+        const updated = await api.updateCase(localCase.caseId || localCase._id, next);
+        localCase = unwrapLegacyReport(updated.case || { ...localCase, ...next });
+        remarksDraft = localCase.remarks || note;
+        if (!silent) {
+          toast(stored.status === "finalized"
+            ? "Remarks saved. The finalized report was not changed."
+            : "Remarks saved to MongoDB.");
+        }
+      } catch (err) {
+        toast(err.message || "Could not save remarks.");
+        if (silent) throw err;
+      } finally {
+        if (!silent) {
+          busy = false;
+          paint();
+        }
+      }
+    };
+    const pending = persistChain.then(run, run);
+    persistChain = pending.catch(() => {});
+    return pending;
   }
 
   async function deleteThis() {
@@ -376,7 +400,7 @@ export async function renderCasePage({ target }) {
                     placeholder: localCase.status === "finalized"
                       ? "Notes stay on this case. They are not added to the finalized report…"
                       : "Notes or extra findings to add to the report…",
-                    onInput: (e) => { remarksDraft = e.target.value; },
+                    onInput: (e) => { remarksDraft = e.target.value; queueRemarksSync(); },
                   }, remarksDraft)
                 : el("p", {
                     id: "case-remarks",
@@ -385,7 +409,7 @@ export async function renderCasePage({ target }) {
               el("p", { class: "mt-2 text-xs text-slate-500" },
                 localCase.status === "finalized"
                   ? "This case is finalized. Remarks are saved as notes only and are not written into the report."
-                  : "Saving adds these remarks to the stored report."
+                  : "Saving writes these remarks into the MongoDB report."
               )
             )
           )

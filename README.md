@@ -167,6 +167,8 @@ On open (doctor/admin, not finalized):
 2. Call `POST /api/cases/:id/summarise-findings` (Azure). Skip if cards are already calibrated Azure findings.
 3. On Azure miss/failure, parse the markdown report locally into up to six cards.
 
+Every edit of findings, remarks, or the report body is written to MongoDB (`cases.reportText` + `remarks` + `findings`). Typing auto-saves after a short pause; Save draft / Save remarks / Report / Word / PDF still flush immediately.
+
 Clinician can:
 
 - Edit label / location / size / pattern on non-finalized cases
@@ -174,14 +176,15 @@ Clinician can:
 - **Save draft** / **Finalize & approve**
 - **Mark urgent** / **Remove urgent** (allowed after finalize)
 - Save remarks (allowed after finalize; does **not** rewrite a finalized report)
-- **Report** — popup editor of stored `reportText`
-- **Word** / **PDF** — persist unsaved edits first, then download
+- **Report** — popup editor of stored `reportText` (also auto-saves to MongoDB)
+- **Word** / **PDF** — persist unsaved edits first, then download (includes the uploaded X-ray)
 
 Export composition (`src/lib/reportExport.js`):
 
-1. Body of `reportText`
-2. **Clinician-added findings** (manual cards)
-3. **Radiologist remarks**
+1. Uploaded chest X-ray (`imageId` from GridFS)
+2. Body of `reportText`
+3. **Clinician-added findings** (manual cards)
+4. **Radiologist remarks**
 
 Nurses see the film and cards read-only. They cannot save, finalize, or toggle urgent.
 

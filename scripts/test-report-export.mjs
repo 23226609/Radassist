@@ -1,6 +1,6 @@
 // scripts/test-report-export.mjs
 import assert from "node:assert";
-import { buildReportSections, buildReportPdfBytes, applyRemarksToReport, splitReportAndRemarks, composeReportText, MANUAL_FINDINGS_HEADING } from "../src/lib/reportExport.js";
+import { buildReportSections, buildReportPdfBytes, applyRemarksToReport, splitReportAndRemarks, composeReportText, MANUAL_FINDINGS_HEADING, parseImageMeta, fitImageBox } from "../src/lib/reportExport.js";
 
 let passed = 0;
 let failed = 0;
@@ -121,6 +121,53 @@ test("export sections include size and pattern for each finding", () => {
   });
   assert.equal(s.findings[0].size, "8 mm");
   assert.equal(s.findings[0].pattern, "Nodular");
+});
+
+function tinyJpeg() {
+  return Uint8Array.from([
+    0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01, 0x00, 0x48,
+    0x00, 0x48, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x03, 0x02, 0x02, 0x02, 0x02, 0x02, 0x03,
+    0x02, 0x02, 0x02, 0x03, 0x03, 0x03, 0x03, 0x04, 0x06, 0x04, 0x04, 0x04, 0x04, 0x04, 0x08, 0x06,
+    0x06, 0x05, 0x06, 0x09, 0x08, 0x0a, 0x0a, 0x09, 0x08, 0x09, 0x09, 0x0a, 0x0c, 0x0f, 0x0c, 0x0a,
+    0x0b, 0x0e, 0x0b, 0x09, 0x09, 0x0d, 0x11, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x11, 0x10, 0x0a, 0x0c,
+    0x12, 0x13, 0x12, 0x10, 0x13, 0x0f, 0x10, 0x10, 0x10, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x02,
+    0x00, 0x03, 0x01, 0x01, 0x11, 0x00, 0xff, 0xc4, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09, 0xff, 0xda, 0x00, 0x08,
+    0x01, 0x01, 0x00, 0x00, 0x3f, 0x00, 0x54, 0x05, 0x1f, 0xff, 0xd9,
+  ]);
+}
+
+test("reads JPEG width and height from the SOF marker", () => {
+  const meta = parseImageMeta(tinyJpeg());
+  assert.equal(meta.type, "jpg");
+  assert.equal(meta.width, 3);
+  assert.equal(meta.height, 2);
+});
+
+test("scales a large film down to the report box", () => {
+  const box = fitImageBox(2000, 1000, 500, 400);
+  assert.equal(box.width, 500);
+  assert.equal(box.height, 250);
+});
+
+test("PDF export embeds the uploaded X-ray", () => {
+  const jpeg = tinyJpeg();
+  const bytes = buildReportPdfBytes(
+    { caseId: "CASE-1", patientId: "PT-1", reportText: "The lungs are clear." },
+    { type: "jpg", bytes: jpeg, width: 3, height: 2, components: 1 }
+  );
+  const text = new TextDecoder("latin1").decode(bytes);
+  assert.ok(text.startsWith("%PDF-1.4"), "missing PDF header");
+  assert.ok(text.includes("/Subtype /Image"), "image XObject missing");
+  assert.ok(text.includes("/DCTDecode"), "JPEG stream missing");
+  assert.ok(text.includes("/Im1 Do"), "image is not drawn on the page");
+  assert.ok(text.includes("The lungs are clear."));
+  const plain = new TextDecoder("latin1").decode(buildReportPdfBytes({
+    caseId: "CASE-1",
+    patientId: "PT-1",
+    reportText: "The lungs are clear.",
+  }));
+  assert.ok(!plain.includes("/DCTDecode"), "text-only PDF should not embed an image");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

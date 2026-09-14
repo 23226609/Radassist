@@ -60,35 +60,61 @@ export async function renderReportViewPage({ target }) {
     error = err.message || "Could not load the report.";
   }
 
+  let saveTimer = null;
+  let persistChain = Promise.resolve();
+
+  function hintMongo(text) {
+    const n = document.getElementById("mongo-report-status");
+    if (n) n.textContent = text;
+  }
+
+  function queuePersist() {
+    if (!canRemark()) return;
+    hintMongo("Saving to MongoDB…");
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      persist({ silent: true }).catch(() => {});
+    }, 450);
+  }
+
   async function persist({ silent } = {}) {
     if (!stored || !canRemark()) return;
-    if (!silent) {
-      busy = true;
-      paint();
-    }
-    try {
-      const next = canEdit()
-        ? applyRemarksToReport(draftBody, remarks)
-        : { remarks: String(remarks || "").trim() };
-      const updated = await api.updateCase(caseId, next);
-      stored = unwrapLegacyReport(updated.case || { ...stored, ...next });
-      const split = splitReportAndRemarks(stored.reportText || "");
-      draftBody = split.body;
-      remarks = stored.remarks || next.remarks || remarks;
+    clearTimeout(saveTimer);
+    const run = async () => {
       if (!silent) {
-        toast(canEdit()
-          ? "Report saved."
-          : "Remarks saved. The finalized report was not changed.");
-      }
-    } catch (err) {
-      toast(err.message || "Could not save.");
-      if (silent) throw err;
-    } finally {
-      if (!silent) {
-        busy = false;
+        busy = true;
         paint();
       }
-    }
+      try {
+        hintMongo("Saving to MongoDB…");
+        const next = canEdit()
+          ? applyRemarksToReport(draftBody, remarks)
+          : { remarks: String(remarks || "").trim() };
+        const updated = await api.updateCase(caseId, next);
+        stored = unwrapLegacyReport(updated.case || { ...stored, ...next });
+        const split = splitReportAndRemarks(stored.reportText || "");
+        draftBody = split.body;
+        remarks = stored.remarks || next.remarks || remarks;
+        hintMongo(canEdit() ? "Report saved in MongoDB." : "Notes saved in MongoDB.");
+        if (!silent) {
+          toast(canEdit()
+            ? "Report saved in MongoDB."
+            : "Remarks saved. The finalized report was not changed.");
+        }
+      } catch (err) {
+        hintMongo("");
+        toast(err.message || "Could not save.");
+        if (silent) throw err;
+      } finally {
+        if (!silent) {
+          busy = false;
+          paint();
+        }
+      }
+    };
+    const pending = persistChain.then(run, run);
+    persistChain = pending.catch(() => {});
+    return pending;
   }
 
   async function download(kind) {
@@ -154,7 +180,7 @@ export async function renderReportViewPage({ target }) {
                   id: "report-body",
                   class: "input min-h-[360px] font-sans text-sm leading-6",
                   rows: 18,
-                  onInput: (e) => { draftBody = e.target.value; },
+                  onInput: (e) => { draftBody = e.target.value; queuePersist(); },
                 }, draftBody)
               : el("pre", { class: "whitespace-pre-wrap font-sans text-sm leading-6 text-slate-800" },
                   draftBody || "No report has been saved for this case yet."
@@ -169,7 +195,7 @@ export async function renderReportViewPage({ target }) {
                     placeholder: stored?.status === "finalized"
                       ? "Notes stay on this case. They are not added to the finalized report…"
                       : "Notes or extra findings to add to the report…",
-                    onInput: (e) => { remarks = e.target.value; },
+                    onInput: (e) => { remarks = e.target.value; queuePersist(); },
                   }, remarks)
                 : el("p", { class: "mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-800" },
                     remarks || "No remarks have been added."
@@ -178,8 +204,9 @@ export async function renderReportViewPage({ target }) {
             canRemark() && el("p", { class: "mt-3 text-xs text-slate-500" },
               stored?.status === "finalized"
                 ? "The report is locked. Remarks are saved as notes only and are not written into the report, Word, or PDF."
-                : "Edits are saved back to MongoDB. Downloads always use that latest saved copy."
-            )
+                : "Every edit is saved to MongoDB on this case (reportText). Downloads always use that latest saved copy."
+            ),
+            canRemark() && el("p", { id: "mongo-report-status", class: "mt-1 text-xs font-medium text-cyan-700" })
           )
     );
     mount(target, root);

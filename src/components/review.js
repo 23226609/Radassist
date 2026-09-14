@@ -402,6 +402,26 @@ export async function renderReviewPage({ target }) {
   localCase = unwrapLegacyReport(localCase);
   syncRemarksFromCase();
 
+  function hintMongo(text) {
+    const n = document.getElementById("mongo-report-status");
+    if (n) n.textContent = text;
+  }
+
+  let saveTimer = null;
+  let persistChain = Promise.resolve();
+
+  function queueReportSync() {
+    if (state.user?.role === "nurse" || !getEffectiveCaseId()) return;
+    hintMongo("Saving to MongoDB…");
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      persistClinicianEdits().catch((err) => {
+        hintMongo("");
+        toast(err.message || "Could not save the report.");
+      });
+    }, 450);
+  }
+
   function patchFinding(id, patch, { refresh = false } = {}) {
     localCase = {
       ...localCase,
@@ -410,6 +430,7 @@ export async function renderReviewPage({ target }) {
     // Text fields keep their own caret — remounting on every keystroke made
     // the remarks box and finding inputs feel like they wouldn't accept typing.
     if (refresh) render();
+    queueReportSync();
   }
 
   function addFinding() {
@@ -432,6 +453,7 @@ export async function renderReviewPage({ target }) {
     localCase = { ...localCase, findings: next };
     carouselIndex = next.length - 1;
     render();
+    queueReportSync();
   }
 
   function removeFinding(id) {
@@ -440,6 +462,7 @@ export async function renderReviewPage({ target }) {
       findings: (localCase.findings || []).filter((f) => !(f._id === id || f.id === id)),
     };
     render();
+    queueReportSync();
   }
 
   function applyLocalEdits(reportText, { remarks = remarksDraft } = {}) {
@@ -462,29 +485,39 @@ export async function renderReviewPage({ target }) {
   }
 
   async function persistClinicianEdits() {
-    const data = await api.getCase(getEffectiveCaseId());
-    const stored = unwrapLegacyReport(data.case || data);
-    const note = String(remarksDraft || "").trim();
-    if (stored.status === "finalized" || state.user?.role === "nurse") {
-      if (state.user?.role !== "nurse") {
-        const updated = await api.updateCase(getEffectiveCaseId(), { remarks: note });
-        const next = unwrapLegacyReport(updated.case || { ...stored, remarks: note });
-        syncFromPersisted(next, { remarks: note });
-        return next;
+    clearTimeout(saveTimer);
+    const run = async () => {
+      hintMongo("Saving to MongoDB…");
+      const data = await api.getCase(getEffectiveCaseId());
+      const stored = unwrapLegacyReport(data.case || data);
+      const note = String(remarksDraft || "").trim();
+      if (stored.status === "finalized" || state.user?.role === "nurse") {
+        if (state.user?.role !== "nurse") {
+          const updated = await api.updateCase(getEffectiveCaseId(), { remarks: note });
+          const next = unwrapLegacyReport(updated.case || { ...stored, remarks: note });
+          syncFromPersisted(next, { remarks: note });
+          hintMongo("Notes saved in MongoDB.");
+          return next;
+        }
+        hintMongo("");
+        return stored;
       }
-      return stored;
-    }
-    const composed = applyLocalEdits(stored.reportText, { remarks: note });
-    const payload = {
-      diagnosis: localCase.diagnosis,
-      reportText: composed.reportText,
-      remarks: composed.remarks,
-      findings: localCase.findings,
+      const composed = applyLocalEdits(stored.reportText, { remarks: note });
+      const payload = {
+        diagnosis: localCase.diagnosis,
+        reportText: composed.reportText,
+        remarks: composed.remarks,
+        findings: localCase.findings,
+      };
+      const updated = await api.updateCase(getEffectiveCaseId(), payload);
+      const next = unwrapLegacyReport(updated.case || { ...stored, ...payload });
+      syncFromPersisted(next, composed);
+      hintMongo("Report saved in MongoDB.");
+      return next;
     };
-    const updated = await api.updateCase(getEffectiveCaseId(), payload);
-    const next = unwrapLegacyReport(updated.case || { ...stored, ...payload });
-    syncFromPersisted(next, composed);
-    return next;
+    const pending = persistChain.then(run, run);
+    persistChain = pending.catch(() => {});
+    return pending;
   }
 
   async function saveDraft() {
@@ -864,13 +897,14 @@ export async function renderReviewPage({ target }) {
               placeholder: localCase.status === "finalized"
                 ? "Notes stay on this case. They are not added to the finalized report…"
                 : "Notes or extra findings to add to the report…",
-              onInput: (e) => { remarksDraft = e.target.value; remarksDirty = true; },
+              onInput: (e) => { remarksDraft = e.target.value; remarksDirty = true; queueReportSync(); },
             }, remarksDraft),
             el("p", { class: "mt-2 text-xs text-slate-500" },
               localCase.status === "finalized"
                 ? "This case is finalized. Remarks are saved as notes only and are not written into the report, Word, or PDF."
-                : "Saving adds these remarks to the stored report. Word and PDF always download that latest saved copy."
-            )
+                : "Edits are written back to MongoDB (reportText on this case). Word and PDF always use that saved copy."
+            ),
+            canRemark && el("p", { id: "mongo-report-status", class: "mt-1 text-xs font-medium text-cyan-700" })
           )
         )
       )
