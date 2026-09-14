@@ -10,6 +10,7 @@ import { applyRemarksToReport, splitReportAndRemarks } from "../lib/reportExport
 import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
 import { urgentBadge, patientDisplayName } from "../lib/tags.js";
+import { PAGE, searchField, statusChips, emptyState, pageHeading, sortWorklist } from "../lib/ui.js";
 
 const STATUS_BADGE = {
   pending: "bg-amber-50 text-amber-700",
@@ -43,6 +44,7 @@ function openReview(caseId) {
 export async function renderCasesPage({ target }) {
   let q = "";
   let status = "all";
+  let urgentOnly = false;
   let cases = [];
   let loading = true;
   let error = "";
@@ -70,7 +72,8 @@ export async function renderCasesPage({ target }) {
     render();
     try {
       const data = await api.listCases({ status: status === "all" ? "" : status, q });
-      cases = data.cases || [];
+      cases = sortWorklist(data.cases || []);
+      if (urgentOnly) cases = cases.filter((c) => c.urgent);
       for (const id of [...selected]) {
         if (!cases.some((c) => caseIdOf(c) === id)) selected.delete(id);
       }
@@ -82,48 +85,68 @@ export async function renderCasesPage({ target }) {
     }
   }
 
+  function setFilter(next, { urgent = false } = {}) {
+    status = next;
+    urgentOnly = urgent;
+    page = 1;
+    selected.clear();
+    refresh();
+  }
+
   function render() {
+    const chipValue = urgentOnly ? "urgent" : status;
     const root = el(
       "main",
-      { class: "mx-auto max-w-7xl px-5 py-8" },
-      el("button", {
-        class: "mb-4 inline-flex items-center gap-1 text-slate-700 hover:text-slate-900",
-        onClick: () => setPage("dashboard"),
-      }, svgIcon("arrow-left", { size: 16 }), "Dashboard"),
-      el("div", {},
-        el("h1", { class: "text-3xl font-bold text-slate-900" }, "Cases"),
-        el("p", { class: "mt-1 text-slate-500" }, "Open a case to see history, diagnosis, findings, and remarks.")
-      ),
+      { class: PAGE },
+      pageHeading({
+        title: "Cases",
+        subtitle: "Urgent studies stay at the top. Press / to search.",
+        actions: state.user?.role !== "nurse"
+          ? el("button", {
+              class: "inline-flex items-center gap-2 rounded-xl bg-cyan-600 px-4 py-2 font-semibold text-white hover:bg-cyan-700",
+              onClick: () => setPage("new"),
+            }, svgIcon("plus", { size: 16 }), "New case")
+          : null,
+      }),
       el("section", { class: "card mt-6 p-0 overflow-hidden" },
-        el("div", { class: "flex flex-wrap gap-3 border-b p-4" },
-          el("div", { class: "relative flex-1 min-w-[200px]" },
-            svgIcon("search", { size: 16, class: "absolute left-3 top-3 text-slate-400" }),
-            el("input", {
-              class: "w-full rounded-xl border border-slate-300 bg-white pl-10 pr-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100",
-              placeholder: "Search case, patient, diagnosis…",
+        el("div", { class: "flex flex-col gap-3 border-b p-4" },
+          el("div", { class: "flex flex-wrap gap-3" },
+            searchField({
               value: q,
-              onInput: (e) => { q = e.target.value; },
-              onChange: () => { page = 1; selected.clear(); refresh(); },
-            })
+              placeholder: "Search case, patient, diagnosis…",
+              onQuery: (value) => { q = value; },
+              onSearch: () => { page = 1; selected.clear(); refresh(); },
+            }),
+            el("select", {
+              class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600",
+              value: status,
+              onChange: (e) => setFilter(e.target.value),
+            },
+              el("option", { value: "all" }, "All statuses"),
+              el("option", { value: "pending" }, "Pending"),
+              el("option", { value: "completed" }, "Completed"),
+              el("option", { value: "finalized" }, "Finalized")
+            ),
+            isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })
           ),
-          el("select", {
-            class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600",
-            value: status,
-            onChange: (e) => { status = e.target.value; page = 1; selected.clear(); refresh(); },
-          },
-            el("option", { value: "all" }, "All statuses"),
-            el("option", { value: "pending" }, "Pending"),
-            el("option", { value: "completed" }, "Completed"),
-            el("option", { value: "finalized" }, "Finalized")
-          ),
-          isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })
+          statusChips({
+            value: chipValue,
+            extra: [{ id: "urgent", label: "Urgent" }],
+            onChange: (id) => setFilter(id === "urgent" ? "all" : id, { urgent: id === "urgent" }),
+          })
         ),
         error
           ? el("div", { class: "p-6 text-red-700" }, error)
           : loading
           ? el("div", { class: "p-10 text-center text-slate-400" }, "Loading cases…")
           : cases.length === 0
-          ? el("div", { class: "p-10 text-center text-slate-400" }, "No cases match your filter.")
+          ? emptyState({
+              icon: "file-text",
+              title: "No cases match this filter",
+              hint: "Clear the search or add a new X-ray case.",
+              actionLabel: state.user?.role !== "nurse" ? "New case" : null,
+              onAction: () => setPage("new"),
+            })
           : (() => {
               const paged = paginate(cases, page);
               page = paged.page;
@@ -134,7 +157,7 @@ export async function renderCasesPage({ target }) {
                     el("thead", { class: "bg-slate-50 text-slate-600" },
                       el("tr", {},
                         isAdmin() ? headerCheckbox(pageIds, selected, (on) => { togglePage(selected, pageIds, on); render(); }) : null,
-                        ["Case", "Patient", "Date", "Status", "Diagnosis"].map((h) =>
+                        ["Case", "Patient", "Date", "Status", "Diagnosis", "Actions"].map((h) =>
                           el("th", { class: "p-4" }, h)
                         )
                       )
@@ -142,7 +165,7 @@ export async function renderCasesPage({ target }) {
                     el("tbody", {},
                       ...paged.items.map((c) =>
                         el("tr", {
-                          class: "border-t cursor-pointer hover:bg-slate-50",
+                          class: "border-t cursor-pointer hover:bg-cyan-50/60",
                           onClick: () => openCase(caseIdOf(c)),
                         },
                           isAdmin() ? rowCheckbox(caseIdOf(c), selected, (id, on) => { toggleSelected(selected, id, on); render(); }) : null,
@@ -168,7 +191,13 @@ export async function renderCasesPage({ target }) {
                             c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : "—"
                           ),
                           el("td", {}, statusBadge(c.status)),
-                          el("td", { class: "max-w-md" }, c.diagnosis || el("em", { class: "text-slate-400" }, "—"))
+                          el("td", { class: "max-w-md" }, c.diagnosis || el("em", { class: "text-slate-400" }, "—")),
+                          el("td", { class: "whitespace-nowrap" },
+                            el("button", {
+                              class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-cyan-700 hover:bg-cyan-50 text-sm",
+                              onClick: (e) => { e.stopPropagation(); openReview(caseIdOf(c)); },
+                            }, svgIcon("image", { size: 16 }), "Review")
+                          )
                         )
                       )
                     )

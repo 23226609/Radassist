@@ -2,11 +2,12 @@
 // Admin/doctor-only audit log page with simple filtering.
 
 import { el, mount } from "../dom.js";
-import { state, setPage, toast } from "../state.js";
+import { state, toast } from "../state.js";
 import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
+import { PAGE, searchField, emptyState, pageHeading } from "../lib/ui.js";
 
 const ACTION_TONE = {
   LOGIN: "bg-cyan-50 text-cyan-700",
@@ -90,29 +91,22 @@ export async function renderAuditPage({ target }) {
   function render() {
     const root = el(
       "main",
-      { class: "mx-auto max-w-7xl px-5 py-8" },
-      el("button", {
-        class: "mb-4 inline-flex items-center gap-1 text-slate-700 hover:text-slate-900",
-        onClick: () => setPage("dashboard"),
-      }, svgIcon("arrow-left", { size: 16 }), "Dashboard"),
-      el("h1", { class: "text-3xl font-bold text-slate-900" }, "Audit log"),
-      el("p", { class: "text-slate-500 mt-1" },
-        "Tamper-evident trail of logins, case edits, AI generations and finalizations. ",
-        isAdmin() ? "Admins can review and delete entries." : "Doctors see case activity."
-      ),
+      { class: PAGE },
+      pageHeading({
+        title: "Audit log",
+        subtitle: isAdmin()
+          ? "Tamper-evident trail of logins, case edits, AI work, and deletions."
+          : "Doctors can review case activity. Press / to search.",
+      }),
 
       el("section", { class: "card mt-6 p-0 overflow-hidden" },
         el("div", { class: "flex gap-3 border-b p-4 flex-wrap" },
-          el("div", { class: "relative flex-1 min-w-[200px]" },
-            svgIcon("search", { size: 16, class: "absolute left-3 top-3 text-slate-400" }),
-            el("input", {
-              class: "w-full rounded-xl border border-slate-300 bg-white pl-10 pr-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100",
-              placeholder: "Search details, action, user, case id…",
-              value: q,
-              onInput: (e) => (q = e.target.value),
-              onChange: () => { page = 1; selected.clear(); refresh(); },
-            })
-          ),
+          searchField({
+            value: q,
+            placeholder: "Search details, action, user, case id…",
+            onQuery: (value) => { q = value; },
+            onSearch: () => { page = 1; selected.clear(); refresh(); },
+          }),
           el("select", {
             class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600",
             value: action,
@@ -129,7 +123,11 @@ export async function renderAuditPage({ target }) {
           : loading
           ? el("p", { class: "p-10 text-center text-slate-400" }, "Loading…")
           : logs.length === 0
-          ? el("p", { class: "p-10 text-center text-slate-400" }, "No matching log entries.")
+          ? emptyState({
+              icon: "list",
+              title: "No matching log entries",
+              hint: "Try another action filter or a shorter search.",
+            })
           : (() => {
               const paged = paginate(logs, page);
               page = paged.page;

@@ -9,6 +9,7 @@ import { needsAzureDiagnosis } from "../lib/diagnosis.js";
 import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
 import { urgentBadge, patientDisplayName } from "../lib/tags.js";
+import { PAGE, searchField, statusChips, metricCard, emptyState, pageHeading, sortWorklist } from "../lib/ui.js";
 
 const diagnosisRequested = new Set();
 const diagnosisPending = new Set();
@@ -31,7 +32,8 @@ export async function renderDashboardPage({ target }) {
   // State scoped to this render call so we can re-fetch without leaking
   // listeners.
   let q = state.pendingFilter.q;
-  let status = state.pendingFilter.status;
+  let status = state.pendingFilter.status || "all";
+  let urgentOnly = Boolean(state.pendingFilter.urgentOnly);
   let cases = [];
   let stats = null;
   let loading = true;
@@ -45,8 +47,9 @@ export async function renderDashboardPage({ target }) {
   async function refresh() {
     loading = true; error = ""; render();
     try {
-      const data = await api.listCases({ status: status === "all" ? "" : status, q });
-      cases = data.cases || [];
+      const data = await api.listCases({ status: status === "all" || status === "urgent" ? "" : status, q });
+      cases = sortWorklist(data.cases || []);
+      if (urgentOnly) cases = cases.filter((c) => c.urgent);
       state.cases = cases;
       for (const id of [...selected]) {
         if (!cases.some((c) => caseIdOf(c) === id)) selected.delete(id);
@@ -92,6 +95,16 @@ export async function renderDashboardPage({ target }) {
     }));
   }
 
+  function setFilter(next, { urgent = false } = {}) {
+    status = next;
+    urgentOnly = urgent;
+    state.pendingFilter.status = next;
+    state.pendingFilter.urgentOnly = urgent;
+    page = 1;
+    selected.clear();
+    refresh();
+  }
+
   function deleteSelected() {
     const ids = [...selected];
     if (!ids.length) return;
@@ -109,14 +122,8 @@ export async function renderDashboardPage({ target }) {
     const totalFinalized = stats?.finalizedCases ?? cases.filter((c) => c.status === "finalized").length;
     const totalPending = stats?.pendingCases ?? cases.filter((c) => c.status === "pending").length;
     const totalCases = stats?.totalCases ?? cases.length;
-
-    function metric(n, label, tone) {
-      return el("div", { class: "card" },
-        el("p", { class: "text-slate-500 text-sm" }, label),
-        el("b", { class: "text-3xl text-slate-900 mt-1 block" }, String(n)),
-        tone ? el("div", { class: `mt-2 h-1 rounded ${tone}` }) : null,
-      );
-    }
+    const totalUrgent = stats?.urgentCases ?? cases.filter((c) => c.urgent).length;
+    const chipValue = urgentOnly ? "urgent" : status;
 
     function diagnosisCell(c) {
       const id = c.caseId || c._id;
@@ -132,7 +139,7 @@ export async function renderDashboardPage({ target }) {
       return el(
         "tr",
         {
-          class: "border-t cursor-pointer hover:bg-slate-50",
+          class: "border-t cursor-pointer hover:bg-cyan-50/60",
           onClick: () => { state.selectedCaseId = id; setPage("case"); },
         },
         isAdmin() ? rowCheckbox(id, selected, (rowId, on) => { toggleSelected(selected, rowId, on); render(); }) : null,
@@ -159,7 +166,11 @@ export async function renderDashboardPage({ target }) {
           el("button", {
             class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-cyan-700 hover:bg-cyan-50 text-sm",
             onClick: (e) => { e.stopPropagation(); state.selectedCaseId = id; setPage("case"); },
-          }, svgIcon("eye", { size: 16 }), "View")
+          }, svgIcon("eye", { size: 16 }), "View"),
+          el("button", {
+            class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-slate-600 hover:bg-slate-100 text-sm",
+            onClick: (e) => { e.stopPropagation(); state.selectedCaseId = id; setPage("review"); },
+          }, svgIcon("image", { size: 16 }), "Review")
         )
       );
     }
@@ -170,75 +181,73 @@ export async function renderDashboardPage({ target }) {
 
     const root = el(
       "main",
-      { class: "mx-auto max-w-7xl px-5 py-8" },
+      { class: PAGE },
 
-      // Top header
-      el("div", { class: "flex justify-between items-center gap-3 flex-wrap" },
-        el("div", {},
-          el("h1", { class: "text-3xl font-bold text-slate-900" }, "Case dashboard"),
-          el("p", { class: "text-slate-500 mt-1" }, "Manage reporting progress across all patients.")
-        ),
-        el("div", { class: "flex gap-2" },
-          el("button", {
-            class: "inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50",
-            onClick: () => setPage("patients"),
-          }, svgIcon("users", { size: 16 }), "Patients"),
-          el("button", {
-            class: "inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50",
-            onClick: () => setPage("cases"),
-          }, svgIcon("file-text", { size: 16 }), "Cases"),
-          el("button", {
-            class: "inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50",
-            onClick: () => setPage("audit"),
-          }, svgIcon("list", { size: 16 }), "Audit log"),
-          state.user?.role !== "nurse"
-            ? el("button", {
-                class: "inline-flex items-center gap-2 rounded-xl bg-cyan-600 px-4 py-2 font-semibold text-white hover:bg-cyan-700",
-                onClick: () => setPage("new"),
-              }, svgIcon("plus", { size: 16 }), "New case")
-            : null
-        )
-      ),
+      pageHeading({
+        title: "Worklist",
+        subtitle: "Urgent cases stay at the top. Click a metric or chip to filter.",
+        actions: state.user?.role !== "nurse"
+          ? el("button", {
+              class: "inline-flex items-center gap-2 rounded-xl bg-cyan-600 px-4 py-2 font-semibold text-white hover:bg-cyan-700",
+              onClick: () => setPage("new"),
+            }, svgIcon("plus", { size: 16 }), "New case")
+          : null,
+      }),
 
       online === false && el("div", { class: "mt-4" },
         el("span", { class: "inline-block rounded-full bg-amber-50 text-amber-700 px-3 py-1 text-xs font-bold" },
-          "Backend offline — show cached data")
+          "Backend offline — showing cached data")
       ),
 
-      // Metric tiles
-      el("div", { class: "mt-6 grid gap-4 sm:grid-cols-3" },
-        metric(totalCases, "Total cases", "bg-cyan-600"),
-        metric(totalFinalized, "Finalized", "bg-green-600"),
-        metric(totalPending, "Pending review", "bg-amber-500"),
+      el("div", { class: "mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4" },
+        metricCard({
+          n: totalCases, label: "Total cases", tone: "bg-cyan-600",
+          active: status === "all" && !urgentOnly,
+          onClick: () => setFilter("all"),
+        }),
+        metricCard({
+          n: totalUrgent, label: "Urgent", tone: "bg-red-500",
+          active: urgentOnly,
+          onClick: () => setFilter("all", { urgent: true }),
+        }),
+        metricCard({
+          n: totalFinalized, label: "Finalized", tone: "bg-green-600",
+          active: status === "finalized" && !urgentOnly,
+          onClick: () => setFilter("finalized"),
+        }),
+        metricCard({
+          n: totalPending, label: "Pending review", tone: "bg-amber-500",
+          active: status === "pending" && !urgentOnly,
+          onClick: () => setFilter("pending"),
+        }),
       ),
 
-      // Filter / search
       el("section", { class: "card mt-6 p-0 overflow-hidden" },
-        el("div", { class: "flex gap-3 border-b p-4 flex-wrap" },
-          el("div", { class: "relative flex-1 min-w-[200px]" },
-            svgIcon("search", { size: 16, class: "absolute left-3 top-3 text-slate-400" }),
-            el("input", {
-              class: "w-full rounded-xl border border-slate-300 bg-white pl-10 pr-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100",
-              placeholder: "Search Patient ID, case, diagnosis…",
+        el("div", { class: "flex flex-col gap-3 border-b p-4" },
+          el("div", { class: "flex flex-wrap items-center gap-3" },
+            searchField({
               value: q,
-              onInput: (e) => { q = e.target.value; state.pendingFilter.q = q; },
-              onChange: () => { page = 1; selected.clear(); refresh(); },
-            })
-          ),
-          el("div", { class: "flex items-center gap-2" },
-            svgIcon("filter", { size: 16, class: "text-slate-500" }),
+              placeholder: "Search Patient ID, case, diagnosis…",
+              onQuery: (value) => { q = value; state.pendingFilter.q = value; },
+              onSearch: () => { page = 1; selected.clear(); refresh(); },
+            }),
             el("select", {
               class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600",
-              value: status,
-              onChange: (e) => { status = e.target.value; state.pendingFilter.status = status; page = 1; selected.clear(); refresh(); },
+              value: status === "urgent" ? "all" : status,
+              onChange: (e) => setFilter(e.target.value),
             },
               el("option", { value: "all" }, "All statuses"),
               el("option", { value: "pending" }, "Pending"),
               el("option", { value: "completed" }, "Completed"),
               el("option", { value: "finalized" }, "Finalized")
-            )
+            ),
+            isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })
           ),
-          isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })
+          statusChips({
+            value: chipValue,
+            extra: [{ id: "urgent", label: "Urgent" }],
+            onChange: (id) => setFilter(id === "urgent" ? "all" : id, { urgent: id === "urgent" }),
+          })
         ),
 
         // Table
@@ -250,7 +259,13 @@ export async function renderDashboardPage({ target }) {
           : loading
           ? el("div", { class: "p-10 text-center text-slate-400" }, "Loading cases…")
           : filtered.total === 0
-          ? el("div", { class: "p-10 text-center text-slate-400" }, "No cases match your filter.")
+          ? emptyState({
+              icon: "file-text",
+              title: "No cases match this filter",
+              hint: "Try another status, or add a new X-ray case.",
+              actionLabel: state.user?.role !== "nurse" ? "New case" : null,
+              onAction: () => setPage("new"),
+            })
           : el("div", {},
               el("div", { class: "overflow-x-auto" },
                 el("table", { class: "w-full min-w-[760px] text-left text-sm" },

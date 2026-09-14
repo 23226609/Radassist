@@ -3,7 +3,7 @@
 
 import { state, setState, subscribe, setPage } from "./state.js";
 import { api, getSession } from "./api.js";
-import { Header } from "./components/header.js";
+import { Shell } from "./components/header.js";
 import { renderLoginPage, renderRegisterPage } from "./components/login.js";
 import { renderDashboardPage } from "./components/dashboard.js";
 import { renderNewCasePage } from "./components/newCase.js";
@@ -61,11 +61,8 @@ function render() {
     return;
   }
 
-  const target = el("div");
   let pageNode;
 
-  // Build header + selected page.
-  const header = Header({ onLogout: logout });
   switch (state.page) {
     case "dashboard": pageNode = "dashboard"; break;
     case "new":       pageNode = "new";       break;
@@ -79,12 +76,9 @@ function render() {
     default:          pageNode = "dashboard";
   }
 
-  mount(app,
-    el("div", { class: "min-h-screen bg-slate-50 text-slate-900" },
-      header,
-      target
-    )
-  );
+  const shell = Shell({ onLogout: logout });
+  mount(app, shell.root);
+  const target = shell.main;
 
   // Now mount the page content into target.
   if (pageNode === "dashboard") {

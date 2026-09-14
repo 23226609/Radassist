@@ -11,7 +11,7 @@ export const state = {
   cases: [],          // all cases cached in memory
   selectedCaseId: null,
   selectedPatientId: null,
-  pendingFilter: { status: "all", q: "" },
+  pendingFilter: { status: "all", q: "", urgentOnly: false },
   loading: false,
   errorMsg: "",
   toast: "",          // transient banner text
@@ -42,12 +42,15 @@ export function toast(msg, ms = 3500) {
   if (!host && typeof document !== "undefined" && document.body) {
     host = document.createElement("div");
     host.id = "radassist-toast";
-    host.className = "fixed top-4 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-slate-900 px-4 py-2 text-sm text-white shadow";
+    host.className = "pointer-events-none fixed bottom-5 left-1/2 z-50 -translate-x-1/2 rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white shadow-lg";
     document.body.appendChild(host);
   }
   if (!host) return;
   host.textContent = text;
   host.hidden = !text;
+  host.classList.remove("toast-in");
+  void host.offsetWidth;
+  if (text) host.classList.add("toast-in");
   clearTimeout(toast._timer);
   toast._timer = text
     ? setTimeout(() => {

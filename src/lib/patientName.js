@@ -39,3 +39,8 @@ export function nameFieldsFrom(input = {}) {
   });
   return { firstName, middleName, lastName, name };
 }
+
+export function tidyNamePart(s) {
+  return String(s || "").replace(/\s+/g, " ").trim();
+}
+

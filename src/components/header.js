@@ -1,58 +1,141 @@
-// src/components/header.js
+// App chrome: sidebar on desktop, drawer on mobile.
+
 import { el } from "../dom.js";
 import { state, setPage } from "../state.js";
 import { svgIcon } from "./icons.js";
+import { bindListHotkeys } from "../lib/ui.js";
 
-export function Header({ onLogout }) {
-  return el(
-    "header",
-    { class: "border-b bg-white sticky top-0 z-30" },
-    el(
-      "div",
-      { class: "mx-auto flex max-w-7xl items-center justify-between px-5 py-3" },
-      el(
-        "button",
-        {
-          class: "flex items-center gap-2 font-bold text-slate-900",
-          onClick: () => setPage("dashboard"),
-        },
-        el(
-          "span",
-          { class: "inline-flex items-center justify-center rounded-lg bg-cyan-600 text-white p-1.5" },
-          svgIcon("activity", { size: 18 })
-        ),
-        "RadAssist AI"
+function closeDrawer() {
+  document.getElementById("app-drawer")?.classList.add("hidden");
+  document.getElementById("app-scrim")?.classList.add("hidden");
+}
+
+function openDrawer() {
+  document.getElementById("app-drawer")?.classList.remove("hidden");
+  document.getElementById("app-scrim")?.classList.remove("hidden");
+}
+
+function go(page) {
+  closeDrawer();
+  setPage(page);
+}
+
+function isActive(item) {
+  const page = state.page;
+  if (item.page === "new" || item.page === "new-patient") return page === item.page;
+  if (item.page === "patients") return page === "patients" || page === "patient";
+  if (item.page === "cases") return page === "cases" || page === "case" || page === "review";
+  return page === item.page;
+}
+
+function navButton(item) {
+  const active = isActive(item);
+  return el("button", {
+    class: `flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
+      active
+        ? "bg-cyan-500 text-white shadow-sm"
+        : "text-slate-300 hover:bg-white/10 hover:text-white"
+    }`,
+    onClick: () => go(item.page),
+  }, svgIcon(item.icon, { size: 18 }), item.label);
+}
+
+function sidebar({ onLogout }) {
+  const nurse = state.user?.role === "nurse";
+  const primary = [
+    { page: "dashboard", icon: "activity", label: "Dashboard" },
+    { page: "patients", icon: "users", label: "Patients" },
+    { page: "cases", icon: "file-text", label: "Cases" },
+    { page: "audit", icon: "list", label: "Audit log" },
+  ];
+  const create = nurse ? [] : [
+    { page: "new", icon: "plus", label: "New case" },
+    { page: "new-patient", icon: "user-plus", label: "New patient" },
+  ];
+
+  return el("div", { class: "flex h-full flex-col" },
+    el("button", {
+      class: "flex items-center gap-2 px-4 py-5 text-left font-bold text-white",
+      onClick: () => go("dashboard"),
+    },
+      el("span", { class: "inline-flex items-center justify-center rounded-lg bg-cyan-500 p-1.5" },
+        svgIcon("activity", { size: 18 })
       ),
-      el(
-        "div",
-        { class: "flex items-center gap-4 text-sm" },
-        el("button", {
-          class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-slate-700 hover:bg-slate-50",
-          onClick: () => setPage("patients"),
-        }, svgIcon("users", { size: 16 }), "Patients"),
-        el("button", {
-          class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-slate-700 hover:bg-slate-50",
-          onClick: () => setPage("cases"),
-        }, svgIcon("file-text", { size: 16 }), "Cases"),
-        el("div", { class: "flex items-center gap-2 text-slate-700" },
-          el("span", { class: "inline-flex items-center justify-center w-7 h-7 rounded-full bg-slate-900 text-white text-xs font-bold" },
-            (state.user?.name || "?").charAt(0).toUpperCase()
-          ),
-          el("div", { class: "leading-tight" },
-            el("div", { class: "font-semibold" }, state.user?.name || ""),
-            el("div", { class: "text-xs text-slate-500 capitalize" }, state.user?.role || "")
-          )
-        ),
-        el(
-          "button",
-          {
-            class: "ml-2 inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50",
-            onClick: onLogout,
-          },
-          svgIcon("log-out", { size: 14 }),
-          "Logout"
-        )
+      el("span", {},
+        "RadAssist AI",
+        el("span", { class: "mt-0.5 block text-xs font-medium text-slate-400" }, "Chest X-ray reporting")
       )
+    ),
+    el("nav", { class: "flex-1 space-y-1 px-3" },
+      ...primary.map(navButton),
+      create.length
+        ? el("div", { class: "pt-4" },
+            el("p", { class: "px-3 pb-2 text-[11px] font-bold uppercase tracking-wider text-slate-500" }, "Create"),
+            el("div", { class: "space-y-1" }, ...create.map(navButton))
+          )
+        : null
+    ),
+    el("div", { class: "border-t border-white/10 p-3" },
+      el("div", { class: "mb-3 flex items-center gap-2 px-1" },
+        el("span", { class: "inline-flex h-9 w-9 items-center justify-center rounded-full bg-cyan-500 text-sm font-bold text-white" },
+          (state.user?.name || "?").charAt(0).toUpperCase()
+        ),
+        el("div", { class: "min-w-0 leading-tight" },
+          el("div", { class: "truncate font-semibold text-white" }, state.user?.name || ""),
+          el("div", { class: "text-xs capitalize text-slate-400" }, state.user?.role || "")
+        )
+      ),
+      el("button", {
+        class: "flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-slate-300 hover:bg-white/10 hover:text-white",
+        onClick: onLogout,
+      }, svgIcon("log-out", { size: 16 }), "Logout")
     )
   );
+}
+
+const TITLES = {
+  dashboard: "Dashboard",
+  patients: "Patients",
+  patient: "Patient chart",
+  "new-patient": "New patient",
+  cases: "Cases",
+  case: "Case",
+  new: "New case",
+  review: "Report review",
+  audit: "Audit log",
+};
+
+export function Shell({ onLogout }) {
+  bindListHotkeys();
+  const main = el("div", { class: "min-w-0 flex-1" });
+  const root = el("div", { class: "flex min-h-screen bg-slate-50 text-slate-900" },
+    el("aside", {
+      class: "sticky top-0 hidden h-screen w-64 shrink-0 bg-slate-950 lg:flex",
+    }, sidebar({ onLogout })),
+    el("div", {
+      id: "app-scrim",
+      class: "fixed inset-0 z-40 hidden bg-slate-950/50 lg:hidden",
+      onClick: closeDrawer,
+    }),
+    el("aside", {
+      id: "app-drawer",
+      class: "fixed inset-y-0 left-0 z-50 hidden w-64 bg-slate-950 shadow-2xl lg:hidden",
+    }, sidebar({ onLogout })),
+    el("div", { class: "flex min-w-0 flex-1 flex-col" },
+      el("header", { class: "sticky top-0 z-30 flex items-center gap-3 border-b bg-white/90 px-4 py-3 backdrop-blur lg:hidden" },
+        el("button", {
+          class: "rounded-lg p-2 text-slate-700 hover:bg-slate-100",
+          "aria-label": "Open menu",
+          onClick: openDrawer,
+        }, svgIcon("menu", { size: 20 })),
+        el("div", { class: "font-bold text-slate-900" }, TITLES[state.page] || "RadAssist AI")
+      ),
+      main
+    )
+  );
+  return { root, main };
+}
+
+export function Header({ onLogout }) {
+  return Shell({ onLogout }).root;
 }

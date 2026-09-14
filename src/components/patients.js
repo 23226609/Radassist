@@ -8,6 +8,7 @@ import { svgIcon } from "./icons.js";
 import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
 import { urgentBadge, patientDisplayName } from "../lib/tags.js";
+import { PAGE, searchField, emptyState, pageHeading } from "../lib/ui.js";
 
 function openPatient(patientId) {
   state.selectedPatientId = patientId;
@@ -62,35 +63,25 @@ export async function renderPatientsPage({ target }) {
   function render() {
     const root = el(
       "main",
-      { class: "mx-auto max-w-7xl px-5 py-8" },
-      el("button", {
-        class: "mb-4 inline-flex items-center gap-1 text-slate-700 hover:text-slate-900",
-        onClick: () => setPage("dashboard"),
-      }, svgIcon("arrow-left", { size: 16 }), "Dashboard"),
-      el("div", { class: "flex flex-wrap items-end justify-between gap-3" },
-        el("div", {},
-          el("h1", { class: "text-3xl font-bold text-slate-900" }, "Patients"),
-          el("p", { class: "mt-1 text-slate-500" }, "Open a chart to see history, diagnoses, and findings.")
-        ),
-        state.user?.role !== "nurse"
+      { class: PAGE },
+      pageHeading({
+        title: "Patients",
+        subtitle: "Open a chart for history, diagnoses, and findings. Press / to search.",
+        actions: state.user?.role !== "nurse"
           ? el("button", {
               class: "inline-flex items-center gap-2 rounded-xl bg-cyan-600 px-4 py-2 font-semibold text-white hover:bg-cyan-700",
               onClick: () => setPage("new-patient"),
             }, svgIcon("user-plus", { size: 16 }), "New patient")
-          : null
-      ),
+          : null,
+      }),
       el("section", { class: "card mt-6 p-0 overflow-hidden" },
         el("div", { class: "flex flex-wrap gap-3 border-b p-4" },
-          el("div", { class: "relative flex-1 min-w-[200px]" },
-            svgIcon("search", { size: 16, class: "absolute left-3 top-3 text-slate-400" }),
-            el("input", {
-              class: "w-full rounded-xl border border-slate-300 bg-white pl-10 pr-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100",
-              placeholder: "Search name or patient ID…",
-              value: q,
-              onInput: (e) => { q = e.target.value; },
-              onChange: () => { page = 1; selected.clear(); refresh(); },
-            })
-          ),
+          searchField({
+            value: q,
+            placeholder: "Search name or patient ID…",
+            onQuery: (value) => { q = value; },
+            onSearch: () => { page = 1; selected.clear(); refresh(); },
+          }),
           isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })
         ),
         error
@@ -98,7 +89,13 @@ export async function renderPatientsPage({ target }) {
           : loading
           ? el("div", { class: "p-10 text-center text-slate-400" }, "Loading patients…")
           : patients.length === 0
-          ? el("div", { class: "p-10 text-center text-slate-400" }, "No patients yet.")
+          ? emptyState({
+              icon: "users",
+              title: "No patients yet",
+              hint: "Add a chart first, then upload an X-ray for that person.",
+              actionLabel: state.user?.role !== "nurse" ? "New patient" : null,
+              onAction: () => setPage("new-patient"),
+            })
           : (() => {
               const paged = paginate(patients, page);
               page = paged.page;
@@ -117,7 +114,7 @@ export async function renderPatientsPage({ target }) {
                     el("tbody", {},
                       ...paged.items.map((p) =>
                         el("tr", {
-                          class: "border-t cursor-pointer hover:bg-slate-50",
+                          class: "border-t cursor-pointer hover:bg-cyan-50/60",
                           onClick: () => openPatient(p.patientId),
                         },
                           isAdmin() ? rowCheckbox(p.patientId, selected, (id, on) => { toggleSelected(selected, id, on); render(); }) : null,

@@ -23,6 +23,9 @@
   .card {
     @apply rounded-2xl border border-slate-200 bg-white p-5 shadow-sm;
   }
+  button.card {
+    @apply w-full cursor-pointer;
+  }
 
   /* Quick action chip on the login screen */
   .quick-login {
@@ -36,4 +39,22 @@
 /* Subtle accent — used by the activity dot in the header */
 .brand-dot {
   background: linear-gradient(135deg, #06b6d4 0%, #3b82f6 100%);
+}
+
+.page-enter {
+  animation: page-enter 220ms ease-out;
+}
+
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.toast-in {
+  animation: toast-in 180ms ease-out;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
 }
