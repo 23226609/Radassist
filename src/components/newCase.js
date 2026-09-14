@@ -20,12 +20,51 @@ export async function renderNewCasePage({ target }) {
   let statusMsg = "";
   let found = null;
 
-  function onPickFile(e) {
-    const file = e.target.files?.[0];
+  function isXrayFile(file) {
+    if (!file) return false;
+    const type = String(file.type || "").toLowerCase();
+    if (type.startsWith("image/")) return true;
+    return /\.(png|jpe?g|webp)$/i.test(file.name || "");
+  }
+
+  function acceptFile(file) {
     if (!file) return;
+    if (!isXrayFile(file)) {
+      toast("Please drop a PNG, JPG, JPEG, or WebP image.");
+      return;
+    }
+    if (preview) URL.revokeObjectURL(preview);
     preview = URL.createObjectURL(file);
     state.selectedFile = file;
     render();
+  }
+
+  function onPickFile(e) {
+    acceptFile(e.target.files?.[0]);
+  }
+
+  function paintDropZone(node, active) {
+    if (!node) return;
+    node.classList.toggle("border-cyan-600", active);
+    node.classList.toggle("bg-cyan-50", active);
+    node.classList.toggle("border-slate-300", !active);
+  }
+
+  function onDragOver(e) {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    paintDropZone(e.currentTarget, true);
+  }
+
+  function onDragLeave(e) {
+    if (e.currentTarget.contains(e.relatedTarget)) return;
+    paintDropZone(e.currentTarget, false);
+  }
+
+  function onDrop(e) {
+    e.preventDefault();
+    paintDropZone(e.currentTarget, false);
+    acceptFile(e.dataTransfer?.files?.[0]);
   }
 
   async function lookup() {
@@ -162,11 +201,19 @@ export async function renderNewCasePage({ target }) {
       // Step 2 — upload
       el("section", { class: "card mt-4" },
         el("h2", { class: "text-lg font-bold text-slate-900" }, "2. Upload X-Ray"),
-        el("label", { class: "mt-4 flex cursor-pointer flex-col items-center rounded-xl border-2 border-dashed border-slate-300 p-8 hover:bg-slate-50" },
+        el("label", {
+          id: "xray-drop",
+          class: "mt-4 flex cursor-pointer flex-col items-center rounded-xl border-2 border-dashed border-slate-300 p-8 hover:bg-slate-50",
+          dataset: { drop: "xray" },
+          onDragEnter: (e) => e.preventDefault(),
+          onDragOver,
+          onDragLeave,
+          onDrop,
+        },
           svgIcon("image", { size: 32, class: "text-cyan-600" }),
-          el("b", { class: "mt-2" }, state.selectedFile ? state.selectedFile.name : "Choose PNG, JPG, JPEG, or WebP"),
-          el("span", { class: "text-xs text-slate-500 mt-1" }, "Stored in MongoDB GridFS · analysed by CURV AI"),
-          el("input", { type: "file", accept: ".png,.jpg,.jpeg,image/*", class: "hidden", onChange: onPickFile })
+          el("b", { class: "mt-2" }, state.selectedFile ? state.selectedFile.name : "Drag an X-ray here, or choose PNG, JPG, JPEG, or WebP"),
+          el("span", { class: "text-xs text-slate-500 mt-1" }, "Drop a file onto this box · stored in MongoDB GridFS · analysed by CURV AI"),
+          el("input", { type: "file", accept: ".png,.jpg,.jpeg,.webp,image/*", class: "hidden", onChange: onPickFile })
         ),
         preview
           ? el("div", { class: "mt-3 flex items-center gap-3" },

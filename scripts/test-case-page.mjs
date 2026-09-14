@@ -75,6 +75,8 @@ test("cases list shows the study", () => {
   assert.ok(listRoot.textContent.includes("CASE-1"));
   assert.ok(listRoot.textContent.includes("PT-2026-0018"));
   assert.ok(listRoot.textContent.includes("Mild cardiomegaly"));
+  assert.ok(![...listRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Delete"),
+    "doctors should not delete cases from the list");
 });
 
 const root = document.getElementById("root");
@@ -88,6 +90,8 @@ test("case record shows history, diagnosis, findings and remarks", () => {
   assert.ok(root.querySelector("#case-remarks"), "remarks box missing");
   assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Review X-ray"));
   assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Save remarks"));
+  assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Delete"),
+    "doctors should not delete from the case page");
 });
 
 const box = root.querySelector("#case-remarks");
@@ -102,6 +106,39 @@ test("saving case remarks writes them into the report when not finalized", () =>
   assert.ok(saved.reportText.includes("Compare with prior film."));
   assert.equal(saved.remarks, "Compare with prior film.");
 });
+
+{
+  window.confirm = () => true;
+  let deleted = null;
+  api.deleteCases = async (ids) => { deleted = ids; return { success: true, deleted: ids.length }; };
+  api.listCases = async () => ({
+    cases: [structuredClone(stored), { ...structuredClone(stored), caseId: "CASE-2" }],
+  });
+  state.user = { role: "admin", userId: "a1", name: "System Admin" };
+  await renderCasesPage({ target: listRoot });
+  await renderCasePage({ target: root });
+
+  test("admins tick rows and use one Delete button on the cases list", () => {
+    assert.ok([...listRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Delete"));
+    assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Delete"));
+    const boxes = [...listRoot.querySelectorAll('input[type="checkbox"][aria-label="Select row"]')];
+    assert.equal(boxes.length, 2, "each case row should have a checkbox");
+  });
+
+  for (let i = 0; i < 2; i++) {
+    const boxes = [...listRoot.querySelectorAll('input[type="checkbox"][aria-label="Select row"]')];
+    boxes[i].checked = true;
+    boxes[i].dispatchEvent(new window.Event("change"));
+  }
+  const del = [...listRoot.querySelectorAll("button")].find((b) => /Delete/.test(b.textContent));
+  assert.ok(del && del.textContent.includes("2"), `expected Delete (2), got ${del?.textContent}`);
+  del.dispatchEvent(new window.Event("click"));
+  await new Promise((r) => setTimeout(r, 0));
+
+  test("admin bulk delete on the cases list sends every selected id", () => {
+    assert.deepEqual(deleted, ["CASE-1", "CASE-2"]);
+  });
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

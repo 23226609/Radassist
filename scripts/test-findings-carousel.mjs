@@ -110,6 +110,11 @@ api.fetchImage = async () => {
   throw new Error("no image in test");
 };
 api.summariseFindings = async () => ({ added: 0, kept: 3, case: structuredClone(testCase) });
+let savedPayload = null;
+api.updateCase = async (_id, payload) => {
+  savedPayload = payload;
+  return { case: { ...structuredClone(testCase), ...payload } };
+};
 
 const root = document.getElementById("root");
 await renderReviewPage({ target: root });
@@ -168,6 +173,18 @@ test("clicking a dot jumps straight to that finding", () => {
   assert.ok(text().includes("Low confidence item"));
 });
 
+test("Add manually opens a new card at the end of the carousel", () => {
+  const add = [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === "+ Add manually");
+  assert.ok(add, "Add manually button missing");
+  add.dispatchEvent(new window.Event("click"));
+  assert.ok(text().includes("4 of 4"), `expected 4 of 4 after add, got: ${text().slice(0, 180)}`);
+  assert.ok(text().includes("NEW FINDING (unsaved)"), "new finding card not shown");
+  const label = root.querySelector("input[id^='finding-label-tmp-']");
+  assert.ok(label, "new finding label input missing");
+  assert.equal(label.value, "New finding");
+  assert.equal(cards().length, 1, "carousel should still show one card");
+});
+
 test("does not require a Summarise with Azure AI button", () => {
   const btn = [...root.querySelectorAll("button")].find((b) =>
     /Summarise with Azure AI/.test(b.textContent)
@@ -211,15 +228,19 @@ test("the remarks box sits under the findings in the right column", () => {
     "doctors must be able to type remarks");
 });
 
-test("Report opens a new window for the stored report", () => {
+{
   const btn = [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === "Report");
-  assert.ok(btn, "Report button missing");
   openedPopup = null;
+  savedPayload = null;
   btn.dispatchEvent(new window.Event("click"));
-  assert.ok(openedPopup, "window.open was not called");
-  assert.ok(/view=report/.test(openedPopup.url), `expected view=report in ${openedPopup.url}`);
-  assert.ok(/caseId=CASE-CAROUSEL-1/.test(openedPopup.url), `expected case id in ${openedPopup.url}`);
-});
+  await new Promise((r) => setTimeout(r, 0));
+  test("Report opens a new window for the stored report", () => {
+    assert.ok(btn, "Report button missing");
+    assert.ok(openedPopup, "window.open was not called");
+    assert.ok(/view=report/.test(openedPopup.url), `expected view=report in ${openedPopup.url}`);
+    assert.ok(/caseId=CASE-CAROUSEL-1/.test(openedPopup.url), `expected case id in ${openedPopup.url}`);
+  });
+}
 
 {
   let saved = null;
@@ -239,6 +260,14 @@ test("Report opens a new window for the stored report", () => {
     assert.ok(saved.reportText.includes("Radiologist remarks"), "remarks heading missing from report");
     assert.ok(saved.reportText.includes("Possible old rib fracture on the left."), "remarks text missing from report");
     assert.equal(saved.remarks, "Possible old rib fracture on the left.");
+  });
+
+  test("hand-added findings are written into the exported report", () => {
+    assert.ok(saved.reportText.includes("Clinician-added findings"), "manual findings heading missing from report");
+    assert.ok(saved.reportText.includes("New finding"), "manual finding label missing from report");
+    assert.ok(Array.isArray(saved.findings), "findings were not persisted");
+    assert.ok(saved.findings.some((f) => f.source === "manual" && f.label === "New finding"),
+      "manual finding missing from saved findings list");
   });
 }
 

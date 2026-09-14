@@ -1,6 +1,6 @@
 // scripts/test-report-export.mjs
 import assert from "node:assert";
-import { buildReportSections, buildReportPdfBytes, applyRemarksToReport, splitReportAndRemarks } from "../src/lib/reportExport.js";
+import { buildReportSections, buildReportPdfBytes, applyRemarksToReport, splitReportAndRemarks, composeReportText, MANUAL_FINDINGS_HEADING } from "../src/lib/reportExport.js";
 
 let passed = 0;
 let failed = 0;
@@ -73,6 +73,54 @@ test("writes a real PDF header and the report body", () => {
   assert.ok(text.startsWith("%PDF-1.4"), "missing PDF header");
   assert.ok(text.includes("The lungs are clear."));
   assert.ok(text.trim().endsWith("%%EOF"));
+});
+
+test("writes hand-added findings into the report before remarks", () => {
+  const findings = [
+    { label: "Heart size normal", source: "Azure" },
+    { label: "Possible old fracture", location: "Left ribs", size: "2 cm", pattern: "Linear", source: "manual" },
+  ];
+  const out = composeReportText("The lungs are clear.", {
+    remarks: "Check old films.",
+    findings,
+  });
+  assert.ok(out.reportText.includes(MANUAL_FINDINGS_HEADING));
+  assert.ok(out.reportText.includes("Possible old fracture"));
+  assert.ok(out.reportText.includes("Location: Left ribs"));
+  assert.ok(out.reportText.includes("Size: 2 cm"));
+  assert.ok(out.reportText.includes("Pattern: Linear"));
+  assert.ok(!out.reportText.includes("Heart size normal"), "AI findings stay in the structured list, not the clinician-added block");
+  assert.ok(out.reportText.endsWith("Check old films."));
+  assert.ok(out.reportText.indexOf(MANUAL_FINDINGS_HEADING) < out.reportText.indexOf("Radiologist remarks"));
+});
+
+test("replaces the clinician-added block instead of stacking copies", () => {
+  const first = composeReportText("The lungs are clear.", {
+    findings: [{ label: "Old note", source: "manual" }],
+  });
+  const second = composeReportText(first.reportText, {
+    findings: [{ label: "New note", location: "Right apex", source: "manual" }],
+  });
+  assert.equal(second.reportText.match(/Clinician-added findings/g).length, 1);
+  assert.ok(second.reportText.includes("New note"));
+  assert.ok(second.reportText.includes("Location: Right apex"));
+  assert.ok(!second.reportText.includes("Old note"));
+});
+
+test("clears the clinician-added block when every manual finding is removed", () => {
+  const withManual = composeReportText("Heart size normal.", {
+    findings: [{ label: "Extra opacity", source: "manual" }],
+  });
+  const cleared = composeReportText(withManual.reportText, { findings: [] });
+  assert.equal(cleared.reportText, "Heart size normal.");
+});
+
+test("export sections include size and pattern for each finding", () => {
+  const s = buildReportSections({
+    findings: [{ label: "Nodule", sentence: "A small nodule.", location: "RUL", size: "8 mm", pattern: "Nodular", confidence: 0.8 }],
+  });
+  assert.equal(s.findings[0].size, "8 mm");
+  assert.equal(s.findings[0].pattern, "Nodular");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node scripts/test-review-logic.mjs && node scripts/test-findings-carousel.mjs && node scripts/test-auto-summarise.mjs && node scripts/test-azure-bbox.mjs && node scripts/test-confidence.mjs && node scripts/test-report-export.mjs && node scripts/test-report-view.mjs && node scripts/test-diagnosis.mjs && node scripts/test-patient-page.mjs && node scripts/test-case-page.mjs && node scripts/test-pagination.mjs"
+    "test": "node scripts/test-review-logic.mjs && node scripts/test-findings-carousel.mjs && node scripts/test-auto-summarise.mjs && node scripts/test-azure-bbox.mjs && node scripts/test-confidence.mjs && node scripts/test-report-export.mjs && node scripts/test-report-view.mjs && node scripts/test-diagnosis.mjs && node scripts/test-patient-page.mjs && node scripts/test-case-page.mjs && node scripts/test-pagination.mjs && node scripts/test-new-case.mjs && node scripts/test-audit-page.mjs"
   },
   "dependencies": {
     "docx": "^9.5.1",

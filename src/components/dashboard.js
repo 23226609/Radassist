@@ -7,6 +7,7 @@ import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { needsAzureDiagnosis } from "../lib/diagnosis.js";
 import { paginate, paginationBar } from "../lib/pagination.js";
+import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
 
 const diagnosisRequested = new Set();
 const diagnosisPending = new Set();
@@ -36,6 +37,9 @@ export async function renderDashboardPage({ target }) {
   let error = "";
   let online = null;
   let page = 1;
+  const selected = new Set();
+  const isAdmin = () => state.user?.role === "admin";
+  const caseIdOf = (c) => c.caseId || c._id;
 
   async function refresh() {
     loading = true; error = ""; render();
@@ -43,6 +47,9 @@ export async function renderDashboardPage({ target }) {
       const data = await api.listCases({ status: status === "all" ? "" : status, q });
       cases = data.cases || [];
       state.cases = cases;
+      for (const id of [...selected]) {
+        if (!cases.some((c) => caseIdOf(c) === id)) selected.delete(id);
+      }
       try { stats = (await api.stats()).stats; } catch { stats = null; }
       online = true;
       fillDiagnoses(cases);
@@ -84,13 +91,17 @@ export async function renderDashboardPage({ target }) {
     }));
   }
 
-  function deleteCase(c, e) {
-    e?.stopPropagation();
-    const cid = c.caseId || c._id;
-    if (!confirm(`Delete case ${cid} for ${c.patientId}?`)) return;
-    api.deleteCase(cid)
-      .then(() => { toast(`Deleted ${cid}`); refresh(); })
-      .catch((err) => toast(err.message));
+  function deleteSelected() {
+    const ids = [...selected];
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} selected ${ids.length === 1 ? "case" : "cases"}? This cannot be undone.`)) return;
+    api.deleteCases(ids)
+      .then((data) => {
+        selected.clear();
+        toast(`Deleted ${data.deleted ?? ids.length} ${ids.length === 1 ? "case" : "cases"}.`);
+        refresh();
+      })
+      .catch((err) => toast(err.message || "Could not delete the selected cases."));
   }
 
   function render() {
@@ -116,12 +127,14 @@ export async function renderDashboardPage({ target }) {
     }
 
     function row(c) {
+      const id = caseIdOf(c);
       return el(
         "tr",
         {
           class: "border-t cursor-pointer hover:bg-slate-50",
-          onClick: () => { state.selectedCaseId = c.caseId || c._id; setPage("case"); },
+          onClick: () => { state.selectedCaseId = id; setPage("case"); },
         },
+        isAdmin() ? rowCheckbox(id, selected, (rowId, on) => { toggleSelected(selected, rowId, on); render(); }) : null,
         el("td", { class: "p-4 font-bold text-slate-900" },
           el("button", {
             class: "hover:text-cyan-700 hover:underline",
@@ -138,20 +151,15 @@ export async function renderDashboardPage({ target }) {
         el("td", { class: "space-x-1 whitespace-nowrap" },
           el("button", {
             class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-cyan-700 hover:bg-cyan-50 text-sm",
-            onClick: (e) => { e.stopPropagation(); state.selectedCaseId = c.caseId || c._id; setPage("case"); },
-          }, svgIcon("eye", { size: 16 }), "View"),
-          state.user?.role === "admin"
-            ? el("button", {
-                class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-red-700 hover:bg-red-50 text-sm",
-                onClick: (e) => deleteCase(c, e),
-              }, svgIcon("trash", { size: 16 }), "Delete")
-            : null
+            onClick: (e) => { e.stopPropagation(); state.selectedCaseId = id; setPage("case"); },
+          }, svgIcon("eye", { size: 16 }), "View")
         )
       );
     }
 
     const filtered = paginate(cases, page);
     page = filtered.page;
+    const pageIds = filtered.items.map(caseIdOf);
 
     const root = el(
       "main",
@@ -207,7 +215,7 @@ export async function renderDashboardPage({ target }) {
               placeholder: "Search Patient ID, case, diagnosis…",
               value: q,
               onInput: (e) => { q = e.target.value; state.pendingFilter.q = q; },
-              onChange: () => { page = 1; refresh(); },
+              onChange: () => { page = 1; selected.clear(); refresh(); },
             })
           ),
           el("div", { class: "flex items-center gap-2" },
@@ -215,14 +223,15 @@ export async function renderDashboardPage({ target }) {
             el("select", {
               class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600",
               value: status,
-              onChange: (e) => { status = e.target.value; state.pendingFilter.status = status; page = 1; refresh(); },
+              onChange: (e) => { status = e.target.value; state.pendingFilter.status = status; page = 1; selected.clear(); refresh(); },
             },
               el("option", { value: "all" }, "All statuses"),
               el("option", { value: "pending" }, "Pending"),
               el("option", { value: "completed" }, "Completed"),
               el("option", { value: "finalized" }, "Finalized")
             )
-          )
+          ),
+          isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })
         ),
 
         // Table
@@ -240,6 +249,7 @@ export async function renderDashboardPage({ target }) {
                 el("table", { class: "w-full min-w-[760px] text-left text-sm" },
                   el("thead", { class: "bg-slate-50 text-slate-600" },
                     el("tr", {},
+                      isAdmin() ? headerCheckbox(pageIds, selected, (on) => { togglePage(selected, pageIds, on); render(); }) : null,
                       ["Patient ID", "Date", "Status", "Diagnosis", "Actions"].map((h) =>
                         el("th", { class: "p-4" }, h)
                       )

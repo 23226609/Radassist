@@ -6,6 +6,7 @@ import { state, setPage, toast } from "../state.js";
 import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { paginate, paginationBar } from "../lib/pagination.js";
+import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
 
 function openPatient(patientId) {
   state.selectedPatientId = patientId;
@@ -23,6 +24,21 @@ export async function renderPatientsPage({ target }) {
   let loading = true;
   let error = "";
   let page = 1;
+  const selected = new Set();
+  const isAdmin = () => state.user?.role === "admin";
+
+  function deleteSelected() {
+    const ids = [...selected];
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} selected ${ids.length === 1 ? "patient" : "patients"} and all of their studies? This cannot be undone.`)) return;
+    api.deletePatients(ids)
+      .then((data) => {
+        selected.clear();
+        toast(`Deleted ${data.deleted ?? ids.length} ${ids.length === 1 ? "patient" : "patients"}.`);
+        refresh();
+      })
+      .catch((err) => toast(err.message || "Could not delete the selected patients."));
+  }
 
   async function refresh() {
     loading = true;
@@ -31,6 +47,9 @@ export async function renderPatientsPage({ target }) {
     try {
       const data = await api.listPatients({ q });
       patients = data.patients || [];
+      for (const id of [...selected]) {
+        if (!patients.some((p) => p.patientId === id)) selected.delete(id);
+      }
     } catch (err) {
       error = err.message;
     } finally {
@@ -54,17 +73,18 @@ export async function renderPatientsPage({ target }) {
         )
       ),
       el("section", { class: "card mt-6 p-0 overflow-hidden" },
-        el("div", { class: "border-b p-4" },
-          el("div", { class: "relative" },
+        el("div", { class: "flex flex-wrap gap-3 border-b p-4" },
+          el("div", { class: "relative flex-1 min-w-[200px]" },
             svgIcon("search", { size: 16, class: "absolute left-3 top-3 text-slate-400" }),
             el("input", {
               class: "w-full rounded-xl border border-slate-300 bg-white pl-10 pr-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100",
               placeholder: "Search patient ID…",
               value: q,
               onInput: (e) => { q = e.target.value; },
-              onChange: () => { page = 1; refresh(); },
+              onChange: () => { page = 1; selected.clear(); refresh(); },
             })
-          )
+          ),
+          isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })
         ),
         error
           ? el("div", { class: "p-6 text-red-700" }, error)
@@ -75,11 +95,13 @@ export async function renderPatientsPage({ target }) {
           : (() => {
               const paged = paginate(patients, page);
               page = paged.page;
+              const pageIds = paged.items.map((p) => p.patientId);
               return el("div", {},
                 el("div", { class: "overflow-x-auto" },
                   el("table", { class: "w-full min-w-[720px] text-left text-sm" },
                     el("thead", { class: "bg-slate-50 text-slate-600" },
                       el("tr", {},
+                        isAdmin() ? headerCheckbox(pageIds, selected, (on) => { togglePage(selected, pageIds, on); render(); }) : null,
                         ["Patient ID", "Age / sex", "Last diagnosis", "Studies", "Updated"].map((h) =>
                           el("th", { class: "p-4" }, h)
                         )
@@ -91,6 +113,7 @@ export async function renderPatientsPage({ target }) {
                           class: "border-t cursor-pointer hover:bg-slate-50",
                           onClick: () => openPatient(p.patientId),
                         },
+                          isAdmin() ? rowCheckbox(p.patientId, selected, (id, on) => { toggleSelected(selected, id, on); render(); }) : null,
                           el("td", { class: "p-4 font-bold text-slate-900" }, p.patientId),
                           el("td", { class: "text-slate-600" },
                             [p.age && `${p.age} years`, p.sex].filter(Boolean).join(" · ") || "—"
@@ -126,6 +149,7 @@ export async function renderPatientPage({ target }) {
   let remarksDraft = "";
 
   const canEdit = () => state.user?.role !== "nurse";
+  const isAdmin = () => state.user?.role === "admin";
 
   async function load() {
     if (!patientId) {
@@ -166,6 +190,23 @@ export async function renderPatientPage({ target }) {
     }
   }
 
+  async function deleteThis() {
+    if (!patient || !isAdmin()) return;
+    const id = patient.patientId;
+    if (!confirm(`Delete patient ${id} and all of their studies? This cannot be undone.`)) return;
+    busy = true;
+    paint();
+    try {
+      await api.deletePatient(id);
+      toast(`Deleted ${id}`);
+      setPage("patients");
+    } catch (err) {
+      toast(err.message || "Could not delete this patient.");
+      busy = false;
+      paint();
+    }
+  }
+
   function paint() {
     const edit = canEdit();
     const findings = cases.flatMap((c) =>
@@ -190,11 +231,18 @@ export async function renderPatientPage({ target }) {
                   [patient?.age && `${patient.age} years`, patient?.sex].filter(Boolean).join(" · ") || "No demographics yet"
                 )
               ),
-              edit && el("button", {
-                class: "rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50",
-                disabled: busy,
-                onClick: saveNotes,
-              }, busy ? "Saving…" : "Save notes")
+              el("div", { class: "flex flex-wrap gap-2" },
+                isAdmin() && el("button", {
+                  class: "inline-flex items-center gap-1 rounded-xl border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50",
+                  disabled: busy,
+                  onClick: deleteThis,
+                }, svgIcon("trash", { size: 16 }), "Delete"),
+                edit && el("button", {
+                  class: "rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50",
+                  disabled: busy,
+                  onClick: saveNotes,
+                }, busy ? "Saving…" : "Save notes")
+              )
             ),
 
             el("div", { class: "mt-6 grid gap-5 lg:grid-cols-2" },

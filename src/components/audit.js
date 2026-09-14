@@ -2,10 +2,11 @@
 // Admin/doctor-only audit log page with simple filtering.
 
 import { el, mount } from "../dom.js";
-import { state, setPage } from "../state.js";
+import { state, setPage, toast } from "../state.js";
 import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { paginate, paginationBar } from "../lib/pagination.js";
+import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
 
 const ACTION_TONE = {
   LOGIN: "bg-cyan-50 text-cyan-700",
@@ -17,6 +18,7 @@ const ACTION_TONE = {
   CASE_FINALIZED: "bg-green-50 text-green-700",
   CASE_DELETED: "bg-red-50 text-red-700",
   PATIENT_UPDATED: "bg-slate-100 text-slate-700",
+  PATIENT_DELETED: "bg-red-50 text-red-700",
 };
 
 export async function renderAuditPage({ target }) {
@@ -26,12 +28,18 @@ export async function renderAuditPage({ target }) {
   let loading = true;
   let error = "";
   let page = 1;
+  const selected = new Set();
+  const isAdmin = () => state.user?.role === "admin";
+  const logId = (l) => l.logId || l._id;
 
   async function refresh() {
     loading = true; error = ""; render();
     try {
       const data = await api.listAudit({ q, action });
       logs = data.logs || [];
+      for (const id of [...selected]) {
+        if (!logs.some((l) => logId(l) === id)) selected.delete(id);
+      }
     } catch (err) {
       error = err.message;
     } finally {
@@ -40,8 +48,23 @@ export async function renderAuditPage({ target }) {
     }
   }
 
+  function deleteSelected() {
+    const ids = [...selected];
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} selected audit log ${ids.length === 1 ? "entry" : "entries"}?`)) return;
+    api.deleteAuditLogs(ids)
+      .then((data) => {
+        selected.clear();
+        toast(`Deleted ${data.deleted ?? ids.length} audit log ${ids.length === 1 ? "entry" : "entries"}.`);
+        refresh();
+      })
+      .catch((err) => toast(err.message || "Could not delete the selected logs."));
+  }
+
   function row(l) {
+    const id = logId(l);
     return el("tr", { class: "border-t" },
+      isAdmin() ? rowCheckbox(id, selected, (rowId, on) => { toggleSelected(selected, rowId, on); render(); }) : null,
       el("td", { class: "p-3 whitespace-nowrap text-slate-700" },
         new Date(l.timestamp).toLocaleString()
       ),
@@ -74,7 +97,7 @@ export async function renderAuditPage({ target }) {
       el("h1", { class: "text-3xl font-bold text-slate-900" }, "Audit log"),
       el("p", { class: "text-slate-500 mt-1" },
         "Tamper-evident trail of logins, case edits, AI generations and finalizations. ",
-        state.user?.role === "admin" ? "Admins see everything." : "Doctors see case activity."
+        isAdmin() ? "Admins can review and delete entries." : "Doctors see case activity."
       ),
 
       el("section", { class: "card mt-6 p-0 overflow-hidden" },
@@ -86,17 +109,18 @@ export async function renderAuditPage({ target }) {
               placeholder: "Search details, action, user, case id…",
               value: q,
               onInput: (e) => (q = e.target.value),
-              onChange: () => { page = 1; refresh(); },
+              onChange: () => { page = 1; selected.clear(); refresh(); },
             })
           ),
           el("select", {
             class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600",
             value: action,
-            onChange: (e) => { action = e.target.value; page = 1; refresh(); },
+            onChange: (e) => { action = e.target.value; page = 1; selected.clear(); refresh(); },
           },
             el("option", { value: "" }, "All actions"),
             ...Object.keys(ACTION_TONE).map((a) => el("option", { value: a }, a))
-          )
+          ),
+          isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })
         ),
 
         error
@@ -108,11 +132,13 @@ export async function renderAuditPage({ target }) {
           : (() => {
               const paged = paginate(logs, page);
               page = paged.page;
+              const pageIds = paged.items.map(logId);
               return el("div", {},
                 el("div", { class: "overflow-x-auto" },
                   el("table", { class: "w-full min-w-[820px] text-left text-sm" },
                     el("thead", { class: "bg-slate-50 text-slate-600" },
                       el("tr", {},
+                        isAdmin() ? headerCheckbox(pageIds, selected, (on) => { togglePage(selected, pageIds, on); render(); }) : null,
                         ["Time", "Action", "User", "Details", "Case", "Change"].map((h) => el("th", { class: "p-3" }, h))
                       )
                     ),

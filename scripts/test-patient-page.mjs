@@ -93,6 +93,8 @@ await renderPatientsPage({ target: listRoot });
 test("patients list shows the chart", () => {
   assert.ok(listRoot.textContent.includes("PT-2026-0018"));
   assert.ok(listRoot.textContent.includes("Mild cardiomegaly"));
+  assert.ok(![...listRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Delete"),
+    "doctors should not delete patients from the list");
 });
 
 const root = document.getElementById("root");
@@ -126,7 +128,58 @@ await renderPatientPage({ target: root });
 test("nurses cannot edit patient remarks", () => {
   assert.equal(root.querySelector("textarea#patient-remarks"), null);
   assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Save notes"));
+  assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Delete"));
 });
+
+{
+  window.confirm = () => true;
+  let deleted = null;
+  api.deletePatients = async (ids) => { deleted = ids; return { success: true, deleted: ids.length }; };
+  api.listPatients = async () => ({
+    patients: [
+      {
+        patientId: "PT-2026-0018",
+        age: "61",
+        sex: "Male",
+        lastDiagnosis: "Mild cardiomegaly",
+        caseCount: 1,
+        lastCaseAt: "2026-09-01T00:00:00.000Z",
+      },
+      {
+        patientId: "PT-2026-0019",
+        age: "44",
+        sex: "Female",
+        lastDiagnosis: "Clear lungs",
+        caseCount: 1,
+        lastCaseAt: "2026-09-02T00:00:00.000Z",
+      },
+    ],
+  });
+  state.user = { role: "admin", userId: "a1", name: "System Admin" };
+  await renderPatientsPage({ target: listRoot });
+  await renderPatientPage({ target: root });
+
+  test("admins tick rows and use one Delete button on the patients list", () => {
+    assert.ok([...listRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Delete"));
+    assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Delete"));
+    const boxes = [...listRoot.querySelectorAll('input[type="checkbox"][aria-label="Select row"]')];
+    assert.equal(boxes.length, 2, "each patient row should have a checkbox");
+  });
+
+  for (let i = 0; i < 2; i++) {
+    const boxes = [...listRoot.querySelectorAll('input[type="checkbox"][aria-label="Select row"]')];
+    boxes[i].checked = true;
+    boxes[i].dispatchEvent(new window.Event("change"));
+  }
+  const del = [...listRoot.querySelectorAll("button")].find((b) => /Delete/.test(b.textContent));
+  assert.ok(del && del.textContent.includes("2"), `expected Delete (2), got ${del?.textContent}`);
+  del.dispatchEvent(new window.Event("click"));
+  await new Promise((r) => setTimeout(r, 0));
+
+  test("admin bulk delete on the patients list sends every selected id", () => {
+    assert.deepEqual(deleted, ["PT-2026-0018", "PT-2026-0019"]);
+  });
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

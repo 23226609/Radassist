@@ -83,6 +83,7 @@ export const api = {
   summariseDiagnosis: (id) =>
     request("POST", `/cases/${encodeURIComponent(id)}/summarise-diagnosis`),
   deleteCase: (id) => request("DELETE", `/cases/${encodeURIComponent(id)}`),
+  deleteCases: (ids) => request("POST", "/cases/bulk-delete", { ids }),
   imageUrl: (imageId) => `${BASE}/images/${imageId}`,
   fetchImage: async (imageId) => {
     const res = await request("GET", `/images/${imageId}`, undefined, { raw: true });
@@ -97,6 +98,8 @@ export const api = {
   },
   getPatient: (id) => request("GET", `/patients/${encodeURIComponent(id)}`),
   updatePatient: (id, payload) => request("PUT", `/patients/${encodeURIComponent(id)}`, payload),
+  deletePatient: (id) => request("DELETE", `/patients/${encodeURIComponent(id)}`),
+  deletePatients: (ids) => request("POST", "/patients/bulk-delete", { ids }),
 
   // Users
   listUsers: (params = {}) => {
@@ -109,6 +112,8 @@ export const api = {
     const q = new URLSearchParams(params).toString();
     return request("GET", `/audit-logs${q ? "?" + q : ""}`);
   },
+  deleteAudit: (id) => request("DELETE", `/audit-logs/${encodeURIComponent(id)}`),
+  deleteAuditLogs: (ids) => request("POST", "/audit-logs/bulk-delete", { ids }),
 
   // Stats
   stats: () => request("GET", "/stats"),

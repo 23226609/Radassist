@@ -296,18 +296,44 @@ exports.finalizeCase = catchAsync(async (req, res, next) => {
   res.json({ success: true, case: { ...c.toObject(), imageUrl: c.imageId ? `/api/images/${c.imageId}` : null } });
 });
 
+async function removeCaseDoc(c) {
+  if (c.imageId) {
+    try { await bucket().delete(c.imageId); } catch (_) { /* ignore */ }
+  }
+  await Case.deleteOne({ _id: c._id });
+  return c.caseId || String(c._id);
+}
+
 exports.deleteCase = catchAsync(async (req, res, next) => {
   if (req.user.role !== 'admin') return next(ApiError.forbidden('Only admins can delete.'));
   const c = await findCaseByAnyId(req.params.id);
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
 
-  // Drop the GridFS image too.
-  if (c.imageId) {
-    try { await bucket().delete(c.imageId); } catch (_) { /* ignore */ }
-  }
-  await Case.deleteOne({ _id: c._id });
-  await addAuditLog(req.user.userId, 'CASE_DELETED', `Deleted case ${c.caseId || c._id}`, c.caseId || String(c._id));
+  const caseId = await removeCaseDoc(c);
+  await addAuditLog(req.user.userId, 'CASE_DELETED', `Deleted case ${caseId}`, caseId);
   res.json({ success: true });
+});
+
+exports.deleteCases = catchAsync(async (req, res, next) => {
+  if (req.user.role !== 'admin') return next(ApiError.forbidden('Only admins can delete.'));
+  const ids = Array.isArray(req.body?.ids)
+    ? [...new Set(req.body.ids.map((id) => String(id || '').trim()).filter(Boolean))]
+    : [];
+  if (!ids.length) return next(ApiError.badRequest('Select at least one case.'));
+
+  const deleted = [];
+  for (const id of ids) {
+    const c = await findCaseByAnyId(id);
+    if (!c) continue;
+    deleted.push(await removeCaseDoc(c));
+  }
+  await addAuditLog(
+    req.user.userId,
+    'CASE_DELETED',
+    `Deleted ${deleted.length} ${deleted.length === 1 ? 'case' : 'cases'}`,
+    deleted[0] || null
+  );
+  res.json({ success: true, deleted: deleted.length, ids: deleted });
 });
 
 // ---------------------------------------------------------------------------

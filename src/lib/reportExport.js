@@ -4,16 +4,49 @@
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
 
 export const REMARKS_HEADING = "Radiologist remarks";
+export const MANUAL_FINDINGS_HEADING = "Clinician-added findings";
+
+function splitOnHeading(reportText, heading) {
+  const text = String(reportText || "").replace(/\r\n/g, "\n");
+  const marker = `\n\n${heading}\n`;
+  const idx = text.indexOf(marker);
+  if (idx >= 0) {
+    return {
+      body: text.slice(0, idx).trim(),
+      section: text.slice(idx + marker.length).trim(),
+    };
+  }
+  if (text.startsWith(`${heading}\n`)) {
+    return { body: "", section: text.slice(heading.length).trim() };
+  }
+  return { body: text.trim(), section: "" };
+}
 
 export function splitReportAndRemarks(reportText) {
-  const text = String(reportText || "").replace(/\r\n/g, "\n");
-  const marker = `\n\n${REMARKS_HEADING}\n`;
-  const idx = text.indexOf(marker);
-  if (idx < 0) return { body: text.trim(), remarks: "" };
-  return {
-    body: text.slice(0, idx).trim(),
-    remarks: text.slice(idx + marker.length).trim(),
-  };
+  const { body, section } = splitOnHeading(reportText, REMARKS_HEADING);
+  return { body, remarks: section };
+}
+
+export function splitManualFindings(reportText) {
+  const { body, section } = splitOnHeading(reportText, MANUAL_FINDINGS_HEADING);
+  return { body, manual: section };
+}
+
+export function isManualFinding(f) {
+  const source = String(f?.source || "").toLowerCase();
+  if (source === "manual" || source === "clinician") return true;
+  return String(f?._id || f?.id || "").startsWith("tmp-");
+}
+
+function formatManualFinding(f, i) {
+  const label = String(f?.label || "").trim() || "Finding";
+  const lines = [`${i + 1}. ${label}`];
+  const sentence = String(f?.sentence || "").trim();
+  if (sentence && sentence !== label) lines.push(sentence);
+  if (f?.location) lines.push(`Location: ${f.location}`);
+  if (f?.size) lines.push(`Size: ${f.size}`);
+  if (f?.pattern && f.pattern !== "Other") lines.push(`Pattern: ${f.pattern}`);
+  return lines.join("\n");
 }
 
 // Puts the clinician's remarks in their own section at the end of the stored
@@ -26,6 +59,22 @@ export function applyRemarksToReport(reportText, remarks) {
     reportText: `${body}\n\n${REMARKS_HEADING}\n${note}`,
     remarks: note,
   };
+}
+
+// Writes hand-added findings into the report body (before remarks) so the
+// Report window, Word, and PDF all include them. Replaces the previous
+// clinician-added block instead of stacking copies.
+export function composeReportText(reportText, { remarks, findings } = {}) {
+  const split = splitReportAndRemarks(reportText);
+  const note = remarks !== undefined ? String(remarks || "").trim() : split.remarks;
+  const original = splitManualFindings(split.body).body;
+  const manual = (Array.isArray(findings) ? findings : []).filter(isManualFinding);
+  let body = original;
+  if (manual.length) {
+    const block = manual.map((f, i) => formatManualFinding(f, i)).join("\n\n");
+    body = `${original}\n\n${MANUAL_FINDINGS_HEADING}\n${block}`.trim();
+  }
+  return applyRemarksToReport(body, note);
 }
 
 function safeName(value) {
@@ -47,6 +96,9 @@ export function buildReportSections(c = {}) {
       label: f.label || `Finding ${i + 1}`,
       detail: f.sentence || "",
       location: f.location || "",
+      size: f.size || "",
+      pattern: f.pattern && f.pattern !== "Other" ? f.pattern : "",
+      source: f.source || "",
       confidence: Math.round((f.confidence ?? 0) * 100),
     })),
     fileBase: `RadAssist-${safeName(c.patientId || c.caseId || c._id)}`,
@@ -90,6 +142,8 @@ export async function downloadReportDocx(c) {
       }));
       if (f.detail) children.push(new Paragraph({ text: f.detail }));
       if (f.location) children.push(new Paragraph({ text: `Location: ${f.location}` }));
+      if (f.size) children.push(new Paragraph({ text: `Size: ${f.size}` }));
+      if (f.pattern) children.push(new Paragraph({ text: `Pattern: ${f.pattern}` }));
     }
   }
   const blob = await Packer.toBlob(new Document({
@@ -140,6 +194,8 @@ export function buildReportPdfBytes(c) {
       lines.push(`${f.n}. ${f.label}`);
       if (f.detail) lines.push(...wrapPlain(f.detail, 88));
       if (f.location) lines.push(`Location: ${f.location}`);
+      if (f.size) lines.push(`Size: ${f.size}`);
+      if (f.pattern) lines.push(`Pattern: ${f.pattern}`);
       lines.push("");
     }
   }

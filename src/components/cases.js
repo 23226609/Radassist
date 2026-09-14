@@ -8,6 +8,7 @@ import { svgIcon } from "./icons.js";
 import { unwrapLegacyReport } from "./review.js";
 import { applyRemarksToReport, splitReportAndRemarks } from "../lib/reportExport.js";
 import { paginate, paginationBar } from "../lib/pagination.js";
+import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
 
 const STATUS_BADGE = {
   pending: "bg-amber-50 text-amber-700",
@@ -45,6 +46,22 @@ export async function renderCasesPage({ target }) {
   let loading = true;
   let error = "";
   let page = 1;
+  const selected = new Set();
+  const isAdmin = () => state.user?.role === "admin";
+  const caseIdOf = (c) => c.caseId || c._id;
+
+  function deleteSelected() {
+    const ids = [...selected];
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} selected ${ids.length === 1 ? "case" : "cases"}? This cannot be undone.`)) return;
+    api.deleteCases(ids)
+      .then((data) => {
+        selected.clear();
+        toast(`Deleted ${data.deleted ?? ids.length} ${ids.length === 1 ? "case" : "cases"}.`);
+        refresh();
+      })
+      .catch((err) => toast(err.message || "Could not delete the selected cases."));
+  }
 
   async function refresh() {
     loading = true;
@@ -53,6 +70,9 @@ export async function renderCasesPage({ target }) {
     try {
       const data = await api.listCases({ status: status === "all" ? "" : status, q });
       cases = data.cases || [];
+      for (const id of [...selected]) {
+        if (!cases.some((c) => caseIdOf(c) === id)) selected.delete(id);
+      }
     } catch (err) {
       error = err.message;
     } finally {
@@ -82,19 +102,20 @@ export async function renderCasesPage({ target }) {
               placeholder: "Search case, patient, diagnosis…",
               value: q,
               onInput: (e) => { q = e.target.value; },
-              onChange: () => { page = 1; refresh(); },
+              onChange: () => { page = 1; selected.clear(); refresh(); },
             })
           ),
           el("select", {
             class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600",
             value: status,
-            onChange: (e) => { status = e.target.value; page = 1; refresh(); },
+            onChange: (e) => { status = e.target.value; page = 1; selected.clear(); refresh(); },
           },
             el("option", { value: "all" }, "All statuses"),
             el("option", { value: "pending" }, "Pending"),
             el("option", { value: "completed" }, "Completed"),
             el("option", { value: "finalized" }, "Finalized")
-          )
+          ),
+          isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })
         ),
         error
           ? el("div", { class: "p-6 text-red-700" }, error)
@@ -105,11 +126,13 @@ export async function renderCasesPage({ target }) {
           : (() => {
               const paged = paginate(cases, page);
               page = paged.page;
+              const pageIds = paged.items.map(caseIdOf);
               return el("div", {},
                 el("div", { class: "overflow-x-auto" },
                   el("table", { class: "w-full min-w-[760px] text-left text-sm" },
                     el("thead", { class: "bg-slate-50 text-slate-600" },
                       el("tr", {},
+                        isAdmin() ? headerCheckbox(pageIds, selected, (on) => { togglePage(selected, pageIds, on); render(); }) : null,
                         ["Case", "Patient", "Date", "Status", "Diagnosis"].map((h) =>
                           el("th", { class: "p-4" }, h)
                         )
@@ -119,9 +142,10 @@ export async function renderCasesPage({ target }) {
                       ...paged.items.map((c) =>
                         el("tr", {
                           class: "border-t cursor-pointer hover:bg-slate-50",
-                          onClick: () => openCase(c.caseId || c._id),
+                          onClick: () => openCase(caseIdOf(c)),
                         },
-                          el("td", { class: "p-4 font-bold text-slate-900" }, c.caseId || c._id),
+                          isAdmin() ? rowCheckbox(caseIdOf(c), selected, (id, on) => { toggleSelected(selected, id, on); render(); }) : null,
+                          el("td", { class: "p-4 font-bold text-slate-900" }, caseIdOf(c)),
                           el("td", {},
                             el("button", {
                               class: "hover:text-cyan-700 hover:underline",
@@ -160,6 +184,7 @@ export async function renderCasePage({ target }) {
   let remarksDraft = "";
 
   const canRemark = () => state.user?.role !== "nurse";
+  const isAdmin = () => state.user?.role === "admin";
 
   async function load() {
     if (!caseId) {
@@ -204,6 +229,23 @@ export async function renderCasePage({ target }) {
     }
   }
 
+  async function deleteThis() {
+    if (!localCase || !isAdmin()) return;
+    const id = localCase.caseId || localCase._id;
+    if (!confirm(`Delete case ${id} for ${localCase.patientId}?`)) return;
+    busy = true;
+    paint();
+    try {
+      await api.deleteCase(id);
+      toast(`Deleted ${id}`);
+      setPage("cases");
+    } catch (err) {
+      toast(err.message || "Could not delete this case.");
+      busy = false;
+      paint();
+    }
+  }
+
   function paint() {
     const edit = canRemark();
     const findings = localCase?.findings || [];
@@ -240,6 +282,11 @@ export async function renderCasePage({ target }) {
                   class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50",
                   onClick: () => openReview(id),
                 }, svgIcon("eye", { size: 16 }), "Review X-ray"),
+                isAdmin() && el("button", {
+                  class: "inline-flex items-center gap-1 rounded-xl border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50",
+                  disabled: busy,
+                  onClick: deleteThis,
+                }, svgIcon("trash", { size: 16 }), "Delete"),
                 edit && el("button", {
                   class: "rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50",
                   disabled: busy,

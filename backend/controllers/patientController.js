@@ -1,11 +1,16 @@
 // controllers/patientController.js
 // Patient list / chart: demographics + notes, with studies pulled from Case.
 
+const mongoose = require('mongoose');
 const Case = require('../models/Case');
 const Patient = require('../models/Patient');
 const ApiError = require('../utils/ApiError');
 const catchAsync = require('../utils/catchAsync');
 const addAuditLog = require('../utils/auditLogger');
+
+function imageBucket() {
+  return new mongoose.mongo.GridFSBucket(mongoose.connection.db, { bucketName: 'images' });
+}
 
 function escapeRegex(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
@@ -189,4 +194,71 @@ exports.updatePatient = catchAsync(async (req, res, next) => {
     },
     cases: cases.map(summariseCase),
   });
+});
+
+async function removePatientById(patientId) {
+  const cases = await Case.find(caseFilter(patientId));
+  const record = await findPatientRecord(patientId);
+  if (!cases.length && !record) return null;
+
+  if (cases.some((c) => c.imageId)) {
+    const bucket = imageBucket();
+    for (const c of cases) {
+      if (!c.imageId) continue;
+      try { await bucket.delete(c.imageId); } catch (_) { /* ignore missing images */ }
+    }
+  }
+  if (cases.length) await Case.deleteMany(caseFilter(patientId));
+  if (record) await Patient.deleteOne({ _id: record._id });
+  return {
+    patientId: record?.patientId || patientId,
+    deletedCases: cases.length,
+  };
+}
+
+exports.deletePatient = catchAsync(async (req, res, next) => {
+  if (req.user.role !== 'admin') {
+    return next(ApiError.forbidden('Only admins can delete patients.'));
+  }
+
+  const patientId = String(req.params.id || '').trim();
+  if (!patientId) return next(ApiError.badRequest('Patient id is required.'));
+
+  const removed = await removePatientById(patientId);
+  if (!removed) return next(ApiError.notFound(`Patient ${patientId} not found`));
+
+  await addAuditLog(
+    req.user.userId,
+    'PATIENT_DELETED',
+    `Deleted patient ${removed.patientId} and ${removed.deletedCases} ${removed.deletedCases === 1 ? 'study' : 'studies'}`,
+    removed.patientId
+  );
+
+  res.json({ success: true, deletedCases: removed.deletedCases });
+});
+
+exports.deletePatients = catchAsync(async (req, res, next) => {
+  if (req.user.role !== 'admin') {
+    return next(ApiError.forbidden('Only admins can delete patients.'));
+  }
+  const ids = Array.isArray(req.body?.ids)
+    ? [...new Set(req.body.ids.map((id) => String(id || '').trim()).filter(Boolean))]
+    : [];
+  if (!ids.length) return next(ApiError.badRequest('Select at least one patient.'));
+
+  const deleted = [];
+  let deletedCases = 0;
+  for (const id of ids) {
+    const removed = await removePatientById(id);
+    if (!removed) continue;
+    deleted.push(removed.patientId);
+    deletedCases += removed.deletedCases;
+  }
+  await addAuditLog(
+    req.user.userId,
+    'PATIENT_DELETED',
+    `Deleted ${deleted.length} ${deleted.length === 1 ? 'patient' : 'patients'} and ${deletedCases} ${deletedCases === 1 ? 'study' : 'studies'}`,
+    deleted[0] || null
+  );
+  res.json({ success: true, deleted: deleted.length, deletedCases, ids: deleted });
 });

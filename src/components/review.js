@@ -21,7 +21,7 @@ import { el, mount } from "../dom.js";
 import { state, setPage, toast } from "../state.js";
 import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
-import { downloadReportDocx, downloadReportPdf, applyRemarksToReport, splitReportAndRemarks } from "../lib/reportExport.js";
+import { downloadReportDocx, downloadReportPdf, composeReportText, splitReportAndRemarks } from "../lib/reportExport.js";
 
 const PATTERNS = ["Nodular", "Diffuse", "Linear", "Ground-glass", "Consolidation", "Other"];
 
@@ -425,8 +425,11 @@ export async function renderReviewPage({ target }) {
       pattern: "Other",
       sentence: "",
       status: "pending",
+      source: "manual",
     };
-    localCase = { ...localCase, findings: [...(localCase.findings || []), newFinding] };
+    const next = [...(localCase.findings || []), newFinding];
+    localCase = { ...localCase, findings: next };
+    carouselIndex = next.length - 1;
     render();
   }
 
@@ -438,15 +441,55 @@ export async function renderReviewPage({ target }) {
     render();
   }
 
+  function applyLocalEdits(reportText, { remarks = remarksDraft } = {}) {
+    return composeReportText(reportText, {
+      remarks,
+      findings: localCase.findings,
+    });
+  }
+
+  function syncFromPersisted(stored, fallback = {}) {
+    localCase = {
+      ...localCase,
+      ...stored,
+      findings: stored.findings || localCase.findings,
+      reportText: stored.reportText ?? localCase.reportText,
+      remarks: stored.remarks ?? fallback.remarks ?? localCase.remarks,
+    };
+    remarksDraft = localCase.remarks || fallback.remarks || "";
+    remarksDirty = false;
+  }
+
+  async function persistClinicianEdits() {
+    const data = await api.getCase(getEffectiveCaseId());
+    const stored = unwrapLegacyReport(data.case || data);
+    const note = String(remarksDraft || "").trim();
+    if (stored.status === "finalized" || state.user?.role === "nurse") {
+      if (state.user?.role !== "nurse") {
+        const updated = await api.updateCase(getEffectiveCaseId(), { remarks: note });
+        const next = unwrapLegacyReport(updated.case || { ...stored, remarks: note });
+        syncFromPersisted(next, { remarks: note });
+        return next;
+      }
+      return stored;
+    }
+    const composed = applyLocalEdits(stored.reportText, { remarks: note });
+    const payload = {
+      diagnosis: localCase.diagnosis,
+      reportText: composed.reportText,
+      remarks: composed.remarks,
+      findings: localCase.findings,
+    };
+    const updated = await api.updateCase(getEffectiveCaseId(), payload);
+    const next = unwrapLegacyReport(updated.case || { ...stored, ...payload });
+    syncFromPersisted(next, composed);
+    return next;
+  }
+
   async function saveDraft() {
     busy = true; render();
     try {
-      const updated = await api.updateCase(getEffectiveCaseId(), {
-        diagnosis: localCase.diagnosis,
-        reportText: localCase.reportText,
-        findings: localCase.findings,
-      });
-      localCase = updated.case || updated;
+      await persistClinicianEdits();
       msg = "Draft saved.";
       toast(msg);
     } catch (err) {
@@ -459,12 +502,7 @@ export async function renderReviewPage({ target }) {
     if (!confirm("Finalize this report? Finalized cases are read-only for clinicians.")) return;
     busy = true; render();
     try {
-      // Save findings + text first, then finalize
-      await api.updateCase(getEffectiveCaseId(), {
-        diagnosis: localCase.diagnosis,
-        reportText: localCase.reportText,
-        findings: localCase.findings,
-      });
+      await persistClinicianEdits();
       const data = await api.finalizeCase(getEffectiveCaseId());
       localCase = data.case || data;
       msg = "Report finalized and approved.";
@@ -475,11 +513,18 @@ export async function renderReviewPage({ target }) {
     } finally { busy = false; render(); }
   }
 
-  function openReport() {
+  async function openReport() {
     const id = getEffectiveCaseId();
     if (!id) {
       toast("This case has no id yet.");
       return;
+    }
+    if (state.user?.role !== "nurse") {
+      try {
+        await persistClinicianEdits();
+      } catch (err) {
+        toast(err.message || "Could not save before opening the report.");
+      }
     }
     const url = new URL(window.location.href);
     url.searchParams.set("view", "report");
@@ -496,18 +541,7 @@ export async function renderReviewPage({ target }) {
     busy = true;
     render();
     try {
-      const data = await api.getCase(getEffectiveCaseId());
-      const stored = unwrapLegacyReport(data.case || data);
-      const note = String(remarksDraft || "").trim();
-      // Finalized reports are locked. Remarks still save on the case, but
-      // they are not copied into reportText / Word / PDF.
-      const next = stored.status === "finalized"
-        ? { remarks: note }
-        : { ...applyRemarksToReport(stored.reportText, note), findings: localCase.findings };
-      const updated = await api.updateCase(getEffectiveCaseId(), next);
-      localCase = updated.case || { ...localCase, ...next };
-      remarksDraft = localCase.remarks || note;
-      remarksDirty = false;
+      const stored = await persistClinicianEdits();
       msg = stored.status === "finalized"
         ? "Remarks saved. The finalized report was not changed."
         : "Remarks saved and added to the report.";
@@ -525,21 +559,14 @@ export async function renderReviewPage({ target }) {
     busy = true;
     render();
     try {
-      // Persist any unsaved remarks, then read the report back from MongoDB
-      // so Word/PDF always match the latest stored copy.
-      const data = await api.getCase(getEffectiveCaseId());
-      let stored = unwrapLegacyReport(data.case || data);
-      const isNurse = state.user?.role === "nurse";
-      if (!isNurse && remarksDirty) {
-        const note = String(remarksDraft || "").trim();
-        const next = stored.status === "finalized"
-          ? { remarks: note }
-          : { ...applyRemarksToReport(stored.reportText, note), findings: localCase.findings };
-        const updated = await api.updateCase(getEffectiveCaseId(), next);
-        stored = unwrapLegacyReport(updated.case || { ...stored, ...next });
-        localCase = { ...localCase, reportText: stored.reportText, remarks: stored.remarks ?? note };
-        remarksDraft = localCase.remarks || note;
-        remarksDirty = false;
+      // Persist unsaved remarks and hand-added findings, then download the
+      // stored report so Word/PDF match what the clinician just typed.
+      let stored;
+      if (state.user?.role === "nurse") {
+        const data = await api.getCase(getEffectiveCaseId());
+        stored = unwrapLegacyReport(data.case || data);
+      } else {
+        stored = await persistClinicianEdits();
       }
       if (!(stored.reportText || "").trim()) {
         toast("No report has been saved for this case yet.");
