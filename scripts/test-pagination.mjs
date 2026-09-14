@@ -68,7 +68,7 @@ test("empty lists stay on page 1", () => {
 const cases = Array.from({ length: PAGE_SIZE + 1 }, (_, i) => ({
   caseId: `CASE-${String(i + 1).padStart(2, "0")}`,
   patientId: `PT-${String(i + 1).padStart(2, "0")}`,
-  status: "pending",
+  status: "pending_approve",
   createdAt: "2026-09-13T00:00:00.000Z",
   diagnosis: `Finding ${i + 1}`,
 }));

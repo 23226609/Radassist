@@ -11,18 +11,15 @@ import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
 import { urgentBadge, patientDisplayName } from "../lib/tags.js";
 import { PAGE, searchField, statusChips, emptyState, pageHeading, sortWorklist } from "../lib/ui.js";
-
-const STATUS_BADGE = {
-  pending: "bg-amber-50 text-amber-700",
-  completed: "bg-cyan-50 text-cyan-700",
-  finalized: "bg-green-50 text-green-700",
-};
+import { statusLabel, statusBadgeClass, isGenerating } from "../lib/caseStatus.js";
+import { CASES_CHANGED } from "../lib/analysisJob.js";
+import { forgetCases } from "../lib/records.js";
 
 function statusBadge(s) {
   return el(
     "span",
-    { class: `rounded-full px-2 py-0.5 text-xs font-bold capitalize ${STATUS_BADGE[s] || "bg-slate-100 text-slate-700"}` },
-    s || "—"
+    { class: `rounded-full px-2 py-0.5 text-xs font-bold ${statusBadgeClass(s)}` },
+    statusLabel(s) || "—"
   );
 }
 
@@ -36,7 +33,11 @@ function openPatient(patientId) {
   setPage("patient");
 }
 
-function openReview(caseId) {
+function openReview(caseId, c) {
+  if (c && isGenerating(c)) {
+    toast("The report is still generating.");
+    return;
+  }
   state.selectedCaseId = caseId;
   setPage("review");
 }
@@ -53,6 +54,11 @@ export async function renderCasesPage({ target }) {
   const isAdmin = () => state.user?.role === "admin";
   const caseIdOf = (c) => c.caseId || c._id;
 
+  if (target._stopCaseWatch) target._stopCaseWatch();
+  const watch = new AbortController();
+  target._stopCaseWatch = () => watch.abort();
+  window.addEventListener(CASES_CHANGED, () => refresh(), { signal: watch.signal });
+
   function deleteSelected() {
     const ids = [...selected];
     if (!ids.length) return;
@@ -60,6 +66,7 @@ export async function renderCasesPage({ target }) {
     api.deleteCases(ids)
       .then((data) => {
         selected.clear();
+        forgetCases(data.ids || ids);
         toast(`Deleted ${data.deleted ?? ids.length} ${ids.length === 1 ? "case" : "cases"}.`);
         refresh();
       })
@@ -99,8 +106,8 @@ export async function renderCasesPage({ target }) {
       "main",
       { class: PAGE },
       pageHeading({
-        title: "Cases",
-        subtitle: "Urgent studies stay at the top. Press / to search.",
+        title: "Case archive",
+        subtitle: "Every stored study — case ID, film, and report. The worklist is the daily queue.",
         actions: state.user?.role !== "nurse"
           ? el("button", {
               class: "inline-flex items-center gap-2 rounded-xl bg-cyan-600 px-4 py-2 font-semibold text-white hover:bg-cyan-700",
@@ -123,8 +130,7 @@ export async function renderCasesPage({ target }) {
               onChange: (e) => setFilter(e.target.value),
             },
               el("option", { value: "all" }, "All statuses"),
-              el("option", { value: "pending" }, "Pending"),
-              el("option", { value: "completed" }, "Completed"),
+              el("option", { value: "pending_approve" }, "Pending approve"),
               el("option", { value: "finalized" }, "Finalized")
             ),
             isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })
@@ -142,8 +148,8 @@ export async function renderCasesPage({ target }) {
           : cases.length === 0
           ? emptyState({
               icon: "file-text",
-              title: "No cases match this filter",
-              hint: "Clear the search or add a new X-ray case.",
+              title: "No studies in the archive",
+              hint: "Clear the search, or add a new X-ray from the worklist.",
               actionLabel: state.user?.role !== "nurse" ? "New case" : null,
               onAction: () => setPage("new"),
             })
@@ -195,7 +201,7 @@ export async function renderCasesPage({ target }) {
                           el("td", { class: "whitespace-nowrap" },
                             el("button", {
                               class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-cyan-700 hover:bg-cyan-50 text-sm",
-                              onClick: (e) => { e.stopPropagation(); openReview(caseIdOf(c)); },
+                              onClick: (e) => { e.stopPropagation(); openReview(caseIdOf(c), c); },
                             }, svgIcon("image", { size: 16 }), "Review")
                           )
                         )
@@ -299,6 +305,7 @@ export async function renderCasePage({ target }) {
     paint();
     try {
       await api.deleteCase(id);
+      forgetCases([id]);
       toast(`Deleted ${id}`);
       setPage("cases");
     } catch (err) {
@@ -346,7 +353,7 @@ export async function renderCasePage({ target }) {
               el("div", { class: "flex flex-wrap gap-2" },
                 el("button", {
                   class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50",
-                  onClick: () => openReview(id),
+                  onClick: () => openReview(id, localCase),
                 }, svgIcon("eye", { size: 16 }), "Review X-ray"),
                 isAdmin() && el("button", {
                   class: "inline-flex items-center gap-1 rounded-xl border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50",

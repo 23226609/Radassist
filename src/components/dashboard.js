@@ -10,21 +10,18 @@ import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
 import { urgentBadge, patientDisplayName } from "../lib/tags.js";
 import { PAGE, searchField, statusChips, metricCard, emptyState, pageHeading, sortWorklist } from "../lib/ui.js";
+import { statusLabel, statusBadgeClass, isGenerating, caseStatus } from "../lib/caseStatus.js";
+import { CASES_CHANGED } from "../lib/analysisJob.js";
+import { forgetCases } from "../lib/records.js";
 
 const diagnosisRequested = new Set();
 const diagnosisPending = new Set();
 
-const STATUS_BADGE = {
-  pending:    "bg-amber-50 text-amber-700",
-  completed:  "bg-cyan-50 text-cyan-700",
-  finalized:  "bg-green-50 text-green-700",
-};
-
 function statusBadge(s) {
   return el(
     "span",
-    { class: `rounded-full px-2 py-0.5 text-xs font-bold capitalize ${STATUS_BADGE[s] || "bg-slate-100 text-slate-700"}` },
-    s
+    { class: `rounded-full px-2 py-0.5 text-xs font-bold ${statusBadgeClass(s)}` },
+    statusLabel(s)
   );
 }
 
@@ -65,11 +62,16 @@ export async function renderDashboardPage({ target }) {
     }
   }
 
+  if (target._stopCaseWatch) target._stopCaseWatch();
+  const watch = new AbortController();
+  target._stopCaseWatch = () => watch.abort();
+  window.addEventListener(CASES_CHANGED, () => refresh(), { signal: watch.signal });
+
   async function fillDiagnoses(list) {
     if (!["doctor", "admin"].includes(state.user?.role)) return;
     const todo = (list || []).filter((c) => {
       const id = c.caseId || c._id;
-      return id && needsAzureDiagnosis(c) && !diagnosisRequested.has(id);
+      return id && !isGenerating(c) && needsAzureDiagnosis(c) && !diagnosisRequested.has(id);
     });
     await Promise.all(todo.slice(0, 6).map(async (c) => {
       const id = c.caseId || c._id;
@@ -112,6 +114,7 @@ export async function renderDashboardPage({ target }) {
     api.deleteCases(ids)
       .then((data) => {
         selected.clear();
+        forgetCases(data.ids || ids);
         toast(`Deleted ${data.deleted ?? ids.length} ${ids.length === 1 ? "case" : "cases"}.`);
         refresh();
       })
@@ -119,14 +122,17 @@ export async function renderDashboardPage({ target }) {
   }
 
   function render() {
-    const totalFinalized = stats?.finalizedCases ?? cases.filter((c) => c.status === "finalized").length;
-    const totalPending = stats?.pendingCases ?? cases.filter((c) => c.status === "pending").length;
+    const totalFinalized = stats?.finalizedCases ?? cases.filter((c) => caseStatus(c.status) === "finalized").length;
+    const totalPending = stats?.pendingCases ?? cases.filter((c) => caseStatus(c.status) === "pending_approve").length;
     const totalCases = stats?.totalCases ?? cases.length;
     const totalUrgent = stats?.urgentCases ?? cases.filter((c) => c.urgent).length;
     const chipValue = urgentOnly ? "urgent" : status;
 
     function diagnosisCell(c) {
       const id = c.caseId || c._id;
+      if (isGenerating(c)) {
+        return el("em", { class: "text-slate-400" }, "Generating…");
+      }
       if (diagnosisPending.has(id)) {
         return el("em", { class: "text-slate-400" }, "Summarising…");
       }
@@ -169,7 +175,15 @@ export async function renderDashboardPage({ target }) {
           }, svgIcon("eye", { size: 16 }), "View"),
           el("button", {
             class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-slate-600 hover:bg-slate-100 text-sm",
-            onClick: (e) => { e.stopPropagation(); state.selectedCaseId = id; setPage("review"); },
+            onClick: (e) => {
+              e.stopPropagation();
+              if (isGenerating(c)) {
+                toast("The report is still generating.");
+                return;
+              }
+              state.selectedCaseId = id;
+              setPage("review");
+            },
           }, svgIcon("image", { size: 16 }), "Review")
         )
       );
@@ -185,7 +199,7 @@ export async function renderDashboardPage({ target }) {
 
       pageHeading({
         title: "Worklist",
-        subtitle: "Urgent cases stay at the top. Click a metric or chip to filter.",
+        subtitle: "Today’s reporting queue. Urgent stays at the top. Open Review for the film.",
         actions: state.user?.role !== "nurse"
           ? el("button", {
               class: "inline-flex items-center gap-2 rounded-xl bg-cyan-600 px-4 py-2 font-semibold text-white hover:bg-cyan-700",
@@ -216,9 +230,9 @@ export async function renderDashboardPage({ target }) {
           onClick: () => setFilter("finalized"),
         }),
         metricCard({
-          n: totalPending, label: "Pending review", tone: "bg-amber-500",
-          active: status === "pending" && !urgentOnly,
-          onClick: () => setFilter("pending"),
+          n: totalPending, label: "Pending approve", tone: "bg-amber-500",
+          active: status === "pending_approve" && !urgentOnly,
+          onClick: () => setFilter("pending_approve"),
         }),
       ),
 
@@ -237,8 +251,7 @@ export async function renderDashboardPage({ target }) {
               onChange: (e) => setFilter(e.target.value),
             },
               el("option", { value: "all" }, "All statuses"),
-              el("option", { value: "pending" }, "Pending"),
-              el("option", { value: "completed" }, "Completed"),
+              el("option", { value: "pending_approve" }, "Pending approve"),
               el("option", { value: "finalized" }, "Finalized")
             ),
             isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })

@@ -24,6 +24,14 @@ const app = express();
 // Middleware
 // ---------------------------------------------------------------------------
 
+// Authenticated JSON must not be cached. Express ETag + browser If-None-Match
+// was returning 304 with an empty body, which the SPA treated as missing data.
+app.set('etag', false);
+app.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
 // CORS: allow local Vite dev server and any other dev origin

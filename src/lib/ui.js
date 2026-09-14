@@ -47,8 +47,7 @@ export function searchField({
 export function statusChips({ value, onChange, extra }) {
   const opts = [
     { id: "all", label: "All" },
-    { id: "pending", label: "Pending" },
-    { id: "completed", label: "Completed" },
+    { id: "pending_approve", label: "Pending approve" },
     { id: "finalized", label: "Finalized" },
     ...(extra || []),
   ];

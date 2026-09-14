@@ -286,18 +286,6 @@ export async function downloadReportDocx(c) {
   for (const line of s.body.split("\n")) {
     children.push(new Paragraph({ text: line }));
   }
-  if (s.findings.length) {
-    children.push(new Paragraph({ text: "Findings", heading: HeadingLevel.HEADING_2 }));
-    for (const f of s.findings) {
-      children.push(new Paragraph({
-        children: [new TextRun({ text: `${f.n}. ${f.label}`, bold: true })],
-      }));
-      if (f.detail) children.push(new Paragraph({ text: f.detail }));
-      if (f.location) children.push(new Paragraph({ text: `Location: ${f.location}` }));
-      if (f.size) children.push(new Paragraph({ text: `Size: ${f.size}` }));
-      if (f.pattern) children.push(new Paragraph({ text: `Pattern: ${f.pattern}` }));
-    }
-  }
   const blob = await Packer.toBlob(new Document({
     sections: [{ properties: {}, children }],
   }));
@@ -371,17 +359,6 @@ export function buildReportPdfBytes(c, film = null) {
     headerLines.push("Chest X-ray", "");
   }
   const bodyLines = [...wrapPlain(s.body || "(No report text)", 90)];
-  if (s.findings.length) {
-    bodyLines.push("", "Findings", "");
-    for (const f of s.findings) {
-      bodyLines.push(`${f.n}. ${f.label}`);
-      if (f.detail) bodyLines.push(...wrapPlain(f.detail, 88));
-      if (f.location) bodyLines.push(`Location: ${f.location}`);
-      if (f.size) bodyLines.push(`Size: ${f.size}`);
-      if (f.pattern) bodyLines.push(`Pattern: ${f.pattern}`);
-      bodyLines.push("");
-    }
-  }
 
   const pageWidth = 595;
   const pageHeight = 842;

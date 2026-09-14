@@ -1,57 +1,25 @@
 // controllers/patientController.js
 // Patient list / chart: demographics + notes, with studies pulled from Case.
 
-const mongoose = require('mongoose');
 const Case = require('../models/Case');
 const Patient = require('../models/Patient');
 const ApiError = require('../utils/ApiError');
 const catchAsync = require('../utils/catchAsync');
 const addAuditLog = require('../utils/auditLogger');
-const { nameFieldsFrom, composePatientName } = require('../utils/patientName');
-
-function imageBucket() {
-  return new mongoose.mongo.GridFSBucket(mongoose.connection.db, { bucketName: 'images' });
-}
-
-function escapeRegex(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+const { nameFieldsFrom } = require('../utils/patientName');
+const {
+  escapeRegex,
+  findPatientRecord,
+  upsertPatientFromCase,
+  removePatientRecord,
+} = require('../utils/recordSync');
+const { OWNED } = Case;
 
 function caseFilter(patientId) {
-  return { patientId: new RegExp(`^${escapeRegex(patientId)}$`, 'i') };
-}
-
-async function findPatientRecord(patientId) {
-  const exact = await Patient.findOne({ patientId });
-  if (exact) return exact;
-  return Patient.findOne({ patientId: new RegExp(`^${escapeRegex(patientId)}$`, 'i') });
-}
-
-async function upsertPatientFromCase(c) {
-  if (!c?.patientId) return;
-  let p = await findPatientRecord(c.patientId);
-  const names = nameFieldsFrom(c);
-  if (!p) {
-    await Patient.create({
-      patientId: c.patientId,
-      firstName: names.firstName,
-      middleName: names.middleName,
-      lastName: names.lastName,
-      name: names.name,
-      age: c.age || '',
-      sex: ['Female', 'Male', 'Other'].includes(c.sex) ? c.sex : '',
-      history: c.history || '',
-      remarks: '',
-    });
-    return;
-  }
-  if (names.firstName && !p.firstName) p.firstName = names.firstName;
-  if (names.middleName && !p.middleName) p.middleName = names.middleName;
-  if (names.lastName && !p.lastName) p.lastName = names.lastName;
-  if (names.name && !p.name) p.name = names.name;
-  if (!p.age && c.age) p.age = c.age;
-  if (!p.sex && c.sex) p.sex = c.sex;
-  if (!p.history && c.history) p.history = c.history;
-  if (!p.name) p.name = composePatientName(p);
-  await p.save();
+  return {
+    ...OWNED,
+    patientId: new RegExp(`^${escapeRegex(patientId)}$`, 'i'),
+  };
 }
 
 async function patientIdTaken(patientId) {
@@ -74,6 +42,21 @@ async function nextPatientId() {
   return `${prefix}${String(next).padStart(4, '0')}`;
 }
 
+function lastDiagnosisOf(grouped, cases = []) {
+  const raw = grouped.lastDiagnosis || cases[0]?.diagnosis || '';
+  const text = String(raw || '').trim();
+  if (!text || /^generating report/i.test(text)) return '';
+  if (text.startsWith('{') && text.includes('"report"')) {
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed.report === 'string') {
+        return parsed.report.split(/[.!\n]/)[0].trim().slice(0, 120);
+      }
+    } catch { /* keep original */ }
+  }
+  return text;
+}
+
 function summarisePatient(record, grouped = {}, cases = []) {
   const names = nameFieldsFrom({
     firstName: record?.firstName || grouped.firstName,
@@ -92,7 +75,7 @@ function summarisePatient(record, grouped = {}, cases = []) {
     sex: record?.sex || grouped.sex || '',
     history: record?.history || grouped.history || '',
     remarks: record?.remarks || '',
-    lastDiagnosis: grouped.lastDiagnosis || cases[0]?.diagnosis || '',
+    lastDiagnosis: lastDiagnosisOf(grouped, cases),
     lastStatus: grouped.lastStatus || cases[0]?.status || '',
     lastCaseAt: grouped.lastCaseAt || record?.updatedAt || record?.createdAt || null,
     caseCount: grouped.caseCount ?? cases.length,
@@ -137,62 +120,82 @@ exports.upsertPatientFromCase = upsertPatientFromCase;
 exports.listPatients = catchAsync(async (req, res) => {
   const q = String(req.query.q || '').trim();
   const re = q ? new RegExp(escapeRegex(q), 'i') : null;
-  const match = {};
+
+  const patientQuery = re ? { $or: nameSearch(re) } : {};
+  let records = await Patient.find(patientQuery);
+
   if (re) {
-    const named = await Patient.find({ $or: nameSearch(re) }).select('patientId');
-    const ids = named.map((p) => p.patientId);
-    match.$or = [
-      { patientId: re },
-      { patientName: re },
-      { firstName: re },
-      { middleName: re },
-      { lastName: re },
-      ...(ids.length ? [{ patientId: { $in: ids } }] : []),
-    ];
+    const caseHits = await Case.find({
+      ...OWNED,
+      $or: [
+        { patientId: re },
+        { patientName: re },
+        { firstName: re },
+        { middleName: re },
+        { lastName: re },
+        { diagnosis: re },
+      ],
+    }).select('patientId');
+    const extraIds = [...new Set(caseHits.map((c) => c.patientId).filter(Boolean))];
+    if (extraIds.length) {
+      const extra = await Patient.find({ patientId: { $in: extraIds } });
+      const seen = new Set(records.map((p) => String(p.patientId).toLowerCase()));
+      for (const p of extra) {
+        const key = String(p.patientId).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        records.push(p);
+      }
+    }
   }
 
-  const grouped = await Case.aggregate([
-    { $match: match },
-    { $sort: { createdAt: -1 } },
-    {
-      $group: {
-        _id: '$patientId',
-        patientId: { $first: '$patientId' },
-        patientName: { $first: '$patientName' },
-        firstName: { $first: '$firstName' },
-        middleName: { $first: '$middleName' },
-        lastName: { $first: '$lastName' },
-        age: { $first: '$age' },
-        sex: { $first: '$sex' },
-        history: { $first: '$history' },
-        lastDiagnosis: { $first: '$diagnosis' },
-        lastStatus: { $first: '$status' },
-        lastCaseAt: { $first: '$createdAt' },
-        caseCount: { $sum: 1 },
-        urgents: { $addToSet: '$urgent' },
+  const ids = records.map((p) => p.patientId).filter(Boolean);
+  const grouped = ids.length
+    ? await Case.aggregate([
+      { $match: { ...OWNED, patientId: { $in: ids } } },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: '$patientId',
+          patientId: { $first: '$patientId' },
+          patientName: { $first: '$patientName' },
+          firstName: { $first: '$firstName' },
+          middleName: { $first: '$middleName' },
+          lastName: { $first: '$lastName' },
+          age: { $first: '$age' },
+          sex: { $first: '$sex' },
+          history: { $first: '$history' },
+          lastDiagnosis: { $first: '$diagnosis' },
+          lastStatus: { $first: '$status' },
+          lastCaseAt: { $first: '$createdAt' },
+          caseCount: { $sum: 1 },
+          urgents: { $addToSet: '$urgent' },
+        },
       },
-    },
-    { $sort: { lastCaseAt: -1 } },
-  ]);
+    ])
+    : [];
+  const byStudy = new Map(grouped.map((g) => [String(g.patientId).toLowerCase(), g]));
 
-  const notes = await Patient.find(re ? { $or: nameSearch(re) } : {});
-  const byId = new Map(notes.map((n) => [String(n.patientId).toLowerCase(), n]));
-  const seen = new Set();
-
-  const patients = grouped.map((g) => {
-    const p = byId.get(String(g.patientId).toLowerCase());
-    seen.add(String(g.patientId).toLowerCase());
-    return summarisePatient(p, {
+  const patients = [];
+  for (const record of records) {
+    const g = byStudy.get(String(record.patientId).toLowerCase());
+    let p = record;
+    if (g) {
+      p = await upsertPatientFromCase({
+        patientId: record.patientId,
+        firstName: g.firstName,
+        middleName: g.middleName,
+        lastName: g.lastName,
+        patientName: g.patientName,
+        age: g.age,
+        sex: g.sex,
+        history: g.history,
+      }) || record;
+    }
+    patients.push(summarisePatient(p, g ? {
       ...g,
       urgent: (g.urgents || []).some(Boolean),
-    });
-  });
-
-  for (const p of notes) {
-    const key = String(p.patientId).toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    patients.push(summarisePatient(p));
+    } : {}));
   }
 
   patients.sort((a, b) => new Date(b.lastCaseAt || 0) - new Date(a.lastCaseAt || 0));
@@ -336,23 +339,7 @@ exports.updatePatient = catchAsync(async (req, res, next) => {
 });
 
 async function removePatientById(patientId) {
-  const cases = await Case.find(caseFilter(patientId));
-  const record = await findPatientRecord(patientId);
-  if (!cases.length && !record) return null;
-
-  if (cases.some((c) => c.imageId)) {
-    const bucket = imageBucket();
-    for (const c of cases) {
-      if (!c.imageId) continue;
-      try { await bucket.delete(c.imageId); } catch (_) { /* ignore missing images */ }
-    }
-  }
-  if (cases.length) await Case.deleteMany(caseFilter(patientId));
-  if (record) await Patient.deleteOne({ _id: record._id });
-  return {
-    patientId: record?.patientId || patientId,
-    deletedCases: cases.length,
-  };
+  return removePatientRecord(patientId);
 }
 
 exports.deletePatient = catchAsync(async (req, res, next) => {

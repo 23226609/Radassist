@@ -8,9 +8,11 @@ const catchAsync = require('../utils/catchAsync');
 const addAuditLog = require('../utils/auditLogger');
 const { analyzeXray } = require('../utils/aiService');
 const azureFindings = require('../utils/azureFindings');
-const { downloadImage } = require('./_gridfs');
-const { upsertPatientFromCase } = require('./patientController');
+const { bucket, downloadImage } = require('./_gridfs');
 const { nameFieldsFrom } = require('../utils/patientName');
+const { toPublicCase, statusFilter } = require('../utils/caseStatus');
+const { upsertPatientFromCase, removeCaseRecord } = require('../utils/recordSync');
+const { OWNED } = Case;
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || require('os').tmpdir();
 const path = require('path');
@@ -25,21 +27,18 @@ function newCaseId() {
   return `CASE-${stamp}-${rand}`;
 }
 
-// Open a GridFS bucket lazily (mongoose driver 4+ exposes .bucket()).
-function bucket() {
-  const db = mongoose.connection.db;
-  return new mongoose.mongo.GridFSBucket(db, { bucketName: 'images' });
-}
-
 // ---------------------------------------------------------------------------
 // Read endpoints
 // ---------------------------------------------------------------------------
 
 exports.listCases = catchAsync(async (req, res) => {
   const { status, patientId, q, sortBy = 'createdAt', sortDir = 'desc' } = req.query;
-  const filter = {};
+  const filter = { ...OWNED };
 
-  if (status) filter.status = status;
+  if (status) {
+    const statusMatch = statusFilter(status);
+    if (statusMatch) filter.status = statusMatch;
+  }
   if (patientId) filter.patientId = new RegExp(escapeRegex(patientId), 'i');
   if (q) {
     const re = new RegExp(escapeRegex(q), 'i');
@@ -75,11 +74,8 @@ exports.listCases = catchAsync(async (req, res) => {
     return String(av).localeCompare(String(bv)) * dir;
   });
 
-  // Add resolved image URLs.
-  const items = docs.map((c) => ({
-    ...c,
-    imageUrl: c.imageId ? `/api/images/${c.imageId}` : null,
-  }));
+  // Add resolved image URLs and map the old `completed` status.
+  const items = docs.map((c) => toPublicCase(c));
 
   res.json({ success: true, total: items.length, cases: items });
 });
@@ -103,8 +99,7 @@ exports.getCase = catchAsync(async (req, res, next) => {
     }
   }
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
-  c.imageUrl = c.imageId ? `/api/images/${c.imageId}` : null;
-  res.json({ success: true, case: c });
+  res.json({ success: true, case: toPublicCase(c) });
 });
 
 // ---------------------------------------------------------------------------
@@ -120,7 +115,6 @@ exports.createCase = catchAsync(async (req, res, next) => {
     return next(ApiError.badRequest('First name and last name are required.'));
   }
 
-  // Push the image into GridFS.
   const up = bucket().openUploadStream(req.file.originalname, {
     contentType: req.file.mimetype,
     metadata: { patientId, uploader: req.user.userId },
@@ -130,55 +124,83 @@ exports.createCase = catchAsync(async (req, res, next) => {
   });
   const imageId = up.id;
 
-  // Stash a temp file path so the local mlx_vlm server can read it.
   const tmpName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${path.extname(req.file.originalname) || '.jpg'}`;
   const tmpPath = path.join(UPLOAD_DIR, tmpName);
   fs.writeFileSync(tmpPath, req.file.buffer);
 
-  let reportText = '';
-  let aiFindings = [];
-  let aiError = null;
-  let aiModel = process.env.AI_MODEL_PATH || '/Users/PHY/CURV-mlx';
+  const caseId = newCaseId();
+  const sexValue = ['Female', 'Male', 'Other'].includes(sex) ? sex : '';
+  const aiModel = process.env.AI_MODEL_PATH || '/Users/PHY/CURV-mlx';
+  const userId = req.user.userId;
+  const userName = req.user.name;
 
-  try {
-    const aiResult = await analyzeXray({
-      imagePath: tmpPath,
+  await upsertPatientFromCase({
+    patientId,
+    firstName: names.firstName,
+    middleName: names.middleName,
+    lastName: names.lastName,
+    patientName: names.name,
+    age: age || '',
+    sex: sexValue,
+    history: history || '',
+  });
+
+  const doc = await Case.create({
+    caseId,
+    patientId,
+    firstName: names.firstName,
+    middleName: names.middleName,
+    lastName: names.lastName,
+    patientName: names.name,
+    age: age || '',
+    sex: sexValue,
+    history: history || '',
+    diagnosis: 'Generating report…',
+    diagnosisSource: '',
+    reportText: '',
+    findings: [],
+    status: 'pending',
+    createdBy: userId,
+    createdByName: userName,
+    imageId,
+    imageFilename: req.file.originalname,
+    imageContentType: req.file.mimetype,
+    imageSize: req.file.size,
+    aiProvider: '',
+    aiModel: '',
+  });
+
+  await addAuditLog(
+    userId,
+    'CASE_CREATED',
+    `Created case ${caseId} for ${patientId}`,
+    caseId,
+    null,
+    'pending'
+  );
+
+  res.status(201).json({
+    success: true,
+    analysing: true,
+    case: toPublicCase(doc),
+  });
+
+  setImmediate(() => {
+    finishAnalysis({
+      caseId,
+      tmpPath,
       patientId,
       age,
-      sex,
+      sex: sexValue,
       history,
-    });
-    // Middleware returns { report, findings } now.
-    reportText = aiResult.report || aiResult.reportText || '';
-    aiFindings = Array.isArray(aiResult.findings) ? aiResult.findings : [];
-    await addAuditLog(req.user.userId, 'AI_ANALYZED', `Middleware analysed X-ray for ${patientId} (${aiFindings.length} findings)`);
-  } catch (err) {
-    aiError = err.message;
-    console.warn('AI middleware call failed:', err.message);
-    // Fallback: keep the case but with a placeholder so the workflow doesn't break.
-    reportText = `[AI analysis unavailable: ${err.message}]\n\nA clinician should review the uploaded image and complete this report.`;
-  } finally {
-    try { fs.unlinkSync(tmpPath); } catch (_) { /* ignore */ }
-  }
+      userId,
+      aiModel,
+    }).catch((err) => console.error('[createCase] background analysis failed:', err));
+  });
+});
 
-  const caseId = newCaseId();
-  const sentence = (reportText || '').split('.').filter(Boolean)[0] || 'AI report';
-  let diagnosis = sentence.slice(0, 120);
-  let diagnosisSource = 'local';
-  if (azureFindings.isConfigured() && (reportText || '').trim()) {
-    try {
-      diagnosis = await azureFindings.summariseDiagnosis(reportText);
-      diagnosisSource = 'azure';
-    } catch (err) {
-      console.warn('[createCase] Azure diagnosis skipped:', err.message);
-    }
-  }
-
-  // Findings come straight from the AI service. Don't parse the report —
-  // the AI model produces them as a structured JSON list with bbox / confidence
-  // / location / size / pattern / source. The clinician can edit / accept /
-  // reject each one or add manual findings.
-  const findings = (aiFindings || []).map((f, idx) => ({
+function mapAiFindings(aiFindings, reportText) {
+  return (aiFindings || []).map((f, idx) => ({
     _id: f._id || `ai-${Date.now()}-${idx}`,
     id: f.id || `ai-${idx}`,
     label: f.label || 'AI finding',
@@ -191,72 +213,78 @@ exports.createCase = catchAsync(async (req, res, next) => {
     status: f.status || 'pending',
     source: f.source || 'AI',
   }));
+}
 
-  const doc = await Case.create({
-    caseId,
-    patientId,
-    firstName: names.firstName,
-    middleName: names.middleName,
-    lastName: names.lastName,
-    patientName: names.name,
-    age: age || '',
-    sex: ['Female', 'Male', 'Other'].includes(sex) ? sex : '',
-    history: history || '',
-    diagnosis,
-    diagnosisSource,
-    reportText,
-    findings,
-    status: 'completed',
-    createdBy: req.user.userId,
-    createdByName: req.user.name,
-    imageId,
-    imageFilename: req.file.originalname,
-    imageContentType: req.file.mimetype,
-    imageSize: req.file.size,
-    aiProvider: aiError ? '' : 'mlx_vlm',
-    aiModel: aiError ? '' : aiModel,
-  });
-
-  try { await upsertPatientFromCase(doc); } catch (err) {
-    console.warn('[createCase] patient upsert skipped:', err.message);
+async function finishAnalysis({ caseId, tmpPath, patientId, age, sex, history, userId, aiModel }) {
+  let reportText = '';
+  let aiFindings = [];
+  let aiError = null;
+  try {
+    const aiResult = await analyzeXray({
+      imagePath: tmpPath,
+      patientId,
+      age,
+      sex,
+      history,
+    });
+    reportText = aiResult.report || aiResult.reportText || '';
+    aiFindings = Array.isArray(aiResult.findings) ? aiResult.findings : [];
+    await addAuditLog(userId, 'AI_ANALYZED', `Middleware analysed X-ray for ${patientId} (${aiFindings.length} findings)`);
+  } catch (err) {
+    aiError = err.message;
+    console.warn('AI middleware call failed:', err.message);
+    reportText = `[AI analysis unavailable: ${err.message}]\n\nA clinician should review the uploaded image and complete this report.`;
+  } finally {
+    try { fs.unlinkSync(tmpPath); } catch (_) { /* ignore */ }
   }
 
-  await addAuditLog(
-    req.user.userId,
-    'CASE_CREATED',
-    `Created case ${caseId} for ${patientId}${aiError ? ' (AI failed)' : ''}`,
-    caseId,
-    null,
-    'completed'
-  );
+  const c = await Case.findOne({ caseId });
+  if (!c || c.status === 'finalized') return;
 
-  res.status(201).json({
-    success: true,
-    case: { ...doc.toObject(), imageUrl: `/api/images/${imageId}` },
-    aiError,
-  });
-});
+  const sentence = (reportText || '').split('.').filter(Boolean)[0] || 'AI report';
+  let diagnosis = sentence.slice(0, 120);
+  let diagnosisSource = 'local';
+  if (azureFindings.isConfigured() && (reportText || '').trim() && !aiError) {
+    try {
+      diagnosis = await azureFindings.summariseDiagnosis(reportText);
+      diagnosisSource = 'azure';
+    } catch (err) {
+      console.warn('[createCase] Azure diagnosis skipped:', err.message);
+    }
+  }
+
+  c.reportText = reportText;
+  c.findings = mapAiFindings(aiFindings, reportText);
+  c.diagnosis = diagnosis;
+  c.diagnosisSource = diagnosisSource;
+  c.status = 'pending_approve';
+  c.aiProvider = aiError ? '' : 'mlx_vlm';
+  c.aiModel = aiError ? '' : aiModel;
+  await c.save();
+}
 
 // ---------------------------------------------------------------------------
 // Update (edit findings / save draft / finalize / delete)
 // ---------------------------------------------------------------------------
 
-// Locate a case by either its human-readable `caseId` (CASE-...) or a raw
-// Mongo `_id` (used by legacy / orphaned records where `caseId` is empty
-// and `_id` is a UUID string rather than an ObjectId).  Returns the
-// mongoose model instance so callers can `c.save()`, or `null` if not
-// found.
+// Locate a case by human-readable `caseId` (CASE-...) or Mongo ObjectId.
+// UUID `_id` documents from the old FastAPI writer have no `caseId` and
+// cannot be saved through Mongoose, so they are treated as not found.
 async function findCaseByAnyId(id) {
   const sid = String(id || "").trim();
   if (!sid) return null;
   let c = await Case.findOne({ caseId: sid });
   if (c) return c;
+  if (mongoose.Types.ObjectId.isValid(sid)) {
+    try {
+      c = await Case.findById(sid);
+      if (c && c.caseId) return c;
+    } catch { /* UUID-shaped values can look valid to isValid() */ }
+  }
   try {
     const raw = await mongoose.connection.db.collection("cases").findOne({ _id: sid });
-    if (!raw) return null;
-    // Re-hydrate through the mongoose model so callers get a save()-able
-    // instance and benefit from schema defaults.
-    return await Case.findById(raw._id);
+    if (!raw || !raw.caseId) return null;
+    return Case.hydrate(raw);
   } catch {
     return null;
   }
@@ -273,6 +301,9 @@ exports.updateCase = catchAsync(async (req, res, next) => {
 
   const oldStatus = c.status;
   const { diagnosis, reportText, findings, remarks, urgent } = req.body || {};
+  if (c.status === 'pending' && (diagnosis !== undefined || reportText !== undefined || Array.isArray(findings))) {
+    return next(ApiError.badRequest('The report is still generating.'));
+  }
   // A finalized report is locked. Clinicians can still leave remarks and
   // toggle urgency, but those notes must not rewrite the stored report.
   if (urgent !== undefined) c.urgent = Boolean(urgent);
@@ -293,13 +324,16 @@ exports.updateCase = catchAsync(async (req, res, next) => {
     await addAuditLog(req.user.userId, 'CASE_UPDATED', `Edited case ${c.caseId || c._id}`, c.caseId || String(c._id));
   }
 
-  res.json({ success: true, case: { ...c.toObject(), imageUrl: c.imageId ? `/api/images/${c.imageId}` : null } });
+  res.json({ success: true, case: toPublicCase(c) });
 });
 
 exports.finalizeCase = catchAsync(async (req, res, next) => {
   if (req.user.role === 'nurse') return next(ApiError.forbidden('Only doctors or admins can finalize.'));
   const c = await findCaseByAnyId(req.params.id);
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
+  if (c.status === 'pending') {
+    return next(ApiError.badRequest('The report is still generating.'));
+  }
 
   c.status = 'finalized';
   c.finalizedBy = req.user.userId;
@@ -307,15 +341,11 @@ exports.finalizeCase = catchAsync(async (req, res, next) => {
   await c.save();
   await addAuditLog(req.user.userId, 'CASE_FINALIZED', `Finalized case ${c.caseId || c._id}`, c.caseId || String(c._id), null, 'finalized');
 
-  res.json({ success: true, case: { ...c.toObject(), imageUrl: c.imageId ? `/api/images/${c.imageId}` : null } });
+  res.json({ success: true, case: toPublicCase(c) });
 });
 
 async function removeCaseDoc(c) {
-  if (c.imageId) {
-    try { await bucket().delete(c.imageId); } catch (_) { /* ignore */ }
-  }
-  await Case.deleteOne({ _id: c._id });
-  return c.caseId || String(c._id);
+  return removeCaseRecord(c);
 }
 
 exports.deleteCase = catchAsync(async (req, res, next) => {
@@ -359,19 +389,18 @@ exports.streamImage = catchAsync(async (req, res, next) => {
   try { oid = new mongoose.Types.ObjectId(req.params.id); }
   catch (_) { return next(ApiError.badRequest('Invalid image id.')); }
 
-  let cursor;
-  try {
-    cursor = bucket().openDownloadStream(oid);
-  } catch (err) {
-    return next(ApiError.notFound('Image not found.'));
-  }
-
-  cursor.on('error', (err) => next(ApiError.notFound(err.message)));
-  cursor.on('file', (file) => {
+  const db = mongoose.connection.db;
+  // Express writes to `images`; the old FastAPI middleware wrote to `fs`.
+  for (const name of ['images', 'fs']) {
+    const file = await db.collection(`${name}.files`).findOne({ _id: oid });
+    if (!file) continue;
+    const cursor = bucket(name).openDownloadStream(oid);
+    cursor.on('error', (err) => next(ApiError.notFound(err.message)));
     res.set('Content-Type', file.contentType || 'image/jpeg');
-    res.set('Content-Length', file.length);
-  });
-  cursor.pipe(res);
+    if (file.length) res.set('Content-Length', file.length);
+    return cursor.pipe(res);
+  }
+  return next(ApiError.notFound('Image not found.'));
 });
 
 // ---------------------------------------------------------------------------
@@ -390,6 +419,9 @@ exports.summariseFindings = catchAsync(async (req, res, next) => {
 
   const c = await findCaseByAnyId(req.params.id);
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
+  if (c.status === 'pending') {
+    return next(ApiError.badRequest('The report is still generating.'));
+  }
   if (c.status === 'finalized') {
     return next(ApiError.badRequest('This case is finalized and cannot be changed.'));
   }
@@ -427,7 +459,7 @@ exports.summariseFindings = catchAsync(async (req, res, next) => {
     success: true,
     added: findings.length,
     kept: kept.length,
-    case: c.toObject(),
+    case: toPublicCase(c),
   });
 });
 
@@ -442,8 +474,11 @@ exports.summariseDiagnosis = catchAsync(async (req, res, next) => {
 
   const c = await findCaseByAnyId(req.params.id);
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
+  if (c.status === 'pending') {
+    return next(ApiError.badRequest('The report is still generating.'));
+  }
   if (c.diagnosisSource === 'azure' && String(c.diagnosis || '').trim()) {
-    return res.json({ success: true, reused: true, case: c.toObject() });
+    return res.json({ success: true, reused: true, case: toPublicCase(c) });
   }
 
   let diagnosis;
@@ -464,5 +499,5 @@ exports.summariseDiagnosis = catchAsync(async (req, res, next) => {
     c.caseId || String(c._id)
   );
 
-  res.json({ success: true, case: c.toObject() });
+  res.json({ success: true, case: toPublicCase(c) });
 });

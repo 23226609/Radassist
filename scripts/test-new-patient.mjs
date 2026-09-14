@@ -46,6 +46,8 @@ const { state } = await import("../src/state.js");
 const { api } = await import("../src/api.js");
 const { renderNewPatientPage } = await import("../src/components/newPatient.js");
 
+api.listPatients = async () => ({ patients: [] });
+
 let passed = 0;
 let failed = 0;
 function test(name, fn) {
@@ -75,7 +77,7 @@ test("asks for first, middle and last name", () => {
   assert.ok(byPlaceholder(root, "Middle name (optional)"), "middle name field missing");
   assert.ok(byPlaceholder(root, "Last name"), "last name field missing");
   assert.ok(byPlaceholder(root, "Age"), "age field missing");
-  assert.ok(root.querySelector("select"), "sex field missing");
+  assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Female"), "sex pills missing");
   assert.ok(byPlaceholder(root, "Patient ID (optional — assigned automatically)"), "optional ID field missing");
   assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Add patient"));
 });
@@ -106,9 +108,9 @@ test("asks for first, middle and last name", () => {
   byPlaceholder(root, "Last name").dispatchEvent(new window.Event("input"));
   byPlaceholder(root, "Age").value = "67";
   byPlaceholder(root, "Age").dispatchEvent(new window.Event("input"));
-  const sex = root.querySelector("select");
-  sex.value = "Female";
-  sex.dispatchEvent(new window.Event("change"));
+  const sexBtn = [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === "Female");
+  assert.ok(sexBtn, "sex pills missing");
+  sexBtn.dispatchEvent(new window.Event("click"));
   byPlaceholder(root, "Clinical history (optional)").value = "Persistent cough";
   byPlaceholder(root, "Clinical history (optional)").dispatchEvent(new window.Event("input"));
 

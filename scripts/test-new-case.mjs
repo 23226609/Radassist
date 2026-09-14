@@ -48,7 +48,11 @@ if (selectProto && !Object.getOwnPropertyDescriptor(selectProto, "value")?.set) 
 }
 
 const { state } = await import("../src/state.js");
+const { api } = await import("../src/api.js");
 const { renderNewCasePage } = await import("../src/components/newCase.js");
+
+api.listPatients = async () => ({ patients: [] });
+api.listCases = async () => ({ cases: [] });
 
 let passed = 0;
 let failed = 0;
@@ -116,6 +120,52 @@ test("dropping a non-image leaves the current X-ray in place", () => {
   assert.equal(state.selectedFile?.name, "chest.png");
   assert.ok(root.textContent.includes("chest.png"));
 });
+
+test("submit button is Upload X-Ray", () => {
+  assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Upload X-Ray"));
+});
+
+{
+  api.createCase = async () => ({
+    analysing: true,
+    case: {
+      caseId: "CASE-NEW-1",
+      patientId: "PT-1",
+      patientName: "Ada Wong",
+      firstName: "Ada",
+      lastName: "Wong",
+      status: "pending",
+      diagnosis: "Generating report…",
+    },
+  });
+  api.getCase = async () => ({
+    case: { caseId: "CASE-NEW-1", status: "pending", diagnosis: "Generating report…" },
+  });
+
+  function fill(node, value) {
+    node.value = value;
+    node.dispatchEvent(new window.Event("input", { bubbles: true }));
+  }
+  fill([...root.querySelectorAll("input")].find((i) => /Patient ID/.test(i.getAttribute("placeholder") || "")), "PT-1");
+  fill(root.querySelector("#patient-first-name"), "Ada");
+  fill(root.querySelector("#patient-last-name"), "Wong");
+  fill(root.querySelector("#case-age"), "40");
+  root.querySelector('[data-sex="Female"]').dispatchEvent(new window.Event("click", { bubbles: true }));
+  [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === "Upload X-Ray")
+    .dispatchEvent(new window.Event("click"));
+  await new Promise((r) => setTimeout(r, 0));
+}
+
+test("upload returns to the worklist with a generating overlay", () => {
+  assert.equal(state.page, "dashboard");
+  const overlay = document.getElementById("radassist-analysis");
+  assert.ok(overlay, "overlay missing");
+  assert.equal(overlay.hidden, false);
+  assert.ok(overlay.textContent.includes("Generating the report"));
+});
+
+const { stopAnalysisWatch } = await import("../src/lib/analysisJob.js");
+stopAnalysisWatch();
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

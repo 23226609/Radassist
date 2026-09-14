@@ -123,6 +123,22 @@ test("export sections include size and pattern for each finding", () => {
   assert.equal(s.findings[0].pattern, "Nodular");
 });
 
+test("PDF export is the CURV report and does not dump Azure finding cards", () => {
+  const bytes = buildReportPdfBytes({
+    caseId: "CASE-1",
+    patientId: "PT-1",
+    reportText: "The lungs are clear.\nHeart size is normal.",
+    findings: [
+      { label: "Azure-only card title", sentence: "Azure rewrite of the film.", location: "both lungs", source: "azure" },
+    ],
+  });
+  const text = new TextDecoder("latin1").decode(bytes);
+  assert.ok(text.includes("The lungs are clear."));
+  assert.ok(text.includes("Heart size is normal."));
+  assert.ok(!text.includes("Azure-only card title"), "Azure carousel cards must not appear in the download");
+  assert.ok(!text.includes("Azure rewrite of the film."));
+});
+
 function tinyJpeg() {
   return Uint8Array.from([
     0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01, 0x00, 0x48,

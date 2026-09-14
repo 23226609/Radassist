@@ -60,6 +60,14 @@ test("fills an empty diagnosis when a report exists", () => {
   }), true);
 });
 
+test("skips Azure while the report is still generating", () => {
+  assert.equal(needsAzureDiagnosis({
+    status: "pending",
+    diagnosis: "Generating report…",
+    reportText: "",
+  }), false);
+});
+
 // --- dashboard fills leftover first-sentence diagnoses ---
 import { parseHTML } from "linkedom";
 
@@ -136,6 +144,31 @@ test("dashboard asks Azure to replace a leftover first-sentence diagnosis", () =
   select = root.querySelector("select");
   test("status filter can return to All statuses", () => {
     assert.equal(select.value, "all");
+  });
+}
+
+{
+  let askedGen = null;
+  api.listCases = async () => ({
+    cases: [{
+      caseId: "CASE-GEN-1",
+      patientId: "PT-GEN-1",
+      patientName: "Pat Gen",
+      status: "pending",
+      diagnosis: "Generating report…",
+      createdAt: "2026-09-13T00:00:00.000Z",
+    }],
+  });
+  api.stats = async () => ({ stats: { totalCases: 1, finalizedCases: 0, pendingCases: 0 } });
+  api.summariseDiagnosis = async (id) => {
+    askedGen = id;
+    return { case: {} };
+  };
+  await renderDashboardPage({ target: root });
+  await new Promise((r) => setTimeout(r, 0));
+  test("dashboard shows Generating and does not ask Azure yet", () => {
+    assert.ok(root.textContent.includes("Generating"));
+    assert.equal(askedGen, null);
   });
 }
 

@@ -14,6 +14,7 @@ const User = require('../models/User');
 const Case = require('../models/Case');
 const AuditLog = require('../models/AuditLog');
 const { nameFieldsFrom } = require('../utils/patientName');
+const { upsertPatientFromCase } = require('../utils/recordSync');
 
 const DEMO_USERS = [
   {
@@ -45,7 +46,7 @@ const DEMO_USERS = [
   },
 ];
 
-// Demo cases: a mix of pending / completed / finalized. Images will be
+// Demo cases: a mix of pending_approve / finalized. Images will be
 // sourced from ../../Desktop/fyp/ if available, else from a placeholder
 // generated locally.
 const SAMPLE_DIR = path.resolve(__dirname, '..', '..', '..', 'Desktop', 'fyp');
@@ -86,7 +87,7 @@ const SAMPLE_CASES = [
     diagnosis: 'Mild cardiomegaly',
     reportText:
       'Calcified aortic atheromatosis is noted. Bilateral apical pleural thickening is observed. No other significant radiological findings.',
-    status: 'completed',
+    status: 'pending_approve',
     findingsSeed: [
       { label: 'Calcified aortic atheromatosis', confidence: 0.92, bbox: [29, 17, 22, 18], location: 'Aortic arch', size: '2.3 cm', pattern: 'Nodular', sentence: 'Calcified aortic atheromatosis is noted.', status: 'accepted' },
       { label: 'Bilateral apical pleural thickening', confidence: 0.78, bbox: [23, 9, 52, 17], location: 'Pleural, apical', size: 'N/A', pattern: 'Diffuse', sentence: 'Bilateral apical pleural thickening is observed.', status: 'accepted' },
@@ -102,9 +103,10 @@ const SAMPLE_CASES = [
     age: '45',
     sex: 'Male',
     history: 'Fever for three days',
-    diagnosis: 'Awaiting AI analysis',
-    reportText: '',
-    status: 'pending',
+    diagnosis: 'Possible right-lower-zone opacity',
+    reportText:
+      'A faint opacity is seen in the right lower zone. The remainder of the lungs are clear. Clinical correlation is advised.',
+    status: 'pending_approve',
     findingsSeed: [],
   },
   {
@@ -139,7 +141,7 @@ const SAMPLE_CASES = [
     diagnosis: 'Hyperinflation',
     reportText:
       'Lungs appear hyperinflated with flattened diaphragms consistent with COPD. No focal consolidation.',
-    status: 'completed',
+    status: 'pending_approve',
     findingsSeed: [
       { label: 'Hyperinflated lungs', confidence: 0.81, bbox: [10, 5, 80, 90], location: 'Bilateral', size: 'N/A', pattern: 'Diffuse', sentence: 'Lungs appear hyperinflated.', status: 'pending' },
     ],
@@ -155,7 +157,7 @@ const SAMPLE_CASES = [
     history: 'Routine pre-employment check',
     diagnosis: 'No acute cardiopulmonary findings',
     reportText: 'Heart size is normal. Lungs are clear. No pleural effusion or pneumothorax.',
-    status: 'completed',
+    status: 'pending_approve',
     findingsSeed: [],
   },
   {
@@ -268,6 +270,21 @@ async function seedCases() {
     });
     created++;
     console.log(`  + created case ${c.caseId} for ${c.patientId} (${c.status})`);
+    await upsertPatientFromCase({
+      patientId: c.patientId,
+      firstName: names.firstName,
+      middleName: names.middleName,
+      lastName: names.lastName,
+      patientName: names.name,
+      age: c.age,
+      sex: c.sex,
+      history: c.history,
+    });
+  }
+
+  for (const c of SAMPLE_CASES) {
+    const doc = await Case.findOne({ caseId: c.caseId });
+    if (doc) await upsertPatientFromCase(doc);
   }
   return created;
 }

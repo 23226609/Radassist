@@ -77,7 +77,7 @@ Stored in `patients`. A patient can exist **before** any X-ray.
 - `name` — composed full name, kept for search and older records
 - `age`, `sex`, `history`, `remarks` (chart notes, never copied into a case report)
 
-The patients list **merges** Patient documents with cases grouped by `patientId`. If any case is urgent, the patient row shows **Urgent**.
+Deleting a **patient** removes the chart, every study for that ID, and GridFS images. Deleting a **case** removes that study and its image; the patient chart stays (it can exist with no X-rays). Adding a case always upserts the patient chart first.
 
 ### Case
 
@@ -86,7 +86,7 @@ Stored in `cases`. One study / one film.
 - Identity: `caseId`, `patientId`, name parts + `patientName`
 - Clinical: `age`, `sex`, `history`, `diagnosis`, `diagnosisSource` (`azure` or `local`)
 - Report: `reportText`, `remarks`, `findings[]`
-- Workflow: `status` (`pending` \| `completed` \| `finalized`), `urgent`
+- Workflow: `status` (`pending` generating \| `pending_approve` draft ready \| `finalized`) and `urgent`. Old documents may still say `completed` — the UI treats that as pending approve.
 - Image: `imageId` (GridFS), filename / type / size
 - Audit: `createdBy`, `finalizedBy`, timestamps
 
@@ -134,26 +134,29 @@ Lookup on New Case uses the same records, so you can also type an existing ID th
 
 1. Patient ID + Lookup, or fill first / middle / last name, age, sex, history.
 2. Drop or pick a PNG / JPG / JPEG / WebP.
-3. **Analyse X-Ray** posts `FormData` to `POST /api/cases`.
+3. **Upload X-Ray** posts `FormData` to `POST /api/cases`. As soon as the film is stored you go back to the **worklist**; a centered overlay stays up while CURV writes the draft.
 
 Backend:
 
 1. Require image, `patientId`, first name, last name.
 2. Stream the file into GridFS.
-3. Write a temp file and `POST` it to `AI_BASE_URL/analyze` (CURV middleware, 180s timeout).
-4. Map middleware `{ report, findings }` onto the case (`status: completed`).
-5. If Azure is configured, replace the first-sentence diagnosis with a short worklist label.
-6. Upsert the Patient document from the case.
-7. Write `CASE_CREATED` (+ `AI_ANALYZED` when CURV succeeded).
+3. Save the case as `status: pending` (`diagnosis: Generating report…`) and return **201 immediately**.
+4. In the background, write a temp file and `POST` it to `AI_BASE_URL/analyze` (CURV middleware, 180s timeout).
+5. Map middleware `{ report, findings }` onto the case and set `status: pending_approve`.
+6. If Azure is configured, replace the first-sentence diagnosis with a short worklist label.
+7. Upsert the Patient document from the case.
+8. Write `CASE_CREATED` (+ `AI_ANALYZED` when CURV succeeded).
 
-If CURV fails, the case is still stored with a placeholder report. The clinician can complete it by hand.
+If CURV fails, the case is still stored with a placeholder report and **pending approve**. The clinician can complete it by hand.
 
 ### 4. Worklist (Dashboard)
 
-Shows stats (total, urgent, finalized, pending). Tiles and chips filter the table. Urgent rows sort to the top. Search is live (debounced); `/` focuses it.
+Shows stats (total, urgent, finalized, pending approve). Tiles and chips filter the table. Urgent rows sort to the top. Search is live (debounced); `/` focuses it.
+
+While a new film is generating, the worklist sits under a centered **Generating the report** overlay. The row status is **Generating** until the draft lands, then **Pending approve**. After sign-off it is **Finalized**.
 
 - **View** → case chart (history, diagnosis, findings list, remarks)
-- **Review** → X-ray + finding carousel (the reporting screen)
+- **Review** → X-ray + finding carousel (the reporting screen). Blocked while the draft is still generating.
 
 Admins can tick rows and bulk-delete.
 
@@ -161,7 +164,7 @@ Admins can tick rows and bulk-delete.
 
 Left: film from GridFS with bbox overlays. Right: one finding at a time (prev/next/dots), then remarks.
 
-On open (doctor/admin, not finalized):
+On open (doctor/admin, not generating, not finalized):
 
 1. Load the case and unwrap any legacy `{"report":"..."}` `reportText`.
 2. Call `POST /api/cases/:id/summarise-findings` (Azure). Skip if cards are already calibrated Azure findings.
@@ -179,18 +182,16 @@ Clinician can:
 - **Report** — popup editor of stored `reportText` (also auto-saves to MongoDB)
 - **Word** / **PDF** — persist unsaved edits first, then download (includes the uploaded X-ray)
 
-Export composition (`src/lib/reportExport.js`):
+Export composition (`src/lib/reportExport.js`) is the CURV report only. Azure finding cards stay on the review page and are not copied into Word/PDF.
 
 1. Uploaded chest X-ray (`imageId` from GridFS)
-2. Body of `reportText`
-3. **Clinician-added findings** (manual cards)
-4. **Radiologist remarks**
+2. Body of `reportText` (CURV, plus clinician remarks / hand-added findings if saved)
 
 Nurses see the film and cards read-only. They cannot save, finalize, or toggle urgent.
 
 ### 6. Finalize
 
-`POST /api/cases/:id/finalize` sets `status: finalized` and records who signed. After that, findings and the stored report stay locked. Remarks and urgent remain editable so follow-up notes and triage tags are still possible.
+`POST /api/cases/:id/finalize` sets `status: finalized` and records who signed. Finalize is refused while the report is still `pending` (generating). After finalize, findings and the stored report stay locked. Remarks and urgent remain editable so follow-up notes and triage tags are still possible.
 
 ### 7. Patients and cases lists
 
@@ -220,6 +221,8 @@ Shared pieces:
 - `src/api.js` — `fetch` wrapper, Bearer token
 - `src/lib/patientName.js` — first / middle / last
 - `src/lib/ui.js` — search, chips, empty states, urgent sort
+- `src/lib/caseStatus.js` — generating / pending approve / finalized labels
+- `src/lib/analysisJob.js` — worklist overlay + poll after upload
 - `src/components/header.js` — sidebar shell
 - `src/components/patientFields.js` — labeled name controls, sex pills, name preview
 
@@ -237,7 +240,7 @@ Shared pieces:
 | `GET` | `/api/auth/me` | any | Session user |
 | `POST` | `/api/auth/logout` | any | Audit only |
 | `GET` | `/api/cases` | any | `status`, `q`, `patientId` |
-| `POST` | `/api/cases` | doctor, admin | multipart upload |
+| `POST` | `/api/cases` | doctor, admin | multipart upload; 201 while AI still runs |
 | `GET` | `/api/cases/:id` | any | `caseId` or Mongo `_id` |
 | `PUT` | `/api/cases/:id` | doctor, admin | findings / report / remarks / urgent |
 | `POST` | `/api/cases/:id/finalize` | doctor, admin | |

@@ -107,16 +107,20 @@ export function nameFieldGroup({ f, disabled, onChange }) {
 
   return el("div", {},
     el("div", { class: "grid gap-3 sm:grid-cols-8" },
-      labeledField({ label: "First name", required: true, forId: "patient-first-name" },
-        el("div", { class: "sm:col-span-3" },
+      el("div", { class: "sm:col-span-3" },
+        labeledField({ label: "First name", required: true, forId: "patient-first-name" },
           bind("firstName", { id: "patient-first-name", placeholder: "First name" })
-        ).firstChild
+        )
       ),
-      labeledField({ label: "Middle name", optional: true, forId: "patient-middle-name" },
-        bind("middleName", { id: "patient-middle-name", placeholder: "Middle name (optional)" })
+      el("div", { class: "sm:col-span-2" },
+        labeledField({ label: "Middle name", optional: true, forId: "patient-middle-name" },
+          bind("middleName", { id: "patient-middle-name", placeholder: "Middle name (optional)" })
+        )
       ),
-      labeledField({ label: "Last name", required: true, forId: "patient-last-name" },
-        bind("lastName", { id: "patient-last-name", placeholder: "Last name" })
+      el("div", { class: "sm:col-span-3" },
+        labeledField({ label: "Last name", required: true, forId: "patient-last-name" },
+          bind("lastName", { id: "patient-last-name", placeholder: "Last name" })
+        )
       )
     ),
     el("div", {

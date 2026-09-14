@@ -1,7 +1,7 @@
 // src/main.js
 // Entry point. Wires up the state-render cycle and renders the right page.
 
-import { state, setState, subscribe, setPage } from "./state.js";
+import { state, setState, subscribe, applyHash, parseHash } from "./state.js";
 import { api, getSession } from "./api.js";
 import { Shell } from "./components/header.js";
 import { renderLoginPage, renderRegisterPage } from "./components/login.js";
@@ -14,28 +14,49 @@ import { renderNewPatientPage } from "./components/newPatient.js";
 import { renderCasesPage, renderCasePage } from "./components/cases.js";
 import { isReportPopup, renderReportViewPage } from "./components/reportView.js";
 import { el, mount } from "./dom.js";
+import { stopAnalysisWatch } from "./lib/analysisJob.js";
 import "./index.css";
 
 const app = document.getElementById("app");
 
 async function logout() {
+  stopAnalysisWatch();
   try { await api.logout(); } catch { /* ignore */ }
-  setState({ user: null, token: null, page: "login", cases: [], selectedCaseId: null });
+  setState({ user: null, token: null, page: "login", cases: [], selectedCaseId: null, selectedPatientId: null });
+}
+
+function routeFromHash() {
+  const route = parseHash();
+  if (!route.page || route.page === "login" || route.page === "register") {
+    return { page: "dashboard", selectedCaseId: null, selectedPatientId: null };
+  }
+  return {
+    page: route.page,
+    selectedCaseId: route.selectedCaseId ?? null,
+    selectedPatientId: route.selectedPatientId ?? null,
+  };
 }
 
 async function bootstrap() {
   const session = getSession();
   if (session?.token) {
-    setState({ token: session.token, user: session.user, page: "dashboard" });
+    const route = routeFromHash();
+    setState({
+      token: session.token,
+      user: session.user,
+      ...route,
+    }, { replaceHash: true });
     try {
       const me = await api.me();
-      setState({ user: me.user });
+      setState({ user: me.user }, { skipHash: true });
     } catch {
-      // token invalid; bounce to login
       setState({ token: null, user: null, page: "login" });
     }
   } else {
-    setState({ page: "login" });
+    const route = parseHash();
+    setState({
+      page: route.page === "register" ? "register" : "login",
+    }, { replaceHash: true });
   }
 }
 
@@ -104,6 +125,19 @@ function render() {
 
 // Subscribe once — every setState() (including setPage) triggers a render.
 subscribe(render);
+
+try {
+  window.addEventListener("hashchange", () => {
+    if (isReportPopup()) return;
+    const next = parseHash();
+    if (!state.user) {
+      if (next.page === "register" || next.page === "login") applyHash();
+      return;
+    }
+    if (next.page === "login" || next.page === "register") return;
+    applyHash();
+  });
+} catch { /* tests */ }
 
 bootstrap();
 render();

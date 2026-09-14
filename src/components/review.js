@@ -21,8 +21,10 @@ import { el, mount } from "../dom.js";
 import { state, setPage, toast } from "../state.js";
 import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
+import { reportPopupUrl } from "../lib/reportPopup.js";
 import { downloadReportDocx, downloadReportPdf, composeReportText, splitReportAndRemarks } from "../lib/reportExport.js";
 import { urgentBadge, patientDisplayName } from "../lib/tags.js";
+import { isGenerating, isAwaitingApprove, statusLabel } from "../lib/caseStatus.js";
 
 const PATTERNS = ["Nodular", "Diffuse", "Linear", "Ground-glass", "Consolidation", "Other"];
 
@@ -295,6 +297,7 @@ export async function renderReviewPage({ target }) {
   // or duplicate cards.
   async function autoPopulateFindings() {
     if (!localCase) return;
+    if (isGenerating(localCase)) return;
     const report = localCase.reportText || "";
     if (!report.trim()) return;
 
@@ -533,6 +536,10 @@ export async function renderReviewPage({ target }) {
   }
 
   async function finalize() {
+    if (isGenerating(localCase)) {
+      toast("The report is still generating.");
+      return;
+    }
     if (!confirm("Finalize this report? Finalized cases are read-only for clinicians.")) return;
     busy = true; render();
     try {
@@ -560,11 +567,8 @@ export async function renderReviewPage({ target }) {
         toast(err.message || "Could not save before opening the report.");
       }
     }
-    const url = new URL(window.location.href);
-    url.searchParams.set("view", "report");
-    url.searchParams.set("caseId", id);
     const popup = window.open(
-      url.toString(),
+      reportPopupUrl(id),
       "radassist-report",
       "popup=yes,width=820,height=920,scrollbars=yes,resizable=yes"
     );
@@ -638,8 +642,9 @@ export async function renderReviewPage({ target }) {
   }
 
   function render() {
-    const edit = state.user?.role !== "nurse" && localCase.status !== "finalized";
-    const canRemark = state.user?.role !== "nurse";
+    const generating = isGenerating(localCase);
+    const edit = !generating && state.user?.role !== "nurse" && localCase.status !== "finalized";
+    const canRemark = !generating && state.user?.role !== "nurse";
     const canFlag = state.user?.role !== "nurse";
     const findings = localCase.findings || [];
     const visible = findings;
@@ -789,17 +794,17 @@ export async function renderReviewPage({ target }) {
         el("div", { class: "flex gap-2 flex-wrap" },
           el("button", {
             class: "inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50",
-            disabled: busy,
+            disabled: busy || generating,
             onClick: openReport,
           }, svgIcon("file-text", { size: 16 }), "Report"),
           el("button", {
             class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
-            disabled: busy,
+            disabled: busy || generating,
             onClick: () => download("docx"),
           }, svgIcon("download", { size: 16 }), "Word"),
           el("button", {
             class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
-            disabled: busy,
+            disabled: busy || generating,
             onClick: () => download("pdf"),
           }, svgIcon("download", { size: 16 }), "PDF"),
           edit && el("button", {
@@ -819,13 +824,22 @@ export async function renderReviewPage({ target }) {
             disabled: busy,
             onClick: toggleUrgent,
           }, localCase.urgent ? "Remove urgent" : "Mark urgent"),
-          localCase.status === "finalized"
+          generating
+            ? el("span", { class: "rounded-full bg-amber-50 text-amber-700 px-3 py-1 text-xs font-bold" }, "GENERATING")
+            : isAwaitingApprove(localCase)
+            ? el("span", { class: "rounded-full bg-cyan-50 text-cyan-700 px-3 py-1 text-xs font-bold" }, "PENDING APPROVE")
+            : localCase.status === "finalized"
             ? el("span", { class: "rounded-full bg-green-50 text-green-700 px-3 py-1 text-xs font-bold" }, "FINALIZED")
             : null
         )
       ),
 
       msg && el("p", { class: "mt-4 rounded-lg bg-green-50 text-green-700 p-3" }, msg),
+      generating && el("p", { class: "mt-4 rounded-lg bg-amber-50 text-amber-800 p-3" },
+        "The report is still generating. Return to the worklist — Review is ready once the status is ",
+        el("b", {}, statusLabel("pending_approve")),
+        "."
+      ),
 
       // Image + findings — the report itself stays in MongoDB and is only
       // pulled out when someone downloads it.
@@ -920,7 +934,7 @@ export async function renderReviewPage({ target }) {
   // the clinician never has to click a button. Guarded by autoFilledCaseId,
   // and autoPopulateFindings itself skips once real findings already exist,
   // so this can't re-trigger on every re-render or re-summarise on reopen.
-  if (localCase && autoFilledCaseId !== (localCase.caseId || localCase._id)) {
+  if (localCase && !isGenerating(localCase) && autoFilledCaseId !== (localCase.caseId || localCase._id)) {
     autoFilledCaseId = localCase.caseId || localCase._id;
     busy = true;
     msg = "Summarising findings…";

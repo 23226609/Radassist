@@ -9,6 +9,9 @@ import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
 import { urgentBadge, patientDisplayName } from "../lib/tags.js";
 import { PAGE, searchField, emptyState, pageHeading } from "../lib/ui.js";
+import { statusLabel } from "../lib/caseStatus.js";
+import { CASES_CHANGED } from "../lib/analysisJob.js";
+import { forgetPatients } from "../lib/records.js";
 
 function openPatient(patientId) {
   state.selectedPatientId = patientId;
@@ -29,6 +32,11 @@ export async function renderPatientsPage({ target }) {
   const selected = new Set();
   const isAdmin = () => state.user?.role === "admin";
 
+  if (target._stopCaseWatch) target._stopCaseWatch();
+  const watch = new AbortController();
+  target._stopCaseWatch = () => watch.abort();
+  window.addEventListener(CASES_CHANGED, () => refresh(), { signal: watch.signal });
+
   function deleteSelected() {
     const ids = [...selected];
     if (!ids.length) return;
@@ -36,6 +44,7 @@ export async function renderPatientsPage({ target }) {
     api.deletePatients(ids)
       .then((data) => {
         selected.clear();
+        forgetPatients(data.ids || ids);
         toast(`Deleted ${data.deleted ?? ids.length} ${ids.length === 1 ? "patient" : "patients"}.`);
         refresh();
       })
@@ -66,7 +75,7 @@ export async function renderPatientsPage({ target }) {
       { class: PAGE },
       pageHeading({
         title: "Patients",
-        subtitle: "Open a chart for history, diagnoses, and findings. Press / to search.",
+        subtitle: "People stored in the patients collection. Studies on a chart come from their X-rays.",
         actions: state.user?.role !== "nurse"
           ? el("button", {
               class: "inline-flex items-center gap-2 rounded-xl bg-cyan-600 px-4 py-2 font-semibold text-white hover:bg-cyan-700",
@@ -208,6 +217,7 @@ export async function renderPatientPage({ target }) {
     paint();
     try {
       await api.deletePatient(id);
+      forgetPatients([id]);
       toast(`Deleted ${id}`);
       setPage("patients");
     } catch (err) {
@@ -296,7 +306,7 @@ export async function renderPatientPage({ target }) {
                         c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : "Study",
                         " · ",
                         c.diagnosis || "No diagnosis",
-                        el("span", { class: "ml-2 capitalize text-slate-400" }, c.status)
+                        el("span", { class: "ml-2 text-slate-400" }, statusLabel(c.status))
                       )
                     )
                   )
@@ -368,10 +378,10 @@ export async function renderPatientPage({ target }) {
                             ),
                             el("p", { class: "text-sm text-slate-600" }, c.diagnosis || "No diagnosis")
                           ),
-                          el("span", { class: "text-xs capitalize text-slate-500" },
+                          el("span", { class: "text-xs text-slate-500" },
                             c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : "",
                             " · ",
-                            c.status
+                            statusLabel(c.status)
                           )
                         )
                       )

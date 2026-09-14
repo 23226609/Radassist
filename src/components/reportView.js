@@ -9,21 +9,9 @@ import { state, toast } from "../state.js";
 import { unwrapLegacyReport } from "./review.js";
 import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, applyRemarksToReport } from "../lib/reportExport.js";
 import { svgIcon } from "./icons.js";
+import { reportPopupUrl, isReportPopup, reportPopupCaseId } from "../lib/reportPopup.js";
 
-export function reportPopupUrl(caseId) {
-  const url = new URL(window.location.href);
-  url.searchParams.set("view", "report");
-  url.searchParams.set("caseId", String(caseId || ""));
-  return url.toString();
-}
-
-export function isReportPopup() {
-  return new URLSearchParams(window.location.search).get("view") === "report";
-}
-
-export function reportPopupCaseId() {
-  return new URLSearchParams(window.location.search).get("caseId") || "";
-}
+export { reportPopupUrl, isReportPopup, reportPopupCaseId };
 
 export async function renderReportViewPage({ target }) {
   const caseId = reportPopupCaseId();

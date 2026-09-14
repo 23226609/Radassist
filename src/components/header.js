@@ -23,8 +23,9 @@ function go(page) {
 function isActive(item) {
   const page = state.page;
   if (item.page === "new" || item.page === "new-patient") return page === item.page;
+  if (item.page === "dashboard") return page === "dashboard" || page === "review";
   if (item.page === "patients") return page === "patients" || page === "patient";
-  if (item.page === "cases") return page === "cases" || page === "case" || page === "review";
+  if (item.page === "cases") return page === "cases" || page === "case";
   return page === item.page;
 }
 
@@ -43,9 +44,9 @@ function navButton(item) {
 function sidebar({ onLogout }) {
   const nurse = state.user?.role === "nurse";
   const primary = [
-    { page: "dashboard", icon: "activity", label: "Dashboard" },
+    { page: "dashboard", icon: "activity", label: "Worklist" },
     { page: "patients", icon: "users", label: "Patients" },
-    { page: "cases", icon: "file-text", label: "Cases" },
+    { page: "cases", icon: "file-text", label: "Case archive" },
     { page: "audit", icon: "list", label: "Audit log" },
   ];
   const create = nurse ? [] : [
@@ -94,11 +95,11 @@ function sidebar({ onLogout }) {
 }
 
 const TITLES = {
-  dashboard: "Dashboard",
+  dashboard: "Worklist",
   patients: "Patients",
   patient: "Patient chart",
   "new-patient": "New patient",
-  cases: "Cases",
+  cases: "Case archive",
   case: "Case",
   new: "New case",
   review: "Report review",

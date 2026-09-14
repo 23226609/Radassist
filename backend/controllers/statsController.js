@@ -6,16 +6,16 @@ const Case = require('../models/Case');
 const User = require('../models/User');
 const AuditLog = require('../models/AuditLog');
 const catchAsync = require('../utils/catchAsync');
-const { bucket } = require('./_gridfs');
+const { OWNED } = Case;
 
 exports.getStats = catchAsync(async (req, res) => {
-  const [totalCases, finalizedCases, pendingCases, totalUsers, recentLogs, imagesCount] = await Promise.all([
-    Case.countDocuments({}),
-    Case.countDocuments({ status: 'finalized' }),
-    Case.countDocuments({ status: 'pending' }),
+  const [totalCases, finalizedCases, pendingCases, urgentCases, totalUsers, recentLogs, imagesCount] = await Promise.all([
+    Case.countDocuments(OWNED),
+    Case.countDocuments({ ...OWNED, status: 'finalized' }),
+    Case.countDocuments({ ...OWNED, status: { $in: ['pending_approve', 'completed'] } }),
+    Case.countDocuments({ ...OWNED, urgent: true }),
     User.countDocuments({ isActive: { $ne: false } }),
     AuditLog.countDocuments({}),
-    // GridFS file count
     mongoose.connection.db.collection('images.files').countDocuments().catch(() => 0),
   ]);
   res.json({
@@ -24,6 +24,7 @@ exports.getStats = catchAsync(async (req, res) => {
       totalCases,
       finalizedCases,
       pendingCases,
+      urgentCases,
       totalUsers,
       recentLogs,
       imagesStored: imagesCount,

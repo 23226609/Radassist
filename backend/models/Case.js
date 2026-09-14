@@ -3,7 +3,7 @@
 
 const mongoose = require('mongoose');
 
-const STATUS = ['pending', 'completed', 'finalized'];
+const STATUS = ['pending', 'pending_approve', 'completed', 'finalized'];
 
 const findingSchema = new mongoose.Schema(
   {
@@ -77,3 +77,7 @@ caseSchema.index({ createdAt: 1 });
 
 module.exports = mongoose.model('Case', caseSchema);
 module.exports.STATUS = STATUS;
+// Documents inserted by the old FastAPI middleware have a UUID `_id` and no
+// `caseId`. List/stats/patient APIs skip those so the dashboard does not
+// call summarise-diagnosis (and 404) on records Express cannot mutate.
+module.exports.OWNED = { caseId: { $exists: true, $ne: '' } };

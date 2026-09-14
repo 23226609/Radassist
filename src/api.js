@@ -29,6 +29,7 @@ export function getSession() {
 async function request(method, path, body, { raw, headers } = {}) {
   const opts = {
     method,
+    cache: "no-store",
     headers: {
       Accept: "application/json",
       ...(headers || {}),
