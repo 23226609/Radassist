@@ -22,6 +22,7 @@ import { state, setPage, toast } from "../state.js";
 import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { downloadReportDocx, downloadReportPdf, composeReportText, splitReportAndRemarks } from "../lib/reportExport.js";
+import { urgentBadge, patientDisplayName } from "../lib/tags.js";
 
 const PATTERNS = ["Nodular", "Diffuse", "Linear", "Ground-glass", "Consolidation", "Other"];
 
@@ -555,6 +556,27 @@ export async function renderReviewPage({ target }) {
     }
   }
 
+  async function toggleUrgent() {
+    if (state.user?.role === "nurse") return;
+    const next = !localCase.urgent;
+    busy = true;
+    render();
+    try {
+      const updated = await api.updateCase(getEffectiveCaseId(), { urgent: next });
+      localCase = unwrapLegacyReport(updated.case || { ...localCase, urgent: next });
+      const idx = state.cases.findIndex(
+        (c) => c.caseId === (localCase.caseId || localCase._id) || c._id === localCase._id
+      );
+      if (idx >= 0) state.cases[idx] = { ...state.cases[idx], urgent: localCase.urgent };
+      toast(next ? "Marked urgent." : "Urgent tag removed.");
+    } catch (err) {
+      toast(err.message || "Could not update urgency.");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
   async function download(kind) {
     busy = true;
     render();
@@ -585,8 +607,10 @@ export async function renderReviewPage({ target }) {
   function render() {
     const edit = state.user?.role !== "nurse" && localCase.status !== "finalized";
     const canRemark = state.user?.role !== "nurse";
+    const canFlag = state.user?.role !== "nurse";
     const findings = localCase.findings || [];
     const visible = findings;
+    const patientName = patientDisplayName(localCase);
 
     function findingCard(f) {
       const isNew = String(f._id || f.id || "").startsWith("tmp-");
@@ -708,17 +732,21 @@ export async function renderReviewPage({ target }) {
       el("div", { class: "mt-3 flex flex-wrap items-center justify-between gap-3" },
         el("div", {},
           el("h1", { class: "text-3xl font-bold text-slate-900" }, "Report review"),
-          el("p", { class: "text-slate-600 mt-1" },
+          el("p", { class: "text-slate-600 mt-1 flex flex-wrap items-center gap-2" },
             el("button", {
               class: "font-semibold hover:text-cyan-700 hover:underline",
               onClick: () => {
                 state.selectedPatientId = localCase.patientId;
                 setPage("patient");
               },
-            }, localCase.patientId),
+            }, patientName || localCase.patientId),
+            patientName
+              ? el("span", { class: "font-mono text-xs text-slate-500" }, localCase.patientId)
+              : null,
             " · ",
             localCase.age || "?", " years · ",
-            localCase.sex || "?"
+            localCase.sex || "?",
+            localCase.urgent ? urgentBadge() : null
           ),
           el("p", { class: "text-xs text-slate-500 mt-1" },
             "MongoDB case id: ", el("span", { class: "font-mono" }, localCase.caseId || localCase._id || ""),
@@ -751,6 +779,13 @@ export async function renderReviewPage({ target }) {
             disabled: busy,
             onClick: finalize,
           }, "Finalize & approve"),
+          canFlag && el("button", {
+            class: localCase.urgent
+              ? "rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50"
+              : "rounded-xl border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50",
+            disabled: busy,
+            onClick: toggleUrgent,
+          }, localCase.urgent ? "Remove urgent" : "Mark urgent"),
           localCase.status === "finalized"
             ? el("span", { class: "rounded-full bg-green-50 text-green-700 px-3 py-1 text-xs font-bold" }, "FINALIZED")
             : null

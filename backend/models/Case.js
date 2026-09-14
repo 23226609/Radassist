@@ -36,6 +36,10 @@ const caseSchema = new mongoose.Schema(
   {
     caseId: { type: String, required: true, unique: true, trim: true, index: true },
     patientId: { type: String, required: true, trim: true, index: true },
+    firstName: { type: String, default: '', trim: true },
+    middleName: { type: String, default: '', trim: true },
+    lastName: { type: String, default: '', trim: true },
+    patientName: { type: String, default: '', trim: true },
     age: { type: String, default: '' },
     sex: { type: String, enum: ['Female', 'Male', 'Other', ''], default: '' },
     history: { type: String, default: '' },
@@ -48,6 +52,7 @@ const caseSchema = new mongoose.Schema(
     remarks: { type: String, default: '' },
     findings: { type: [findingSchema], default: [] },
     status: { type: String, enum: STATUS, default: 'pending' },
+    urgent: { type: Boolean, default: false },
     // Ownership / audit
     createdBy: { type: String, default: '' }, // userId
     createdByName: { type: String, default: '' },

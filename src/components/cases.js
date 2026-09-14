@@ -9,6 +9,7 @@ import { unwrapLegacyReport } from "./review.js";
 import { applyRemarksToReport, splitReportAndRemarks } from "../lib/reportExport.js";
 import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
+import { urgentBadge, patientDisplayName } from "../lib/tags.js";
 
 const STATUS_BADGE = {
   pending: "bg-amber-50 text-amber-700",
@@ -145,7 +146,12 @@ export async function renderCasesPage({ target }) {
                           onClick: () => openCase(caseIdOf(c)),
                         },
                           isAdmin() ? rowCheckbox(caseIdOf(c), selected, (id, on) => { toggleSelected(selected, id, on); render(); }) : null,
-                          el("td", { class: "p-4 font-bold text-slate-900" }, caseIdOf(c)),
+                          el("td", { class: "p-4 font-bold text-slate-900" },
+                            el("div", { class: "flex flex-wrap items-center gap-2" },
+                              caseIdOf(c),
+                              c.urgent ? urgentBadge() : null
+                            )
+                          ),
                           el("td", {},
                             el("button", {
                               class: "hover:text-cyan-700 hover:underline",
@@ -153,7 +159,10 @@ export async function renderCasesPage({ target }) {
                                 e.stopPropagation();
                                 openPatient(c.patientId);
                               },
-                            }, c.patientId)
+                            }, patientDisplayName(c) || c.patientId),
+                            patientDisplayName(c)
+                              ? el("div", { class: "text-xs font-mono text-slate-500" }, c.patientId)
+                              : null
                           ),
                           el("td", { class: "text-slate-600" },
                             c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : "—"
@@ -265,16 +274,20 @@ export async function renderCasePage({ target }) {
             el("div", { class: "flex flex-wrap items-start justify-between gap-3" },
               el("div", {},
                 el("h1", { class: "text-3xl font-bold text-slate-900" }, id || "Case"),
-                el("p", { class: "mt-1 text-slate-600" },
+                el("p", { class: "mt-1 text-slate-600 flex flex-wrap items-center gap-2" },
                   el("button", {
                     class: "font-semibold hover:text-cyan-700 hover:underline",
                     onClick: () => openPatient(localCase.patientId),
-                  }, localCase.patientId),
+                  }, patientDisplayName(localCase) || localCase.patientId),
+                  patientDisplayName(localCase)
+                    ? el("span", { class: "font-mono text-xs text-slate-500" }, localCase.patientId)
+                    : null,
                   " · ",
                   localCase.age || "?", " years · ",
                   localCase.sex || "?",
                   " · ",
-                  statusBadge(localCase.status)
+                  statusBadge(localCase.status),
+                  localCase.urgent ? urgentBadge() : null
                 )
               ),
               el("div", { class: "flex flex-wrap gap-2" },

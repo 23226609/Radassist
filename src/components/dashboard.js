@@ -8,6 +8,7 @@ import { svgIcon } from "./icons.js";
 import { needsAzureDiagnosis } from "../lib/diagnosis.js";
 import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
+import { urgentBadge, patientDisplayName } from "../lib/tags.js";
 
 const diagnosisRequested = new Set();
 const diagnosisPending = new Set();
@@ -143,10 +144,16 @@ export async function renderDashboardPage({ target }) {
               state.selectedPatientId = c.patientId;
               setPage("patient");
             },
-          }, c.patientId)
+          }, patientDisplayName(c) || c.patientId),
+          patientDisplayName(c)
+            ? el("div", { class: "text-xs font-normal text-slate-500 font-mono" }, c.patientId)
+            : null
         ),
         el("td", { class: "text-slate-600" }, c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : ""),
-        el("td", {}, statusBadge(c.status)),
+        el("td", { class: "space-x-1" },
+          statusBadge(c.status),
+          c.urgent ? urgentBadge({ class: "ml-1" }) : null
+        ),
         el("td", { class: "max-w-md" }, diagnosisCell(c)),
         el("td", { class: "space-x-1 whitespace-nowrap" },
           el("button", {

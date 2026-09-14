@@ -7,6 +7,7 @@ import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
+import { urgentBadge, patientDisplayName } from "../lib/tags.js";
 
 function openPatient(patientId) {
   state.selectedPatientId = patientId;
@@ -70,7 +71,13 @@ export async function renderPatientsPage({ target }) {
         el("div", {},
           el("h1", { class: "text-3xl font-bold text-slate-900" }, "Patients"),
           el("p", { class: "mt-1 text-slate-500" }, "Open a chart to see history, diagnoses, and findings.")
-        )
+        ),
+        state.user?.role !== "nurse"
+          ? el("button", {
+              class: "inline-flex items-center gap-2 rounded-xl bg-cyan-600 px-4 py-2 font-semibold text-white hover:bg-cyan-700",
+              onClick: () => setPage("new-patient"),
+            }, svgIcon("user-plus", { size: 16 }), "New patient")
+          : null
       ),
       el("section", { class: "card mt-6 p-0 overflow-hidden" },
         el("div", { class: "flex flex-wrap gap-3 border-b p-4" },
@@ -78,7 +85,7 @@ export async function renderPatientsPage({ target }) {
             svgIcon("search", { size: 16, class: "absolute left-3 top-3 text-slate-400" }),
             el("input", {
               class: "w-full rounded-xl border border-slate-300 bg-white pl-10 pr-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100",
-              placeholder: "Search patient ID…",
+              placeholder: "Search name or patient ID…",
               value: q,
               onInput: (e) => { q = e.target.value; },
               onChange: () => { page = 1; selected.clear(); refresh(); },
@@ -102,7 +109,7 @@ export async function renderPatientsPage({ target }) {
                     el("thead", { class: "bg-slate-50 text-slate-600" },
                       el("tr", {},
                         isAdmin() ? headerCheckbox(pageIds, selected, (on) => { togglePage(selected, pageIds, on); render(); }) : null,
-                        ["Patient ID", "Age / sex", "Last diagnosis", "Studies", "Updated"].map((h) =>
+                        ["Name", "Patient ID", "Age / sex", "Last diagnosis", "Studies", "Updated"].map((h) =>
                           el("th", { class: "p-4" }, h)
                         )
                       )
@@ -114,7 +121,13 @@ export async function renderPatientsPage({ target }) {
                           onClick: () => openPatient(p.patientId),
                         },
                           isAdmin() ? rowCheckbox(p.patientId, selected, (id, on) => { toggleSelected(selected, id, on); render(); }) : null,
-                          el("td", { class: "p-4 font-bold text-slate-900" }, p.patientId),
+                          el("td", { class: "p-4" },
+                            el("div", { class: "flex flex-wrap items-center gap-2" },
+                              el("span", { class: "font-bold text-slate-900" }, patientDisplayName(p) || "—"),
+                              p.urgent ? urgentBadge() : null
+                            )
+                          ),
+                          el("td", { class: "font-mono text-xs text-slate-500" }, p.patientId),
                           el("td", { class: "text-slate-600" },
                             [p.age && `${p.age} years`, p.sex].filter(Boolean).join(" · ") || "—"
                           ),
@@ -226,8 +239,15 @@ export async function renderPatientPage({ target }) {
         : el("div", {},
             el("div", { class: "flex flex-wrap items-start justify-between gap-3" },
               el("div", {},
-                el("h1", { class: "text-3xl font-bold text-slate-900" }, patient?.patientId || "Patient"),
+                el("div", { class: "flex flex-wrap items-center gap-2" },
+                  el("h1", { class: "text-3xl font-bold text-slate-900" },
+                    patientDisplayName(patient) || patient?.patientId || "Patient"),
+                  patient?.urgent ? urgentBadge() : null
+                ),
                 el("p", { class: "mt-1 text-slate-600" },
+                  patientDisplayName(patient)
+                    ? el("span", { class: "mr-2 font-mono text-xs text-slate-500" }, patient.patientId)
+                    : null,
                   [patient?.age && `${patient.age} years`, patient?.sex].filter(Boolean).join(" · ") || "No demographics yet"
                 )
               ),
@@ -237,6 +257,11 @@ export async function renderPatientPage({ target }) {
                   disabled: busy,
                   onClick: deleteThis,
                 }, svgIcon("trash", { size: 16 }), "Delete"),
+                edit && el("button", {
+                  class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
+                  disabled: busy,
+                  onClick: () => setPage("new"),
+                }, svgIcon("plus", { size: 16 }), "New case"),
                 edit && el("button", {
                   class: "rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50",
                   disabled: busy,
@@ -340,7 +365,10 @@ export async function renderPatientPage({ target }) {
                           onClick: () => openCase(c.caseId),
                         },
                           el("div", {},
-                            el("div", { class: "font-semibold text-slate-900" }, c.caseId),
+                            el("div", { class: "flex flex-wrap items-center gap-2" },
+                              el("div", { class: "font-semibold text-slate-900" }, c.caseId),
+                              c.urgent ? urgentBadge() : null
+                            ),
                             el("p", { class: "text-sm text-slate-600" }, c.diagnosis || "No diagnosis")
                           ),
                           el("span", { class: "text-xs capitalize text-slate-500" },

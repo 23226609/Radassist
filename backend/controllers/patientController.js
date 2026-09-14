@@ -7,6 +7,7 @@ const Patient = require('../models/Patient');
 const ApiError = require('../utils/ApiError');
 const catchAsync = require('../utils/catchAsync');
 const addAuditLog = require('../utils/auditLogger');
+const { nameFieldsFrom, composePatientName } = require('../utils/patientName');
 
 function imageBucket() {
   return new mongoose.mongo.GridFSBucket(mongoose.connection.db, { bucketName: 'images' });
@@ -27,9 +28,14 @@ async function findPatientRecord(patientId) {
 async function upsertPatientFromCase(c) {
   if (!c?.patientId) return;
   let p = await findPatientRecord(c.patientId);
+  const names = nameFieldsFrom(c);
   if (!p) {
     await Patient.create({
       patientId: c.patientId,
+      firstName: names.firstName,
+      middleName: names.middleName,
+      lastName: names.lastName,
+      name: names.name,
       age: c.age || '',
       sex: ['Female', 'Male', 'Other'].includes(c.sex) ? c.sex : '',
       history: c.history || '',
@@ -37,10 +43,61 @@ async function upsertPatientFromCase(c) {
     });
     return;
   }
+  if (names.firstName && !p.firstName) p.firstName = names.firstName;
+  if (names.middleName && !p.middleName) p.middleName = names.middleName;
+  if (names.lastName && !p.lastName) p.lastName = names.lastName;
+  if (names.name && !p.name) p.name = names.name;
   if (!p.age && c.age) p.age = c.age;
   if (!p.sex && c.sex) p.sex = c.sex;
   if (!p.history && c.history) p.history = c.history;
+  if (!p.name) p.name = composePatientName(p);
   await p.save();
+}
+
+async function patientIdTaken(patientId) {
+  if (await findPatientRecord(patientId)) return true;
+  return Boolean(await Case.findOne(caseFilter(patientId)).select('_id'));
+}
+
+async function nextPatientId() {
+  const year = new Date().getFullYear();
+  const prefix = `PT-${year}-`;
+  const re = new RegExp(`^${escapeRegex(prefix)}\\d+$`, 'i');
+  const [fromPatients, fromCases] = await Promise.all([
+    Patient.find({ patientId: re }).select('patientId'),
+    Case.find({ patientId: re }).select('patientId'),
+  ]);
+  const nums = [...fromPatients.map((p) => p.patientId), ...fromCases.map((c) => c.patientId)]
+    .map((id) => parseInt(String(id).slice(prefix.length), 10))
+    .filter((n) => Number.isFinite(n));
+  const next = (nums.length ? Math.max(...nums) : 0) + 1;
+  return `${prefix}${String(next).padStart(4, '0')}`;
+}
+
+function summarisePatient(record, grouped = {}, cases = []) {
+  const names = nameFieldsFrom({
+    firstName: record?.firstName || grouped.firstName,
+    middleName: record?.middleName || grouped.middleName,
+    lastName: record?.lastName || grouped.lastName,
+    name: record?.name,
+    patientName: grouped.patientName || record?.name,
+  });
+  return {
+    patientId: record?.patientId || grouped.patientId || '',
+    firstName: names.firstName,
+    middleName: names.middleName,
+    lastName: names.lastName,
+    name: names.name,
+    age: record?.age || grouped.age || '',
+    sex: record?.sex || grouped.sex || '',
+    history: record?.history || grouped.history || '',
+    remarks: record?.remarks || '',
+    lastDiagnosis: grouped.lastDiagnosis || cases[0]?.diagnosis || '',
+    lastStatus: grouped.lastStatus || cases[0]?.status || '',
+    lastCaseAt: grouped.lastCaseAt || record?.updatedAt || record?.createdAt || null,
+    caseCount: grouped.caseCount ?? cases.length,
+    urgent: grouped.urgent ?? cases.some((c) => c.urgent),
+  };
 }
 
 function summariseCase(c) {
@@ -49,6 +106,7 @@ function summariseCase(c) {
     caseId: c.caseId || String(c._id),
     _id: c._id,
     status: c.status,
+    urgent: Boolean(c.urgent),
     diagnosis: c.diagnosis || '',
     history: c.history || '',
     createdAt: c.createdAt,
@@ -64,11 +122,34 @@ function summariseCase(c) {
   };
 }
 
+function nameSearch(re) {
+  return [
+    { patientId: re },
+    { name: re },
+    { firstName: re },
+    { middleName: re },
+    { lastName: re },
+  ];
+}
+
 exports.upsertPatientFromCase = upsertPatientFromCase;
 
 exports.listPatients = catchAsync(async (req, res) => {
   const q = String(req.query.q || '').trim();
-  const match = q ? { patientId: new RegExp(escapeRegex(q), 'i') } : {};
+  const re = q ? new RegExp(escapeRegex(q), 'i') : null;
+  const match = {};
+  if (re) {
+    const named = await Patient.find({ $or: nameSearch(re) }).select('patientId');
+    const ids = named.map((p) => p.patientId);
+    match.$or = [
+      { patientId: re },
+      { patientName: re },
+      { firstName: re },
+      { middleName: re },
+      { lastName: re },
+      ...(ids.length ? [{ patientId: { $in: ids } }] : []),
+    ];
+  }
 
   const grouped = await Case.aggregate([
     { $match: match },
@@ -77,6 +158,10 @@ exports.listPatients = catchAsync(async (req, res) => {
       $group: {
         _id: '$patientId',
         patientId: { $first: '$patientId' },
+        patientName: { $first: '$patientName' },
+        firstName: { $first: '$firstName' },
+        middleName: { $first: '$middleName' },
+        lastName: { $first: '$lastName' },
         age: { $first: '$age' },
         sex: { $first: '$sex' },
         history: { $first: '$history' },
@@ -84,32 +169,87 @@ exports.listPatients = catchAsync(async (req, res) => {
         lastStatus: { $first: '$status' },
         lastCaseAt: { $first: '$createdAt' },
         caseCount: { $sum: 1 },
+        urgents: { $addToSet: '$urgent' },
       },
     },
     { $sort: { lastCaseAt: -1 } },
   ]);
 
-  const notes = await Patient.find({
-    patientId: { $in: grouped.map((g) => g.patientId) },
-  });
+  const notes = await Patient.find(re ? { $or: nameSearch(re) } : {});
   const byId = new Map(notes.map((n) => [String(n.patientId).toLowerCase(), n]));
+  const seen = new Set();
 
   const patients = grouped.map((g) => {
     const p = byId.get(String(g.patientId).toLowerCase());
-    return {
-      patientId: g.patientId,
-      age: p?.age || g.age || '',
-      sex: p?.sex || g.sex || '',
-      history: p?.history || g.history || '',
-      remarks: p?.remarks || '',
-      lastDiagnosis: g.lastDiagnosis || '',
-      lastStatus: g.lastStatus || '',
-      lastCaseAt: g.lastCaseAt,
-      caseCount: g.caseCount,
-    };
+    seen.add(String(g.patientId).toLowerCase());
+    return summarisePatient(p, {
+      ...g,
+      urgent: (g.urgents || []).some(Boolean),
+    });
   });
 
+  for (const p of notes) {
+    const key = String(p.patientId).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    patients.push(summarisePatient(p));
+  }
+
+  patients.sort((a, b) => new Date(b.lastCaseAt || 0) - new Date(a.lastCaseAt || 0));
+
   res.json({ success: true, patients });
+});
+
+exports.createPatient = catchAsync(async (req, res, next) => {
+  if (req.user.role === 'nurse') {
+    return next(ApiError.forbidden('Nurses cannot add patients.'));
+  }
+
+  const { patientId, age, sex, history } = req.body || {};
+  const names = nameFieldsFrom(req.body || {});
+  if (!names.firstName || !names.lastName) {
+    return next(ApiError.badRequest('First name and last name are required.'));
+  }
+
+  const sexValue = ['Female', 'Male', 'Other'].includes(sex) ? sex : '';
+  let id = String(patientId || '').trim();
+  if (id) {
+    if (await patientIdTaken(id)) {
+      return next(ApiError.badRequest(`Patient ${id} already exists.`));
+    }
+  } else {
+    id = await nextPatientId();
+    while (await patientIdTaken(id)) {
+      const year = new Date().getFullYear();
+      const n = parseInt(id.slice(`PT-${year}-`.length), 10) + 1;
+      id = `PT-${year}-${String(n).padStart(4, '0')}`;
+    }
+  }
+
+  const record = await Patient.create({
+    patientId: id,
+    firstName: names.firstName,
+    middleName: names.middleName,
+    lastName: names.lastName,
+    name: names.name,
+    age: age != null ? String(age).trim() : '',
+    sex: sexValue,
+    history: history != null ? String(history) : '',
+    remarks: '',
+  });
+
+  await addAuditLog(
+    req.user.userId,
+    'PATIENT_CREATED',
+    `Created patient ${record.patientId} (${record.name})`,
+    record.patientId
+  );
+
+  res.status(201).json({
+    success: true,
+    patient: summarisePatient(record),
+    cases: [],
+  });
 });
 
 exports.getPatient = catchAsync(async (req, res, next) => {
@@ -128,14 +268,7 @@ exports.getPatient = catchAsync(async (req, res, next) => {
     record = await findPatientRecord(latest.patientId);
   }
 
-  const patient = {
-    patientId: record?.patientId || latest?.patientId || patientId,
-    age: record?.age || latest?.age || '',
-    sex: record?.sex || latest?.sex || '',
-    history: record?.history || latest?.history || '',
-    remarks: record?.remarks || '',
-    lastDiagnosis: latest?.diagnosis || '',
-  };
+  const patient = summarisePatient(record, latest || {}, cases);
 
   res.json({
     success: true,
@@ -160,6 +293,7 @@ exports.updatePatient = catchAsync(async (req, res, next) => {
   if (!record) {
     record = await Patient.create({
       patientId: latest.patientId,
+      ...nameFieldsFrom(latest),
       age: latest.age || '',
       sex: latest.sex || '',
       history: latest.history || '',
@@ -167,7 +301,19 @@ exports.updatePatient = catchAsync(async (req, res, next) => {
     });
   }
 
-  const { history, remarks, age, sex } = req.body || {};
+  const { history, remarks, age, sex, name, firstName, middleName, lastName } = req.body || {};
+  if (firstName !== undefined || middleName !== undefined || lastName !== undefined || name !== undefined) {
+    const names = nameFieldsFrom({
+      firstName: firstName !== undefined ? firstName : record.firstName,
+      middleName: middleName !== undefined ? middleName : record.middleName,
+      lastName: lastName !== undefined ? lastName : record.lastName,
+      name,
+    });
+    record.firstName = names.firstName;
+    record.middleName = names.middleName;
+    record.lastName = names.lastName;
+    record.name = names.name;
+  }
   if (history !== undefined) record.history = String(history);
   if (remarks !== undefined) record.remarks = String(remarks);
   if (age !== undefined) record.age = String(age);
@@ -184,14 +330,7 @@ exports.updatePatient = catchAsync(async (req, res, next) => {
   const cases = await Case.find(caseFilter(record.patientId)).sort({ createdAt: -1 });
   res.json({
     success: true,
-    patient: {
-      patientId: record.patientId,
-      age: record.age,
-      sex: record.sex,
-      history: record.history,
-      remarks: record.remarks,
-      lastDiagnosis: cases[0]?.diagnosis || '',
-    },
+    patient: summarisePatient(record, {}, cases),
     cases: cases.map(summariseCase),
   });
 });

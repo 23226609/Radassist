@@ -13,6 +13,7 @@ const connectDB = require('../config/db');
 const User = require('../models/User');
 const Case = require('../models/Case');
 const AuditLog = require('../models/AuditLog');
+const { nameFieldsFrom } = require('../utils/patientName');
 
 const DEMO_USERS = [
   {
@@ -76,6 +77,9 @@ const SAMPLE_CASES = [
   {
     caseId: 'CASE-DEMO-0001',
     patientId: 'PT-2026-0018',
+    firstName: 'Mei',
+    lastName: 'Chen',
+    patientName: 'Mei Chen',
     age: '67',
     sex: 'Female',
     history: 'Persistent cough and mild dyspnoea',
@@ -91,6 +95,10 @@ const SAMPLE_CASES = [
   {
     caseId: 'CASE-DEMO-0002',
     patientId: 'PT-2026-0021',
+    firstName: 'James',
+    middleName: 'Wei',
+    lastName: 'Tan',
+    patientName: 'James Wei Tan',
     age: '45',
     sex: 'Male',
     history: 'Fever for three days',
@@ -102,6 +110,9 @@ const SAMPLE_CASES = [
   {
     caseId: 'CASE-DEMO-0003',
     patientId: 'PT-2026-0011',
+    firstName: 'David',
+    lastName: 'Lim',
+    patientName: 'David Lim',
     age: '58',
     sex: 'Male',
     history: 'Follow-up examination',
@@ -119,6 +130,9 @@ const SAMPLE_CASES = [
   {
     caseId: 'CASE-DEMO-0004',
     patientId: 'PT-2026-0033',
+    firstName: 'Robert',
+    lastName: 'Ng',
+    patientName: 'Robert Ng',
     age: '72',
     sex: 'Male',
     history: 'Shortness of breath, history of COPD',
@@ -133,6 +147,9 @@ const SAMPLE_CASES = [
   {
     caseId: 'CASE-DEMO-0005',
     patientId: 'PT-2026-0044',
+    firstName: 'Aisha',
+    lastName: 'Rahman',
+    patientName: 'Aisha Rahman',
     age: '34',
     sex: 'Female',
     history: 'Routine pre-employment check',
@@ -144,12 +161,16 @@ const SAMPLE_CASES = [
   {
     caseId: 'CASE-DEMO-0006',
     patientId: 'PT-2026-0050',
+    firstName: 'Henry',
+    lastName: 'Wong',
+    patientName: 'Henry Wong',
     age: '80',
     sex: 'Male',
     history: 'Fall, rib pain',
     diagnosis: 'Left lateral rib fracture',
     reportText: 'Nondisplaced fracture of the left 8th lateral rib. No pneumothorax.',
     status: 'finalized',
+    urgent: true,
     finalizedBy: 'USR-DOCTOR-0001',
     finalizedByName: 'Dr. Alex Wong',
     findingsSeed: [
@@ -203,12 +224,29 @@ async function seedCases() {
   for (const c of SAMPLE_CASES) {
     const exists = await Case.findOne({ caseId: c.caseId });
     if (exists) {
-      console.log(`  · case ${c.caseId} already exists, skipping`);
+      const names = nameFieldsFrom(c);
+      const patch = {};
+      if (names.firstName && exists.firstName !== names.firstName) patch.firstName = names.firstName;
+      if (names.middleName && exists.middleName !== names.middleName) patch.middleName = names.middleName;
+      if (names.lastName && exists.lastName !== names.lastName) patch.lastName = names.lastName;
+      if (names.name && exists.patientName !== names.name) patch.patientName = names.name;
+      if (Boolean(c.urgent) && !exists.urgent) patch.urgent = true;
+      if (Object.keys(patch).length) {
+        await Case.updateOne({ _id: exists._id }, { $set: patch });
+        console.log(`  · case ${c.caseId} updated (${Object.keys(patch).join(', ')})`);
+      } else {
+        console.log(`  · case ${c.caseId} already exists, skipping`);
+      }
       continue;
     }
+    const names = nameFieldsFrom(c);
     await Case.create({
       caseId: c.caseId,
       patientId: c.patientId,
+      firstName: names.firstName,
+      middleName: names.middleName,
+      lastName: names.lastName,
+      patientName: names.name,
       age: c.age,
       sex: c.sex,
       history: c.history,
@@ -216,6 +254,7 @@ async function seedCases() {
       reportText: c.reportText,
       findings: c.findingsSeed,
       status: c.status,
+      urgent: Boolean(c.urgent),
       createdBy: 'USR-DOCTOR-0001',
       createdByName: 'Dr. Alex Wong',
       finalizedBy: c.finalizedBy || null,

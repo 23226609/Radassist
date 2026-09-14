@@ -96,6 +96,7 @@ export const api = {
     const q = new URLSearchParams(params).toString();
     return request("GET", `/patients${q ? "?" + q : ""}`);
   },
+  createPatient: (payload) => request("POST", "/patients", payload),
   getPatient: (id) => request("GET", `/patients/${encodeURIComponent(id)}`),
   updatePatient: (id, payload) => request("PUT", `/patients/${encodeURIComponent(id)}`, payload),
   deletePatient: (id) => request("DELETE", `/patients/${encodeURIComponent(id)}`),

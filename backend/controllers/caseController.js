@@ -10,6 +10,7 @@ const { analyzeXray } = require('../utils/aiService');
 const azureFindings = require('../utils/azureFindings');
 const { downloadImage } = require('./_gridfs');
 const { upsertPatientFromCase } = require('./patientController');
+const { nameFieldsFrom } = require('../utils/patientName');
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || require('os').tmpdir();
 const path = require('path');
@@ -45,6 +46,10 @@ exports.listCases = catchAsync(async (req, res) => {
     filter.$or = [
       { caseId: re },
       { patientId: re },
+      { patientName: re },
+      { firstName: re },
+      { middleName: re },
+      { lastName: re },
       { diagnosis: re },
       { reportText: re },
       { history: re },
@@ -110,6 +115,10 @@ exports.createCase = catchAsync(async (req, res, next) => {
   if (!req.file) return next(ApiError.badRequest('Please upload an X-Ray image.'));
   const { patientId, age, sex, history } = req.body || {};
   if (!patientId) return next(ApiError.badRequest('patientId is required.'));
+  const names = nameFieldsFrom(req.body || {});
+  if (!names.firstName || !names.lastName) {
+    return next(ApiError.badRequest('First name and last name are required.'));
+  }
 
   // Push the image into GridFS.
   const up = bucket().openUploadStream(req.file.originalname, {
@@ -186,6 +195,10 @@ exports.createCase = catchAsync(async (req, res, next) => {
   const doc = await Case.create({
     caseId,
     patientId,
+    firstName: names.firstName,
+    middleName: names.middleName,
+    lastName: names.lastName,
+    patientName: names.name,
     age: age || '',
     sex: ['Female', 'Male', 'Other'].includes(sex) ? sex : '',
     history: history || '',
@@ -259,9 +272,10 @@ exports.updateCase = catchAsync(async (req, res, next) => {
   }
 
   const oldStatus = c.status;
-  const { diagnosis, reportText, findings, remarks } = req.body || {};
-  // A finalized report is locked. Clinicians can still leave remarks, but
-  // those notes must not rewrite the stored report or findings.
+  const { diagnosis, reportText, findings, remarks, urgent } = req.body || {};
+  // A finalized report is locked. Clinicians can still leave remarks and
+  // toggle urgency, but those notes must not rewrite the stored report.
+  if (urgent !== undefined) c.urgent = Boolean(urgent);
   if (c.status === 'finalized') {
     if (remarks !== undefined) c.remarks = remarks;
   } else {

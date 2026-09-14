@@ -73,6 +73,12 @@ const dropZone = () => root.querySelector("#xray-drop") || root.querySelector('[
 
 console.log("\n=== new case upload ===");
 
+test("asks for first and last name", () => {
+  assert.ok([...root.querySelectorAll("input")].some((i) => i.getAttribute("placeholder") === "First name"));
+  assert.ok([...root.querySelectorAll("input")].some((i) => i.getAttribute("placeholder") === "Middle name (optional)"));
+  assert.ok([...root.querySelectorAll("input")].some((i) => i.getAttribute("placeholder") === "Last name"));
+});
+
 test("shows an Upload X-Ray drop zone", () => {
   assert.ok(root.textContent.includes("2. Upload X-Ray"));
   const zone = dropZone();

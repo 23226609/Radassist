@@ -90,9 +90,11 @@ function makeFinding(label, confidence, status = "pending") {
 const testCase = {
   caseId: "CASE-CAROUSEL-1",
   patientId: "PT-0001",
+  patientName: "Alex Wong",
   age: "29",
   sex: "Female",
   status: "completed",
+  urgent: false,
   reportText: "Chest X-Ray Report\n\n1. Lungs:\n   - The lungs are clear.",
   imageId: null,
   findings: [
@@ -137,6 +139,14 @@ test("shows a position counter for the three findings", () => {
 
 test("shows the first finding first", () => {
   assert.ok(text().includes("Heart size normal"));
+});
+
+test("shows the patient name on the view page", () => {
+  assert.ok(text().includes("Alex Wong"));
+});
+
+test("doctors can mark the case urgent", () => {
+  assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Mark urgent"));
 });
 
 test("renders one navigation dot per finding", () => {
@@ -305,6 +315,41 @@ test("the remarks box sits under the findings in the right column", () => {
     assert.equal(saved.remarks, "Follow up in clinic.");
     assert.equal(saved.reportText, undefined, "finalized report text must stay locked");
     assert.equal(saved.findings, undefined, "finalized findings must stay locked");
+  });
+
+  test("doctors can still mark a finalized case urgent", () => {
+    assert.ok([...finRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Mark urgent"));
+  });
+}
+
+{
+  let flagged = null;
+  api.updateCase = async (_id, payload) => {
+    flagged = payload;
+    return { case: { ...structuredClone(testCase), ...payload } };
+  };
+  const urgentRoot = document.createElement("div");
+  document.body.appendChild(urgentRoot);
+  await renderReviewPage({ target: urgentRoot });
+  [...urgentRoot.querySelectorAll("button")].find((b) => b.textContent.trim() === "Mark urgent")
+    .dispatchEvent(new window.Event("click"));
+  await new Promise((r) => setTimeout(r, 0));
+
+  test("marking urgent saves { urgent: true } on the case", () => {
+    assert.ok(flagged, "updateCase was not called");
+    assert.equal(flagged.urgent, true);
+  });
+}
+
+{
+  state.user = { role: "nurse", userId: "n1", name: "Nurse" };
+  const nurseRoot = document.createElement("div");
+  document.body.appendChild(nurseRoot);
+  await renderReviewPage({ target: nurseRoot });
+
+  test("nurses see the name but cannot mark a case urgent", () => {
+    assert.ok(nurseRoot.textContent.includes("Alex Wong"));
+    assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => /urgent/i.test(b.textContent)));
   });
 }
 

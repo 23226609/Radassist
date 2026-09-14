@@ -5,11 +5,15 @@ import { el, mount } from "../dom.js";
 import { state, setPage, toast } from "../state.js";
 import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
+import { nameFieldsFrom } from "../lib/patientName.js";
 
 export async function renderNewCasePage({ target }) {
   // Local form state
   const f = {
-    patientId: "",
+    patientId: state.selectedPatientId || "",
+    firstName: "",
+    middleName: "",
+    lastName: "",
     age: "",
     sex: "",
     history: "",
@@ -71,12 +75,32 @@ export async function renderNewCasePage({ target }) {
     found = null;
     if (!f.patientId.trim()) return render();
     try {
+      const people = await api.listPatients({ q: f.patientId });
+      const match = (people.patients || []).find(
+        (p) => String(p.patientId).toLowerCase() === f.patientId.toLowerCase()
+      );
+      if (match) {
+        found = match;
+        const names = nameFieldsFrom(match);
+        f.firstName = names.firstName || f.firstName;
+        f.middleName = names.middleName;
+        f.lastName = names.lastName || f.lastName;
+        f.age = match.age || f.age;
+        f.sex = match.sex || f.sex;
+        f.history = match.history || f.history;
+        render();
+        return;
+      }
       const data = await api.listCases({ q: f.patientId });
       const exact = (data.cases || []).find(
         (c) => c.patientId.toLowerCase() === f.patientId.toLowerCase()
       );
       if (exact) {
         found = exact;
+        const names = nameFieldsFrom(exact);
+        f.firstName = names.firstName || f.firstName;
+        f.middleName = names.middleName;
+        f.lastName = names.lastName || f.lastName;
         f.age = exact.age || f.age;
         f.sex = exact.sex || f.sex;
         f.history = exact.history || f.history;
@@ -86,12 +110,13 @@ export async function renderNewCasePage({ target }) {
       render();
     } catch (err) {
       toast(err.message);
+      render();
     }
   }
 
   async function analyze() {
     const file = state.selectedFile;
-    if (!f.patientId || !f.age || !f.sex || !file) {
+    if (!f.patientId || !f.firstName.trim() || !f.lastName.trim() || !f.age || !f.sex || !file) {
       toast("Complete patient details and choose an X-Ray image.");
       return;
     }
@@ -107,8 +132,13 @@ export async function renderNewCasePage({ target }) {
     }, 700);
 
     const fd = new FormData();
+    const names = nameFieldsFrom(f);
     fd.append("file", file);
     fd.append("patientId", f.patientId);
+    fd.append("firstName", names.firstName);
+    fd.append("middleName", names.middleName);
+    fd.append("lastName", names.lastName);
+    fd.append("patientName", names.name);
     fd.append("age", String(f.age));
     fd.append("sex", f.sex);
     fd.append("history", f.history || "");
@@ -170,6 +200,29 @@ export async function renderNewCasePage({ target }) {
           : null,
         el("div", { class: "mt-4 grid gap-3 sm:grid-cols-3" },
           el("input", {
+            disabled: !!(found && typeof found === "object"),
+            class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100",
+            placeholder: "First name",
+            value: f.firstName,
+            onInput: (e) => (f.firstName = e.target.value),
+          }),
+          el("input", {
+            disabled: !!(found && typeof found === "object"),
+            class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100",
+            placeholder: "Middle name (optional)",
+            value: f.middleName,
+            onInput: (e) => (f.middleName = e.target.value),
+          }),
+          el("input", {
+            disabled: !!(found && typeof found === "object"),
+            class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100",
+            placeholder: "Last name",
+            value: f.lastName,
+            onInput: (e) => (f.lastName = e.target.value),
+          }),
+        ),
+        el("div", { class: "mt-3 grid gap-3 sm:grid-cols-2" },
+          el("input", {
             type: "number",
             disabled: !!(found && typeof found === "object"),
             class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100",
@@ -190,7 +243,7 @@ export async function renderNewCasePage({ target }) {
           ),
           el("input", {
             disabled: !!(found && typeof found === "object"),
-            class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100",
+            class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100 sm:col-span-2",
             placeholder: "Clinical history",
             value: f.history,
             onInput: (e) => (f.history = e.target.value),
@@ -241,5 +294,6 @@ export async function renderNewCasePage({ target }) {
     mount(target, root);
   }
 
-  render();
+  if (f.patientId) await lookup();
+  else render();
 }

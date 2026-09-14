@@ -10,6 +10,7 @@ import { renderNewCasePage } from "./components/newCase.js";
 import { renderReviewPage } from "./components/review.js";
 import { renderAuditPage } from "./components/audit.js";
 import { renderPatientsPage, renderPatientPage } from "./components/patients.js";
+import { renderNewPatientPage } from "./components/newPatient.js";
 import { renderCasesPage, renderCasePage } from "./components/cases.js";
 import { isReportPopup, renderReportViewPage } from "./components/reportView.js";
 import { el, mount } from "./dom.js";
@@ -70,8 +71,9 @@ function render() {
     case "new":       pageNode = "new";       break;
     case "review":    pageNode = "review";    break;
     case "audit":     pageNode = "audit";     break;
-    case "patients":  pageNode = "patients";  break;
-    case "patient":   pageNode = "patient";   break;
+    case "patients":    pageNode = "patients";     break;
+    case "patient":     pageNode = "patient";      break;
+    case "new-patient": pageNode = "new-patient";  break;
     case "cases":     pageNode = "cases";     break;
     case "case":      pageNode = "case";      break;
     default:          pageNode = "dashboard";
@@ -97,6 +99,8 @@ function render() {
     renderPatientsPage({ target });
   } else if (pageNode === "patient") {
     renderPatientPage({ target });
+  } else if (pageNode === "new-patient") {
+    renderNewPatientPage({ target });
   } else if (pageNode === "cases") {
     renderCasesPage({ target });
   } else if (pageNode === "case") {

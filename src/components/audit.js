@@ -17,6 +17,7 @@ const ACTION_TONE = {
   CASE_UPDATED: "bg-amber-50 text-amber-700",
   CASE_FINALIZED: "bg-green-50 text-green-700",
   CASE_DELETED: "bg-red-50 text-red-700",
+  PATIENT_CREATED: "bg-cyan-50 text-cyan-700",
   PATIENT_UPDATED: "bg-slate-100 text-slate-700",
   PATIENT_DELETED: "bg-red-50 text-red-700",
 };

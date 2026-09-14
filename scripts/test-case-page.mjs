@@ -45,9 +45,11 @@ console.log("\n=== case page ===");
 const stored = {
   caseId: "CASE-1",
   patientId: "PT-2026-0018",
+  patientName: "Mei Chen",
   age: "61",
   sex: "Male",
   status: "completed",
+  urgent: true,
   history: "Cough for two weeks.",
   diagnosis: "Mild cardiomegaly",
   remarks: "",
@@ -74,6 +76,8 @@ await renderCasesPage({ target: listRoot });
 test("cases list shows the study", () => {
   assert.ok(listRoot.textContent.includes("CASE-1"));
   assert.ok(listRoot.textContent.includes("PT-2026-0018"));
+  assert.ok(listRoot.textContent.includes("Mei Chen"));
+  assert.ok(listRoot.textContent.includes("Urgent"));
   assert.ok(listRoot.textContent.includes("Mild cardiomegaly"));
   assert.ok(![...listRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Delete"),
     "doctors should not delete cases from the list");
@@ -85,6 +89,8 @@ await renderCasePage({ target: root });
 test("case record shows history, diagnosis, findings and remarks", () => {
   assert.ok(root.textContent.includes("Clinical history"));
   assert.ok(root.textContent.includes("Cough for two weeks."));
+  assert.ok(root.textContent.includes("Mei Chen"));
+  assert.ok(root.textContent.includes("Urgent"));
   assert.ok(root.textContent.includes("Mild cardiomegaly"));
   assert.ok(root.textContent.includes("Enlarged heart"));
   assert.ok(root.querySelector("#case-remarks"), "remarks box missing");

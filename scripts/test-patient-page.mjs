@@ -45,16 +45,19 @@ console.log("\n=== patient page ===");
 const chart = {
   patient: {
     patientId: "PT-2026-0018",
+    name: "Mei Chen",
     age: "61",
     sex: "Male",
     history: "Cough for two weeks.",
     remarks: "",
     lastDiagnosis: "Mild cardiomegaly",
+    urgent: true,
   },
   cases: [
     {
       caseId: "CASE-1",
       status: "completed",
+      urgent: true,
       diagnosis: "Mild cardiomegaly",
       createdAt: "2026-09-01T00:00:00.000Z",
       findings: [
@@ -69,11 +72,13 @@ state.selectedPatientId = "PT-2026-0018";
 api.listPatients = async () => ({
   patients: [{
     patientId: "PT-2026-0018",
+    name: "Mei Chen",
     age: "61",
     sex: "Male",
     lastDiagnosis: "Mild cardiomegaly",
     caseCount: 1,
     lastCaseAt: "2026-09-01T00:00:00.000Z",
+    urgent: true,
   }],
 });
 api.getPatient = async () => structuredClone(chart);
@@ -92,7 +97,10 @@ await renderPatientsPage({ target: listRoot });
 
 test("patients list shows the chart", () => {
   assert.ok(listRoot.textContent.includes("PT-2026-0018"));
+  assert.ok(listRoot.textContent.includes("Mei Chen"));
   assert.ok(listRoot.textContent.includes("Mild cardiomegaly"));
+  assert.ok(listRoot.textContent.includes("Urgent"), "urgent tag missing on a patient with an urgent case");
+  assert.ok([...listRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "New patient"));
   assert.ok(![...listRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Delete"),
     "doctors should not delete patients from the list");
 });
@@ -104,9 +112,12 @@ test("patient chart shows history, diagnosis, findings and remarks", () => {
   assert.ok(root.textContent.includes("Clinical history"));
   assert.ok(root.textContent.includes("Cough for two weeks."));
   assert.ok(root.textContent.includes("Mild cardiomegaly"));
+  assert.ok(root.textContent.includes("Mei Chen"));
+  assert.ok(root.textContent.includes("Urgent"));
   assert.ok(root.textContent.includes("Enlarged heart"));
   assert.ok(root.querySelector("#patient-remarks"), "remarks box missing");
   assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Save notes"));
+  assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "New case"));
 });
 
 const box = root.querySelector("#patient-remarks");
@@ -128,7 +139,13 @@ await renderPatientPage({ target: root });
 test("nurses cannot edit patient remarks", () => {
   assert.equal(root.querySelector("textarea#patient-remarks"), null);
   assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Save notes"));
+  assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "New case"));
   assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Delete"));
+});
+
+await renderPatientsPage({ target: listRoot });
+test("nurses cannot add patients from the list", () => {
+  assert.ok(![...listRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "New patient"));
 });
 
 {
