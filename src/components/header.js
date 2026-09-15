@@ -1,4 +1,5 @@
-// App chrome: sidebar on desktop, drawer on mobile.
+// App chrome: hamburger + slide-out menu on every screen size, so the
+// worklist and film can use the full width until someone opens the nav.
 
 import { el } from "../dom.js";
 import { state, setPage } from "../state.js";
@@ -8,11 +9,13 @@ import { bindListHotkeys } from "../lib/ui.js";
 function closeDrawer() {
   document.getElementById("app-drawer")?.classList.add("hidden");
   document.getElementById("app-scrim")?.classList.add("hidden");
+  document.getElementById("app-menu-button")?.setAttribute("aria-expanded", "false");
 }
 
 function openDrawer() {
   document.getElementById("app-drawer")?.classList.remove("hidden");
   document.getElementById("app-scrim")?.classList.remove("hidden");
+  document.getElementById("app-menu-button")?.setAttribute("aria-expanded", "true");
 }
 
 function go(page) {
@@ -110,23 +113,23 @@ export function Shell({ onLogout }) {
   bindListHotkeys();
   const main = el("div", { class: "min-w-0 flex-1" });
   const root = el("div", { class: "flex min-h-screen bg-slate-50 text-slate-900" },
-    el("aside", {
-      class: "sticky top-0 hidden h-screen w-64 shrink-0 bg-slate-950 lg:flex",
-    }, sidebar({ onLogout })),
     el("div", {
       id: "app-scrim",
-      class: "fixed inset-0 z-40 hidden bg-slate-950/50 lg:hidden",
+      class: "fixed inset-0 z-40 hidden bg-slate-950/50",
       onClick: closeDrawer,
     }),
     el("aside", {
       id: "app-drawer",
-      class: "fixed inset-y-0 left-0 z-50 hidden w-64 bg-slate-950 shadow-2xl lg:hidden",
+      class: "fixed inset-y-0 left-0 z-50 hidden w-64 bg-slate-950 shadow-2xl",
+      "aria-label": "Main menu",
     }, sidebar({ onLogout })),
     el("div", { class: "flex min-w-0 flex-1 flex-col" },
-      el("header", { class: "sticky top-0 z-30 flex items-center gap-3 border-b bg-white/90 px-4 py-3 backdrop-blur lg:hidden" },
+      el("header", { class: "sticky top-0 z-30 flex items-center gap-3 border-b bg-white/90 px-4 py-3 backdrop-blur" },
         el("button", {
+          id: "app-menu-button",
           class: "rounded-lg p-2 text-slate-700 hover:bg-slate-100",
           "aria-label": "Open menu",
+          "aria-expanded": "false",
           onClick: openDrawer,
         }, svgIcon("menu", { size: 20 })),
         el("div", { class: "font-bold text-slate-900" }, TITLES[state.page] || "RadAssist AI")

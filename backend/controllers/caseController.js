@@ -14,6 +14,16 @@ const { toPublicCase, statusFilter } = require('../utils/caseStatus');
 const { upsertPatientFromCase, removeCaseRecord } = require('../utils/recordSync');
 const { OWNED } = Case;
 
+function sanitizeFindings(findings) {
+  return (findings || []).map((raw) => {
+    const f = raw && typeof raw.toObject === 'function' ? raw.toObject() : { ...raw };
+    if (String(f._id || '').startsWith('tmp-')) delete f._id;
+    if (String(f.id || '').startsWith('tmp-')) delete f.id;
+    if (!Array.isArray(f.bbox) || f.bbox.length !== 4) f.bbox = [];
+    return f;
+  });
+}
+
 const UPLOAD_DIR = process.env.UPLOAD_DIR || require('os').tmpdir();
 const path = require('path');
 const fs = require('fs');
@@ -313,7 +323,7 @@ exports.updateCase = catchAsync(async (req, res, next) => {
     if (diagnosis !== undefined) c.diagnosis = diagnosis;
     if (reportText !== undefined) c.reportText = reportText;
     if (remarks !== undefined) c.remarks = remarks;
-    if (Array.isArray(findings)) c.findings = findings;
+    if (Array.isArray(findings)) c.findings = sanitizeFindings(findings);
   }
 
   await c.save();

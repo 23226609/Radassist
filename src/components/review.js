@@ -36,6 +36,44 @@ function confidenceTitle(f) {
   return `From ${parts.join(" + ")}`;
 }
 
+function isManualFinding(f) {
+  if (!f) return false;
+  if (f.source === "manual") return true;
+  return String(f._id || f.id || "").startsWith("tmp-");
+}
+
+function isUnsavedManual(f) {
+  if (!isManualFinding(f)) return false;
+  if (f.draft === true) return true;
+  return String(f._id || f.id || "").startsWith("tmp-");
+}
+
+function hasBbox(f) {
+  return Array.isArray(f?.bbox) && f.bbox.length === 4
+    && Number(f.bbox[2]) > 0 && Number(f.bbox[3]) > 0;
+}
+
+function eventToPct(e, el) {
+  const r = el.getBoundingClientRect();
+  const w = r.width || 1;
+  const h = r.height || 1;
+  return {
+    x: Math.min(100, Math.max(0, ((e.clientX - r.left) / w) * 100)),
+    y: Math.min(100, Math.max(0, ((e.clientY - r.top) / h) * 100)),
+  };
+}
+
+function boxFromCorners(a, b) {
+  const left = Math.min(a.x, b.x);
+  const top = Math.min(a.y, b.y);
+  return [
+    Number(left.toFixed(2)),
+    Number(top.toFixed(2)),
+    Number(Math.max(1, Math.abs(a.x - b.x)).toFixed(2)),
+    Number(Math.max(1, Math.abs(a.y - b.y)).toFixed(2)),
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // AI report parser — converts the markdown report produced by the AI into
 // a list of finding cards the clinician can review. Best-effort heuristics:
@@ -265,6 +303,8 @@ export async function renderReviewPage({ target }) {
   let msg = "";
   let imageSrc = null; // resolved object URL once the blob is fetched
   let carouselIndex = 0; // which finding card the carousel is showing
+  let showBoxes = true;
+  let drawStart = null;
   let remarksDraft = "";
   let remarksDirty = false;
 
@@ -413,6 +453,10 @@ export async function renderReviewPage({ target }) {
   let saveTimer = null;
   let persistChain = Promise.resolve();
 
+  function isDraftFindingId(id) {
+    return String(id || "").startsWith("tmp-");
+  }
+
   function queueReportSync() {
     if (state.user?.role === "nurse" || !getEffectiveCaseId()) return;
     hintMongo("Saving to MongoDB…");
@@ -428,12 +472,16 @@ export async function renderReviewPage({ target }) {
   function patchFinding(id, patch, { refresh = false } = {}) {
     localCase = {
       ...localCase,
-      findings: (localCase.findings || []).map((f) => (f._id === id || f.id === id ? { ...f, ...patch } : f)),
+      findings: (localCase.findings || []).map((f) => (
+        String(f._id || f.id) === String(id) ? { ...f, ...patch } : f
+      )),
     };
     // Text fields keep their own caret — remounting on every keystroke made
     // the remarks box and finding inputs feel like they wouldn't accept typing.
     if (refresh) render();
-    queueReportSync();
+    // Keep unsaved manual cards local until Finish this finding — otherwise a
+    // mid-draw autosave can overwrite the box or the details.
+    if (!isDraftFindingId(id)) queueReportSync();
   }
 
   function addFinding() {
@@ -444,42 +492,162 @@ export async function renderReviewPage({ target }) {
       id: tempId,
       label: "New finding",
       confidence: 0.5,
-      bbox: [10, 10, 20, 20],
+      bbox: [],
       location: "",
       size: "",
       pattern: "Other",
       sentence: "",
       status: "pending",
       source: "manual",
+      bboxSource: "manual",
+      draft: true,
     };
     const next = [...(localCase.findings || []), newFinding];
     localCase = { ...localCase, findings: next };
     carouselIndex = next.length - 1;
     render();
-    queueReportSync();
   }
 
-  function removeFinding(id) {
-    localCase = {
-      ...localCase,
-      findings: (localCase.findings || []).filter((f) => !(f._id === id || f.id === id)),
-    };
+  function removeFinding(id, index = carouselIndex) {
+    const findings = [...(localCase.findings || [])];
+    const idx = findings.findIndex((f, i) => {
+      const fid = String(f._id || f.id || "");
+      if (id != null && id !== "" && fid && fid === String(id)) return true;
+      return (id == null || id === "" || !fid) && i === index;
+    });
+    const removed = idx >= 0 ? findings[idx] : null;
+    if (!removed || !isManualFinding(removed)) return;
+    findings.splice(idx, 1);
+    localCase = { ...localCase, findings };
+    if (carouselIndex >= findings.length) carouselIndex = Math.max(0, findings.length - 1);
     render();
-    queueReportSync();
-  }
-
-  function applyLocalEdits(reportText, { remarks = remarksDraft } = {}) {
-    return composeReportText(reportText, {
-      remarks,
-      findings: localCase.findings,
+    if (isDraftFindingId(removed._id || removed.id)) return;
+    persistClinicianEdits({ includeDraft: true }).catch((err) => {
+      hintMongo("");
+      toast(err.message || "Could not delete this finding.");
     });
   }
 
-  function syncFromPersisted(stored, fallback = {}) {
+  async function finishManualFinding() {
+    if (!localCase || busy) return;
+    busy = true;
+    render();
+    try {
+      await persistClinicianEdits({ includeDraft: true });
+      toast("Finding saved.");
+      hintMongo("Finding saved in MongoDB.");
+    } catch (err) {
+      toast(err.message || "Could not save this finding.");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
+  function canDrawOnFilm() {
+    if (!localCase || isGenerating(localCase)) return false;
+    if (state.user?.role === "nurse" || localCase.status === "finalized") return false;
+    return isManualFinding((localCase.findings || [])[carouselIndex]);
+  }
+
+  function paintLiveBox(stage, bbox) {
+    if (!stage || !bbox) return;
+    let node = stage.querySelector("[data-draw-box]");
+    if (!node) {
+      node = document.createElement("div");
+      node.setAttribute("data-draw-box", "1");
+      node.className = "pointer-events-none absolute border-2 border-yellow-300 bg-yellow-300/25";
+      stage.appendChild(node);
+    }
+    node.style.left = bbox[0] + "%";
+    node.style.top = bbox[1] + "%";
+    node.style.width = bbox[2] + "%";
+    node.style.height = bbox[3] + "%";
+  }
+
+  function onFilmPointerDown(e) {
+    if (!canDrawOnFilm()) return;
+    if (e.button != null && e.button !== 0) return;
+    const stage = e.currentTarget || document.getElementById("xray-stage");
+    if (!stage) return;
+    drawStart = eventToPct(e, stage);
+    showBoxes = true;
+    try { stage.setPointerCapture?.(e.pointerId); } catch { /* tests */ }
+    paintLiveBox(stage, boxFromCorners(drawStart, drawStart));
+    e.preventDefault();
+  }
+
+  function onFilmPointerMove(e) {
+    if (!drawStart) return;
+    const stage = e.currentTarget || document.getElementById("xray-stage");
+    if (!stage) return;
+    paintLiveBox(stage, boxFromCorners(drawStart, eventToPct(e, stage)));
+  }
+
+  function commitDrawnBox(stage, bbox) {
+    if (!stage || !bbox) return;
+    stage.querySelector("[data-draw-box]")?.remove();
+    let node = stage.querySelector("[data-bbox]");
+    if (!node) {
+      node = document.createElement("div");
+      node.setAttribute("data-bbox", "1");
+      node.className = "pointer-events-none absolute border-2 border-yellow-300 bg-yellow-300/25";
+      stage.appendChild(node);
+    }
+    node.style.left = bbox[0] + "%";
+    node.style.top = bbox[1] + "%";
+    node.style.width = bbox[2] + "%";
+    node.style.height = bbox[3] + "%";
+    let tag = node.querySelector("[data-bbox-label]");
+    if (!tag) {
+      tag = document.createElement("span");
+      tag.setAttribute("data-bbox-label", "1");
+      tag.className = "absolute -top-5 left-0 bg-black px-1 text-xs text-white";
+      node.appendChild(tag);
+    }
+    tag.textContent = `F${carouselIndex + 1}`;
+    const hint = document.querySelector("[data-bbox-hint]");
+    if (hint) hint.textContent = "Drag on the X-ray to redraw this box.";
+  }
+
+  function onFilmPointerUp(e) {
+    if (!drawStart) return;
+    const stage = e.currentTarget || document.getElementById("xray-stage");
+    if (!stage) return;
+    const bbox = boxFromCorners(drawStart, eventToPct(e, stage));
+    drawStart = null;
+    e.preventDefault?.();
+    const f = (localCase.findings || [])[carouselIndex];
+    if (f) {
+      // Do not remount the page here. Replacing the DOM on pointerup makes the
+      // following click land on Finish this finding and the button vanishes.
+      patchFinding(f._id || f.id, { bbox, bboxSource: "manual" });
+    }
+    commitDrawnBox(stage, bbox);
+    const swallow = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      document.removeEventListener("click", swallow, true);
+    };
+    document.addEventListener("click", swallow, true);
+    setTimeout(() => document.removeEventListener("click", swallow, true), 400);
+  }
+
+  function applyLocalEdits(reportText, { remarks = remarksDraft, findings } = {}) {
+    return composeReportText(reportText, {
+      remarks,
+      findings: findings ?? localCase.findings,
+    });
+  }
+
+  function syncFromPersisted(stored, fallback = {}, { keepDrafts = true } = {}) {
+    const drafts = keepDrafts
+      ? (localCase.findings || []).filter((f) => isDraftFindingId(f._id || f.id))
+      : [];
     localCase = {
       ...localCase,
       ...stored,
-      findings: stored.findings || localCase.findings,
+      findings: stored.findings ? [...stored.findings, ...drafts] : localCase.findings,
       reportText: stored.reportText ?? localCase.reportText,
       remarks: stored.remarks ?? fallback.remarks ?? localCase.remarks,
     };
@@ -487,7 +655,20 @@ export async function renderReviewPage({ target }) {
     remarksDirty = false;
   }
 
-  async function persistClinicianEdits() {
+  function findingsForSave(list, { includeDraft = false } = {}) {
+    return (list || [])
+      .filter((f) => includeDraft || !isDraftFindingId(f._id || f.id))
+      .map((f) => {
+        const o = { ...f };
+        if (isDraftFindingId(o._id)) delete o._id;
+        if (isDraftFindingId(o.id)) delete o.id;
+        delete o.draft;
+        if (!hasBbox(o)) o.bbox = [];
+        return o;
+      });
+  }
+
+  function persistClinicianEdits({ includeDraft = false } = {}) {
     clearTimeout(saveTimer);
     const run = async () => {
       hintMongo("Saving to MongoDB…");
@@ -505,16 +686,17 @@ export async function renderReviewPage({ target }) {
         hintMongo("");
         return stored;
       }
-      const composed = applyLocalEdits(stored.reportText, { remarks: note });
+      const findings = findingsForSave(localCase.findings, { includeDraft });
+      const composed = applyLocalEdits(stored.reportText, { remarks: note, findings });
       const payload = {
         diagnosis: localCase.diagnosis,
         reportText: composed.reportText,
         remarks: composed.remarks,
-        findings: localCase.findings,
+        findings,
       };
       const updated = await api.updateCase(getEffectiveCaseId(), payload);
       const next = unwrapLegacyReport(updated.case || { ...stored, ...payload });
-      syncFromPersisted(next, composed);
+      syncFromPersisted(next, composed, { keepDrafts: !includeDraft });
       hintMongo("Report saved in MongoDB.");
       return next;
     };
@@ -526,7 +708,7 @@ export async function renderReviewPage({ target }) {
   async function saveDraft() {
     busy = true; render();
     try {
-      await persistClinicianEdits();
+      await persistClinicianEdits({ includeDraft: true });
       msg = "Draft saved.";
       toast(msg);
     } catch (err) {
@@ -543,7 +725,7 @@ export async function renderReviewPage({ target }) {
     if (!confirm("Finalize this report? Finalized cases are read-only for clinicians.")) return;
     busy = true; render();
     try {
-      await persistClinicianEdits();
+      await persistClinicianEdits({ includeDraft: true });
       const data = await api.finalizeCase(getEffectiveCaseId());
       localCase = data.case || data;
       msg = "Report finalized and approved.";
@@ -562,7 +744,7 @@ export async function renderReviewPage({ target }) {
     }
     if (state.user?.role !== "nurse") {
       try {
-        await persistClinicianEdits();
+        await persistClinicianEdits({ includeDraft: true });
       } catch (err) {
         toast(err.message || "Could not save before opening the report.");
       }
@@ -579,7 +761,7 @@ export async function renderReviewPage({ target }) {
     busy = true;
     render();
     try {
-      const stored = await persistClinicianEdits();
+      const stored = await persistClinicianEdits({ includeDraft: true });
       msg = stored.status === "finalized"
         ? "Remarks saved. The finalized report was not changed."
         : "Remarks saved and added to the report.";
@@ -625,7 +807,7 @@ export async function renderReviewPage({ target }) {
         const data = await api.getCase(getEffectiveCaseId());
         stored = unwrapLegacyReport(data.case || data);
       } else {
-        stored = await persistClinicianEdits();
+        stored = await persistClinicianEdits({ includeDraft: true });
       }
       if (!(stored.reportText || "").trim()) {
         toast("No report has been saved for this case yet.");
@@ -651,7 +833,7 @@ export async function renderReviewPage({ target }) {
     const patientName = patientDisplayName(localCase);
 
     function findingCard(f) {
-      const isNew = String(f._id || f.id || "").startsWith("tmp-");
+      const isNew = isUnsavedManual(f);
       return el("article", {
         class: "card mb-3",
         dataset: { id: f._id || f.id },
@@ -659,7 +841,11 @@ export async function renderReviewPage({ target }) {
         el("div", { class: "flex justify-between items-start gap-2" },
           el("div", { class: "flex-1" },
             el("div", { class: "flex items-center gap-2" },
-              el("small", { class: "font-bold text-cyan-700 text-xs" }, isNew ? "NEW FINDING (unsaved)" : `FINDING ${f._id || f.id}`),
+              el("small", { class: "font-bold text-cyan-700 text-xs" },
+                isManualFinding(f)
+                  ? (isNew ? "NEW FINDING (unsaved)" : "MANUAL FINDING")
+                  : `FINDING ${f._id || f.id}`
+              ),
             ),
             edit
               ? el("input", {
@@ -671,15 +857,24 @@ export async function renderReviewPage({ target }) {
               : el("h3", { class: "font-bold text-slate-900" }, f.label)
           ),
           el("div", { class: "flex flex-col items-end gap-2" },
-            el("b", {
-              class: "rounded-full bg-cyan-50 px-3 py-0.5 text-cyan-700 text-sm",
-              title: confidenceTitle(f),
-            }, `${Math.round((f.confidence ?? 0) * 100)}%`),
-            edit && isNew && el("button", {
-              class: "text-xs text-red-600 hover:text-red-800",
-              onClick: () => removeFinding(f._id || f.id),
-            }, "Remove")
+            isManualFinding(f)
+              ? el("b", { class: "rounded-full bg-slate-100 px-3 py-0.5 text-sm text-slate-600" }, "Manual")
+              : el("b", {
+                  class: "rounded-full bg-cyan-50 px-3 py-0.5 text-cyan-700 text-sm",
+                  title: confidenceTitle(f),
+                }, `${Math.round((f.confidence ?? 0) * 100)}%`),
+            edit && isManualFinding(f) && el("button", {
+              id: "delete-manual-finding",
+              class: "rounded-lg border border-red-200 px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-50",
+              onClick: () => removeFinding(f._id || f.id, carouselIndex),
+            }, "Delete")
           )
+        ),
+        edit && isManualFinding(f) && el("p", { class: "mt-2 text-xs text-slate-500", dataset: { bboxHint: "1" } },
+          hasBbox(f) ? "Drag on the X-ray to redraw this box." : "Drag on the X-ray to draw a box for this finding."
+        ),
+        edit && isNew && el("p", { class: "mt-2 text-xs text-slate-400" },
+          "Add the details and/or draw the box, in either order, then finish this finding."
         ),
         !edit ? null : el("div", { class: "mt-3 grid grid-cols-2 gap-2" },
           ...["location", "size"].map((k) =>
@@ -703,8 +898,17 @@ export async function renderReviewPage({ target }) {
             onChange: (e) => patchFinding(f._id || f.id, { pattern: e.target.value }, { refresh: true }),
           },
             ...PATTERNS.map((p) => el("option", { value: p }, p))
+          ),
+          el("p", { class: "mt-1 text-xs text-slate-400" },
+            "How the opacity looks on the film (nodule, consolidation, ground-glass…). Used in the saved finding and in Word/PDF."
           )
-        )
+        ),
+        edit && isNew && el("button", {
+          id: "finish-manual-finding",
+          class: "mt-3 w-full rounded-xl bg-cyan-600 px-3 py-2 text-sm font-semibold text-white hover:bg-cyan-700 disabled:opacity-50",
+          disabled: busy,
+          onClick: finishManualFinding,
+        }, "Finish this finding")
       );
     }
 
@@ -846,31 +1050,51 @@ export async function renderReviewPage({ target }) {
       el("div", { class: "mt-5 grid gap-5 xl:grid-cols-2" },
         // X-ray image w/ bbox overlays
         el("section", { class: "rounded-2xl bg-slate-950 p-4 text-white" },
-          el("div", { class: "flex items-baseline gap-2" },
-            el("b", {}, "Chest X-Ray"),
-            el("span", { class: "text-xs text-slate-400" }, _imageSrc ? "· loaded from MongoDB GridFS" : "")
+          el("div", { class: "flex flex-wrap items-center justify-between gap-2" },
+            el("div", { class: "flex items-baseline gap-2" },
+              el("b", {}, "Chest X-Ray"),
+              el("span", { class: "text-xs text-slate-400" }, _imageSrc ? "· loaded from MongoDB GridFS" : "")
+            ),
+            visible.length > 0 && el("button", {
+              id: "toggle-bboxes",
+              type: "button",
+              class: "rounded-lg border border-white/20 bg-white/10 px-2.5 py-1 text-xs font-semibold text-white hover:bg-white/20",
+              onClick: () => { showBoxes = !showBoxes; render(); },
+            }, showBoxes ? "Hide boxes" : "Show boxes")
           ),
           el("div", { class: "mt-3 flex justify-center rounded-xl bg-gradient-to-b from-slate-500 to-slate-900" },
-            el("div", { class: "relative inline-block max-w-full" },
+            el("div", {
+              id: "xray-stage",
+              class: `relative inline-block max-w-full touch-none ${canDrawOnFilm() ? "cursor-crosshair" : ""}`,
+              onPointerdown: onFilmPointerDown,
+              onPointermove: onFilmPointerMove,
+              onPointerup: onFilmPointerUp,
+              onPointercancel: onFilmPointerUp,
+            },
               _imageSrc
-                ? el("img", { src: _imageSrc, class: "block max-h-[560px] max-w-full h-auto w-auto", alt: "Chest X-ray" })
-                : el("div", { class: "flex h-[320px] w-full min-w-[240px] items-center justify-center text-slate-300 text-sm" }, localCase.imageId ? "Loading image…" : "No image"),
-              visible.length > 0 && visible.map((f, i) =>
-                el("button", {
-                  class: `absolute border-2 ${i === carouselIndex ? "border-yellow-300 bg-yellow-300/25" : "border-cyan-400 bg-cyan-300/20 hover:bg-yellow-300/30 hover:border-yellow-300"}`,
+                ? el("img", { src: _imageSrc, class: "pointer-events-none block max-h-[560px] max-w-full h-auto w-auto", alt: "Chest X-ray" })
+                : el("div", { class: "pointer-events-none flex h-[320px] w-full min-w-[240px] items-center justify-center text-slate-300 text-sm" }, localCase.imageId ? "Loading image…" : "No image"),
+              (() => {
+                const active = visible[carouselIndex];
+                if (!showBoxes || !hasBbox(active)) return null;
+                return el("div", {
+                  class: "pointer-events-none absolute border-2 border-yellow-300 bg-yellow-300/25",
+                  dataset: { bbox: "1" },
                   style: {
-                    left: (f.bbox?.[0] ?? 0) + "%",
-                    top: (f.bbox?.[1] ?? 0) + "%",
-                    width: (f.bbox?.[2] ?? 10) + "%",
-                    height: (f.bbox?.[3] ?? 10) + "%",
+                    left: active.bbox[0] + "%",
+                    top: active.bbox[1] + "%",
+                    width: active.bbox[2] + "%",
+                    height: active.bbox[3] + "%",
                   },
-                  title: f.label,
-                  onClick: () => { carouselIndex = i; render(); },
+                  title: active.label,
                 },
-                  el("span", { class: "absolute -top-5 left-0 bg-black px-1 text-xs text-white" }, `F${i + 1}`)
-                )
-              )
+                  el("span", { class: "absolute -top-5 left-0 bg-black px-1 text-xs text-white" }, `F${carouselIndex + 1}`)
+                );
+              })()
             )
+          ),
+          canDrawOnFilm() && el("p", { class: "mt-2 text-center text-xs text-slate-400" },
+            "Drag on the film to draw this finding's box."
           )
         ),
 

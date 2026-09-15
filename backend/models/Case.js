@@ -11,8 +11,16 @@ const findingSchema = new mongoose.Schema(
     confidence: { type: Number, default: 0.5, min: 0, max: 1 },
     bbox: {
       type: [Number],
-      default: [0, 0, 10, 10],
-      validate: (v) => Array.isArray(v) && v.length === 4,
+      default: [],
+      validate: {
+        validator(v) {
+          if (v == null) return true;
+          if (!Array.isArray(v)) return false;
+          if (v.length === 0) return true;
+          return v.length === 4 && v.every((n) => typeof n === 'number' && Number.isFinite(n));
+        },
+        message: 'bbox must be [left, top, width, height]',
+      },
     },
     location: { type: String, default: '' },
     size: { type: String, default: '' },

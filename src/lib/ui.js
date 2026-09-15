@@ -121,6 +121,7 @@ export function bindListHotkeys() {
     if (e.key === "Escape") {
       document.getElementById("app-drawer")?.classList.add("hidden");
       document.getElementById("app-scrim")?.classList.add("hidden");
+      document.getElementById("app-menu-button")?.setAttribute("aria-expanded", "false");
     }
   });
 }
