@@ -76,7 +76,10 @@ def _build_prompt(patient_id: str = "", age: str = "", sex: str = "", history: s
     # similar bracketed blanks, which read as unfinished in the saved report.
     prompt += (
         "\n\nEnd the report after the conclusion. Do not add a signature, "
-        "date or any placeholder written in square brackets."
+        "date or any placeholder written in square brackets. "
+        "Name abnormalities that are visible. Only conclude there is no "
+        "acute cardiopulmonary finding when the lungs, heart and pleural "
+        "spaces actually look normal."
     )
     return prompt
 

@@ -64,5 +64,19 @@ test("hamburger opens the menu for a larger content area when closed", () => {
   assert.equal(root.querySelector("#app-menu-button").getAttribute("aria-expanded"), "true");
 });
 
+test("doctors see Audit log in the menu", () => {
+  assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Audit log"));
+});
+
+{
+  state.user = { role: "nurse", userId: "n1", name: "Jamie Lee" };
+  const { root: nurseRoot } = Shell({ onLogout() {} });
+  document.body.appendChild(nurseRoot);
+  test("nurses do not see Audit log in the menu", () => {
+    assert.ok([...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Worklist"));
+    assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Audit log"));
+  });
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

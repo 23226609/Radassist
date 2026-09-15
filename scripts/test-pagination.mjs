@@ -71,6 +71,7 @@ const cases = Array.from({ length: PAGE_SIZE + 1 }, (_, i) => ({
   status: "pending_approve",
   createdAt: "2026-09-13T00:00:00.000Z",
   diagnosis: `Finding ${i + 1}`,
+  createdByName: i % 2 ? "Dr. Priya Nair" : "Dr. Alex Wong",
 }));
 
 state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
@@ -88,6 +89,8 @@ test("dashboard table shows one page of rows", () => {
   assert.equal(rows.length, PAGE_SIZE);
   assert.ok(root.textContent.includes("PT-01"));
   assert.ok(root.textContent.includes("Finding 1"));
+  assert.ok(root.textContent.includes("Doctor"));
+  assert.ok(root.textContent.includes("Dr. Alex Wong"));
   assert.ok(!root.textContent.includes("PT-11"));
   assert.ok(root.textContent.includes(`1–${PAGE_SIZE} of ${cases.length}`));
   assert.ok(root.textContent.includes("Page 1 of 2"));

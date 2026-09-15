@@ -1,7 +1,7 @@
 // src/main.js
 // Entry point. Wires up the state-render cycle and renders the right page.
 
-import { state, setState, subscribe, applyHash, parseHash } from "./state.js";
+import { state, setState, setPage, subscribe, applyHash, parseHash } from "./state.js";
 import { api, getSession } from "./api.js";
 import { Shell } from "./components/header.js";
 import { renderLoginPage, renderRegisterPage } from "./components/login.js";
@@ -79,6 +79,11 @@ function render() {
       el("div", { class: "min-h-screen bg-slate-50 text-slate-900" }, target)
     );
     renderReportViewPage({ target });
+    return;
+  }
+
+  if (state.user?.role === "nurse" && state.page === "audit") {
+    setPage("dashboard");
     return;
   }
 

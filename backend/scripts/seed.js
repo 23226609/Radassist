@@ -36,6 +36,24 @@ const DEMO_USERS = [
     department: 'Radiology',
   },
   {
+    userId: 'USR-DOCTOR-0002',
+    username: 'priya',
+    password: 'priya123',
+    name: 'Dr. Priya Nair',
+    email: 'priya.nair@radassist.demo',
+    role: 'doctor',
+    department: 'Radiology',
+  },
+  {
+    userId: 'USR-DOCTOR-0003',
+    username: 'marcus',
+    password: 'marcus123',
+    name: 'Dr. Marcus Chen',
+    email: 'marcus.chen@radassist.demo',
+    role: 'doctor',
+    department: 'Radiology',
+  },
+  {
     userId: 'USR-NURSE-0001',
     username: 'nurse',
     password: 'nurse123',
@@ -88,6 +106,8 @@ const SAMPLE_CASES = [
     reportText:
       'Calcified aortic atheromatosis is noted. Bilateral apical pleural thickening is observed. No other significant radiological findings.',
     status: 'pending_approve',
+    createdBy: 'USR-DOCTOR-0001',
+    createdByName: 'Dr. Alex Wong',
     findingsSeed: [
       { label: 'Calcified aortic atheromatosis', confidence: 0.92, bbox: [29, 17, 22, 18], location: 'Aortic arch', size: '2.3 cm', pattern: 'Nodular', sentence: 'Calcified aortic atheromatosis is noted.', status: 'accepted' },
       { label: 'Bilateral apical pleural thickening', confidence: 0.78, bbox: [23, 9, 52, 17], location: 'Pleural, apical', size: 'N/A', pattern: 'Diffuse', sentence: 'Bilateral apical pleural thickening is observed.', status: 'accepted' },
@@ -107,6 +127,8 @@ const SAMPLE_CASES = [
     reportText:
       'A faint opacity is seen in the right lower zone. The remainder of the lungs are clear. Clinical correlation is advised.',
     status: 'pending_approve',
+    createdBy: 'USR-DOCTOR-0002',
+    createdByName: 'Dr. Priya Nair',
     findingsSeed: [],
   },
   {
@@ -122,6 +144,8 @@ const SAMPLE_CASES = [
     reportText:
       'A focal opacity is present in the right lower zone. The cardiac silhouette is mildly enlarged. No other significant radiological findings.',
     status: 'finalized',
+    createdBy: 'USR-DOCTOR-0001',
+    createdByName: 'Dr. Alex Wong',
     finalizedBy: 'USR-DOCTOR-0001',
     finalizedByName: 'Dr. Alex Wong',
     findingsSeed: [
@@ -142,6 +166,8 @@ const SAMPLE_CASES = [
     reportText:
       'Lungs appear hyperinflated with flattened diaphragms consistent with COPD. No focal consolidation.',
     status: 'pending_approve',
+    createdBy: 'USR-DOCTOR-0003',
+    createdByName: 'Dr. Marcus Chen',
     findingsSeed: [
       { label: 'Hyperinflated lungs', confidence: 0.81, bbox: [10, 5, 80, 90], location: 'Bilateral', size: 'N/A', pattern: 'Diffuse', sentence: 'Lungs appear hyperinflated.', status: 'pending' },
     ],
@@ -158,6 +184,8 @@ const SAMPLE_CASES = [
     diagnosis: 'No acute cardiopulmonary findings',
     reportText: 'Heart size is normal. Lungs are clear. No pleural effusion or pneumothorax.',
     status: 'pending_approve',
+    createdBy: 'USR-DOCTOR-0002',
+    createdByName: 'Dr. Priya Nair',
     findingsSeed: [],
   },
   {
@@ -173,8 +201,10 @@ const SAMPLE_CASES = [
     reportText: 'Nondisplaced fracture of the left 8th lateral rib. No pneumothorax.',
     status: 'finalized',
     urgent: true,
-    finalizedBy: 'USR-DOCTOR-0001',
-    finalizedByName: 'Dr. Alex Wong',
+    createdBy: 'USR-DOCTOR-0003',
+    createdByName: 'Dr. Marcus Chen',
+    finalizedBy: 'USR-DOCTOR-0003',
+    finalizedByName: 'Dr. Marcus Chen',
     findingsSeed: [
       { label: 'Left 8th rib fracture', confidence: 0.95, bbox: [22, 50, 12, 6], location: 'Left lateral chest wall', size: 'N/A', pattern: 'Linear', sentence: 'Nondisplaced fracture of the left 8th lateral rib.', status: 'accepted' },
     ],
@@ -233,6 +263,10 @@ async function seedCases() {
       if (names.lastName && exists.lastName !== names.lastName) patch.lastName = names.lastName;
       if (names.name && exists.patientName !== names.name) patch.patientName = names.name;
       if (Boolean(c.urgent) && !exists.urgent) patch.urgent = true;
+      if (c.createdBy && exists.createdBy !== c.createdBy) patch.createdBy = c.createdBy;
+      if (c.createdByName && exists.createdByName !== c.createdByName) patch.createdByName = c.createdByName;
+      if (c.finalizedBy && exists.finalizedBy !== c.finalizedBy) patch.finalizedBy = c.finalizedBy;
+      if (c.finalizedByName && exists.finalizedByName !== c.finalizedByName) patch.finalizedByName = c.finalizedByName;
       if (Object.keys(patch).length) {
         await Case.updateOne({ _id: exists._id }, { $set: patch });
         console.log(`  · case ${c.caseId} updated (${Object.keys(patch).join(', ')})`);
@@ -257,8 +291,8 @@ async function seedCases() {
       findings: c.findingsSeed,
       status: c.status,
       urgent: Boolean(c.urgent),
-      createdBy: 'USR-DOCTOR-0001',
-      createdByName: 'Dr. Alex Wong',
+      createdBy: c.createdBy || 'USR-DOCTOR-0001',
+      createdByName: c.createdByName || 'Dr. Alex Wong',
       finalizedBy: c.finalizedBy || null,
       finalizedByName: c.finalizedByName || null,
       imageId: sampleImage.id,

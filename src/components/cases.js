@@ -9,7 +9,7 @@ import { unwrapLegacyReport } from "./review.js";
 import { applyRemarksToReport, splitReportAndRemarks } from "../lib/reportExport.js";
 import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
-import { urgentBadge, patientDisplayName } from "../lib/tags.js";
+import { urgentBadge, patientDisplayName, doctorInCharge, isDoctorInCharge, doctorFilterKey, doctorsInChargeOptions } from "../lib/tags.js";
 import { PAGE, searchField, statusChips, emptyState, pageHeading, sortWorklist } from "../lib/ui.js";
 import { statusLabel, statusBadgeClass, isGenerating } from "../lib/caseStatus.js";
 import { CASES_CHANGED } from "../lib/analysisJob.js";
@@ -46,12 +46,16 @@ export async function renderCasesPage({ target }) {
   let q = "";
   let status = "all";
   let urgentOnly = false;
+  let mineOnly = false;
+  let doctorFilter = "";
+  let allCases = [];
   let cases = [];
   let loading = true;
   let error = "";
   let page = 1;
   const selected = new Set();
   const isAdmin = () => state.user?.role === "admin";
+  const canFilterMine = () => state.user?.role === "doctor" || state.user?.role === "admin";
   const caseIdOf = (c) => c.caseId || c._id;
 
   if (target._stopCaseWatch) target._stopCaseWatch();
@@ -73,14 +77,22 @@ export async function renderCasesPage({ target }) {
       .catch((err) => toast(err.message || "Could not delete the selected cases."));
   }
 
+  function applyLocalFilters(list) {
+    let next = list;
+    if (urgentOnly) next = next.filter((c) => c.urgent);
+    if (mineOnly) next = next.filter((c) => isDoctorInCharge(c, state.user));
+    if (doctorFilter) next = next.filter((c) => doctorFilterKey(c) === doctorFilter);
+    return next;
+  }
+
   async function refresh() {
     loading = true;
     error = "";
     render();
     try {
       const data = await api.listCases({ status: status === "all" ? "" : status, q });
-      cases = sortWorklist(data.cases || []);
-      if (urgentOnly) cases = cases.filter((c) => c.urgent);
+      allCases = sortWorklist(data.cases || []);
+      cases = applyLocalFilters(allCases);
       for (const id of [...selected]) {
         if (!cases.some((c) => caseIdOf(c) === id)) selected.delete(id);
       }
@@ -92,16 +104,27 @@ export async function renderCasesPage({ target }) {
     }
   }
 
-  function setFilter(next, { urgent = false } = {}) {
+  function setFilter(next, { urgent = false, mine = false } = {}) {
     status = next;
     urgentOnly = urgent;
+    mineOnly = mine;
+    if (mine) doctorFilter = "";
     page = 1;
     selected.clear();
     refresh();
   }
 
+  function setDoctorFilter(value) {
+    doctorFilter = value;
+    if (mineOnly) mineOnly = false;
+    page = 1;
+    selected.clear();
+    cases = applyLocalFilters(allCases);
+    render();
+  }
+
   function render() {
-    const chipValue = urgentOnly ? "urgent" : status;
+    const chipValue = mineOnly ? "mine" : urgentOnly ? "urgent" : status;
     const root = el(
       "main",
       { class: PAGE },
@@ -125,20 +148,30 @@ export async function renderCasesPage({ target }) {
               onSearch: () => { page = 1; selected.clear(); refresh(); },
             }),
             el("select", {
+              id: "filter-doctor",
               class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600",
-              value: status,
-              onChange: (e) => setFilter(e.target.value),
+              value: doctorFilter,
+              "aria-label": "Doctor in charge",
+              onChange: (e) => setDoctorFilter(e.target.value),
             },
-              el("option", { value: "all" }, "All statuses"),
-              el("option", { value: "pending_approve" }, "Pending approve"),
-              el("option", { value: "finalized" }, "Finalized")
+              el("option", { value: "" }, "All doctors"),
+              ...doctorsInChargeOptions(allCases).map(([key, label]) =>
+                el("option", { value: key }, label)
+              )
             ),
             isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })
           ),
           statusChips({
             value: chipValue,
-            extra: [{ id: "urgent", label: "Urgent" }],
-            onChange: (id) => setFilter(id === "urgent" ? "all" : id, { urgent: id === "urgent" }),
+            extra: [
+              { id: "urgent", label: "Urgent" },
+              ...(canFilterMine() ? [{ id: "mine", label: "My cases", buttonId: "filter-my-cases" }] : []),
+            ],
+            onChange: (id) => {
+              if (id === "urgent") setFilter("all", { urgent: true });
+              else if (id === "mine") setFilter("all", { mine: true });
+              else setFilter(id);
+            },
           })
         ),
         error
@@ -148,8 +181,16 @@ export async function renderCasesPage({ target }) {
           : cases.length === 0
           ? emptyState({
               icon: "file-text",
-              title: "No studies in the archive",
-              hint: "Clear the search, or add a new X-ray from the worklist.",
+              title: mineOnly
+                ? "No cases of yours match this filter"
+                : doctorFilter
+                ? "No studies for this doctor"
+                : "No studies in the archive",
+              hint: mineOnly
+                ? "Choose All to see the full archive, or add a new X-ray."
+                : doctorFilter
+                ? "Choose another doctor, or All doctors, to see more studies."
+                : "Clear the search, or add a new X-ray from the worklist.",
               actionLabel: state.user?.role !== "nurse" ? "New case" : null,
               onAction: () => setPage("new"),
             })
@@ -159,11 +200,11 @@ export async function renderCasesPage({ target }) {
               const pageIds = paged.items.map(caseIdOf);
               return el("div", {},
                 el("div", { class: "overflow-x-auto" },
-                  el("table", { class: "w-full min-w-[760px] text-left text-sm" },
+                  el("table", { class: "w-full min-w-[900px] text-left text-sm" },
                     el("thead", { class: "bg-slate-50 text-slate-600" },
                       el("tr", {},
                         isAdmin() ? headerCheckbox(pageIds, selected, (on) => { togglePage(selected, pageIds, on); render(); }) : null,
-                        ["Case", "Patient", "Date", "Status", "Diagnosis", "Actions"].map((h) =>
+                        ["Case", "Patient", "Date", "Status", "Doctor", "Diagnosis", "Actions"].map((h) =>
                           el("th", { class: "p-4" }, h)
                         )
                       )
@@ -197,6 +238,7 @@ export async function renderCasesPage({ target }) {
                             c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : "—"
                           ),
                           el("td", {}, statusBadge(c.status)),
+                          el("td", { class: "text-slate-700" }, doctorInCharge(c)),
                           el("td", { class: "max-w-md" }, c.diagnosis || el("em", { class: "text-slate-400" }, "—")),
                           el("td", { class: "whitespace-nowrap" },
                             el("button", {
@@ -348,6 +390,10 @@ export async function renderCasePage({ target }) {
                   " · ",
                   statusBadge(localCase.status),
                   localCase.urgent ? urgentBadge() : null
+                ),
+                el("p", { class: "mt-1 text-sm text-slate-500" },
+                  "Doctor in charge: ",
+                  el("span", { class: "font-semibold text-slate-700" }, doctorInCharge(localCase))
                 )
               ),
               el("div", { class: "flex flex-wrap gap-2" },

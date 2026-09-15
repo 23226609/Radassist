@@ -15,6 +15,7 @@ globalThis.CustomEvent = window.CustomEvent;
 globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
 
 const { api } = await import("../src/api.js");
+const { state } = await import("../src/state.js");
 const { caseStatus, statusLabel, isGenerating, isAwaitingApprove } = await import("../src/lib/caseStatus.js");
 const { startAnalysisWatch, stopAnalysisWatch, CASES_CHANGED } = await import("../src/lib/analysisJob.js");
 
@@ -62,6 +63,8 @@ test("maps completed to pending approve", () => {
   test("shows a centered overlay while pending", () => {
     assert.ok(overlay);
     assert.equal(overlay.hidden, false);
+    assert.ok(overlay.classList.contains("flex"), "open overlay must use flex, not a hidden+flex fight");
+    assert.ok(!overlay.classList.contains("hidden"));
     assert.ok(overlay.textContent.includes("Generating the report"));
     assert.ok(overlay.textContent.includes("Ada Wong"));
   });
@@ -70,7 +73,11 @@ test("maps completed to pending approve", () => {
 
   test("hides the overlay once the draft is pending approve", () => {
     assert.equal(overlay.hidden, true);
+    assert.ok(overlay.classList.contains("hidden"), "closed overlay must use Tailwind hidden");
+    assert.ok(!overlay.classList.contains("flex"), "flex must be removed or Tailwind keeps it on screen");
     assert.equal(event?.ok, true);
+    assert.equal(state.page, "review");
+    assert.equal(state.selectedCaseId, "CASE-JOB-1");
   });
 }
 

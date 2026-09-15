@@ -50,7 +50,7 @@ function sidebar({ onLogout }) {
     { page: "dashboard", icon: "activity", label: "Worklist" },
     { page: "patients", icon: "users", label: "Patients" },
     { page: "cases", icon: "file-text", label: "Case archive" },
-    { page: "audit", icon: "list", label: "Audit log" },
+    ...(!nurse ? [{ page: "audit", icon: "list", label: "Audit log" }] : []),
   ];
   const create = nurse ? [] : [
     { page: "new", icon: "plus", label: "New case" },

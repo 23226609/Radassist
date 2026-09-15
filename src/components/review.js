@@ -4,9 +4,9 @@
 // Workflow mirrors the original Radassist design:
 //   1. AI gives us a free-text radiology report (markdown) in `reportText`
 //      plus optional pre-structured findings in `findings`.
-//   2. On first load we parse the report into finding cards so the clinician
-//      can accept/reject them.  Already-parsed / AI-supplied findings are
-//      never overwritten by the auto-parse.
+//   2. Finding cards are stored on the case during generate (Azure when
+//      configured). Opening Review only shows them — it does not call Azure.
+//      If a case has no cards, a local parse of the report fills the carousel.
 //   3. The X-ray is mandatory — it always renders, with bbox overlays from
 //      the findings.
 //   4. The generated report lives in MongoDB (used by Azure to build
@@ -23,7 +23,7 @@ import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { reportPopupUrl } from "../lib/reportPopup.js";
 import { downloadReportDocx, downloadReportPdf, composeReportText, splitReportAndRemarks } from "../lib/reportExport.js";
-import { urgentBadge, patientDisplayName } from "../lib/tags.js";
+import { urgentBadge, patientDisplayName, doctorInCharge } from "../lib/tags.js";
 import { isGenerating, isAwaitingApprove, statusLabel } from "../lib/caseStatus.js";
 
 const PATTERNS = ["Nodular", "Diffuse", "Linear", "Ground-glass", "Consolidation", "Other"];
@@ -277,9 +277,6 @@ export function unwrapLegacyReport(raw) {
 
 // Cache of imageId -> object URL so we don't re-fetch on every render().
 const _imageCache = new Map();
-// Module-level so a toast / session refresh doesn't re-run Azure and remount
-// the remarks box the clinician is typing in.
-let autoFilledCaseId = null;
 async function getImageObjectUrl(imageId) {
   if (!imageId) return null;
   if (_imageCache.has(imageId)) return _imageCache.get(imageId);
@@ -317,64 +314,17 @@ export async function renderReviewPage({ target }) {
     remarksDirty = false;
   }
 
-  // Pull findings out of the AI's markdown report and append them as cards,
-  // client-side only (not saved until the clinician hits "Save draft").
-  // Used as the fallback when Azure isn't available — see autoPopulateFindings.
+  // If Azure already wrote cards during generate, show them. Otherwise parse
+  // the stored report locally — do not call Azure on page open.
   function fillFromLocalParser() {
     if (!localCase) return;
     const report = localCase.reportText || "";
     if (!report.trim()) return;
     const existing = localCase.findings || [];
+    if (existing.length) return;
     const parsed = parseFindingsFromReport(report, 0);
     if (parsed.length === 0) return;
-    localCase = { ...localCase, findings: [...existing, ...parsed] };
-  }
-
-  // Runs once per case, right after it loads: summarises the report into a
-  // few grouped cards with Azure AI so the clinician never has to click the
-  // button themselves. Idempotent — skips if AI/Azure findings already
-  // exist, so re-opening an already-summarised case doesn't call Azure again
-  // or duplicate cards.
-  async function autoPopulateFindings() {
-    if (!localCase) return;
-    if (isGenerating(localCase)) return;
-    const report = localCase.reportText || "";
-    if (!report.trim()) return;
-
-    const existing = localCase.findings || [];
-    // Skip only when Azure has already produced cards for this case. Old
-    // Azure cards (no bboxSource) and local-parser cards are re-run so the
-    // boxes get placed on the film instead of the leftover placeholders.
-    const azureReady = existing.some(
-      (f) => f.source === "Azure" &&
-        (f.bboxSource === "vision" || f.bboxSource === "zone") &&
-        f.confidenceSource === "calibrated"
-    );
-    if (azureReady) return;
-
-    // Matches the backend route's own authorization (doctor/admin) and
-    // avoids mutating a finalized case's saved findings.
-    const canUseAzure = ["doctor", "admin"].includes(state.user?.role) &&
-      localCase.status !== "finalized";
-
-    if (canUseAzure) {
-      try {
-        const data = await api.summariseFindings(getEffectiveCaseId());
-        localCase = data.case || localCase;
-        const idx = state.cases.findIndex(
-          (c) => c.caseId === (localCase.caseId || localCase._id) || c._id === localCase._id
-        );
-        if (idx >= 0) state.cases[idx] = localCase;
-        return;
-      } catch (err) {
-        // Most common cause: AZURE_OPENAI_* isn't configured on the server,
-        // which throws a 400 with a clear message — not an error worth
-        // alarming the clinician with on every page they open. Fall back
-        // to the local parser below instead.
-        console.warn("[review] Azure auto-summarise skipped:", err.message);
-      }
-    }
-    fillFromLocalParser();
+    localCase = { ...localCase, findings: parsed };
   }
 
   async function refreshFromServer() {
@@ -990,6 +940,10 @@ export async function renderReviewPage({ target }) {
             localCase.sex || "?",
             localCase.urgent ? urgentBadge() : null
           ),
+          el("p", { class: "mt-1 text-sm text-slate-500" },
+            "Doctor in charge: ",
+            el("span", { class: "font-semibold text-slate-700" }, doctorInCharge(localCase))
+          ),
           el("p", { class: "text-xs text-slate-500 mt-1" },
             "MongoDB case id: ", el("span", { class: "font-mono" }, localCase.caseId || localCase._id || ""),
             localCase.imageId ? el("span", {}, " · image: ", el("span", { class: "font-mono" }, String(localCase.imageId).slice(-8))) : null
@@ -1101,9 +1055,7 @@ export async function renderReviewPage({ target }) {
         el("section", { class: "flex flex-col gap-5" },
           findings.length === 0
             ? el("div", { class: "card text-center text-slate-500" },
-                el("p", {}, busy
-                  ? "Summarising findings…"
-                  : "No findings yet — they will be summarised from the saved report, or add one by hand."),
+                el("p", {}, "No findings yet — add one by hand."),
                 edit && !busy && el("div", { class: "mt-3 flex flex-wrap items-center justify-center gap-2" },
                   el("button", {
                     class: "inline-flex items-center gap-1 rounded-xl border border-cyan-600 px-4 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50",
@@ -1152,21 +1104,6 @@ export async function renderReviewPage({ target }) {
   }
 
   await refreshFromServer();
-
-  // First time we view this case, automatically summarise the report into
-  // findings — Azure AI first, falling back to the local text parser — so
-  // the clinician never has to click a button. Guarded by autoFilledCaseId,
-  // and autoPopulateFindings itself skips once real findings already exist,
-  // so this can't re-trigger on every re-render or re-summarise on reopen.
-  if (localCase && !isGenerating(localCase) && autoFilledCaseId !== (localCase.caseId || localCase._id)) {
-    autoFilledCaseId = localCase.caseId || localCase._id;
-    busy = true;
-    msg = "Summarising findings…";
-    render();
-    await autoPopulateFindings();
-    busy = false;
-    msg = "";
-  }
-
+  if (localCase && !isGenerating(localCase)) fillFromLocalParser();
   render();
 }

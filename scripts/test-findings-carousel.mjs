@@ -91,6 +91,7 @@ const testCase = {
   caseId: "CASE-CAROUSEL-1",
   patientId: "PT-0001",
   patientName: "Alex Wong",
+  createdByName: "Dr. Priya Nair",
   age: "29",
   sex: "Female",
   status: "completed",
@@ -143,6 +144,11 @@ test("shows the first finding first", () => {
 
 test("shows the patient name on the view page", () => {
   assert.ok(text().includes("Alex Wong"));
+});
+
+test("shows the doctor in charge on the view page", () => {
+  assert.ok(text().includes("Doctor in charge"));
+  assert.ok(text().includes("Dr. Priya Nair"));
 });
 
 test("doctors can mark the case urgent", () => {

@@ -59,6 +59,7 @@ exports.listCases = catchAsync(async (req, res) => {
       { firstName: re },
       { middleName: re },
       { lastName: re },
+      { createdByName: re },
       { diagnosis: re },
       { reportText: re },
       { history: re },
@@ -251,20 +252,41 @@ async function finishAnalysis({ caseId, tmpPath, patientId, age, sex, history, u
   const c = await Case.findOne({ caseId });
   if (!c || c.status === 'finalized') return;
 
-  const sentence = (reportText || '').split('.').filter(Boolean)[0] || 'AI report';
-  let diagnosis = sentence.slice(0, 120);
+  let findings = mapAiFindings(aiFindings, reportText);
+  let diagnosis = azureFindings.pickDiagnosis('', [], reportText) || 'AI report';
   let diagnosisSource = 'local';
+
+  // Pending approve means the draft AND the finding cards are ready, so
+  // Review does not have to call Azure when the clinician opens the case.
   if (azureFindings.isConfigured() && (reportText || '').trim() && !aiError) {
     try {
-      diagnosis = await azureFindings.summariseDiagnosis(reportText);
-      diagnosisSource = 'azure';
+      const image = await downloadImage(c.imageId);
+      const summarised = await azureFindings.summariseFindings(reportText, image);
+      if (summarised.findings?.length) {
+        findings = summarised.findings;
+        await addAuditLog(
+          userId,
+          'CASE_UPDATED',
+          `Azure AI summarised ${findings.length} findings for ${caseId}`
+        );
+      }
+      if (summarised.diagnosis) {
+        diagnosis = summarised.diagnosis;
+        diagnosisSource = 'azure';
+      }
     } catch (err) {
-      console.warn('[createCase] Azure diagnosis skipped:', err.message);
+      console.warn('[createCase] Azure findings skipped:', err.message);
+      try {
+        diagnosis = await azureFindings.summariseDiagnosis(reportText);
+        diagnosisSource = 'azure';
+      } catch (err2) {
+        console.warn('[createCase] Azure diagnosis skipped:', err2.message);
+      }
     }
   }
 
   c.reportText = reportText;
-  c.findings = mapAiFindings(aiFindings, reportText);
+  c.findings = findings;
   c.diagnosis = diagnosis;
   c.diagnosisSource = diagnosisSource;
   c.status = 'pending_approve';
@@ -487,7 +509,7 @@ exports.summariseDiagnosis = catchAsync(async (req, res, next) => {
   if (c.status === 'pending') {
     return next(ApiError.badRequest('The report is still generating.'));
   }
-  if (c.diagnosisSource === 'azure' && String(c.diagnosis || '').trim()) {
+  if (c.diagnosisSource === 'azure' && String(c.diagnosis || '').trim() && !azureFindings.needsAzureDiagnosis(c)) {
     return res.json({ success: true, reused: true, case: toPublicCase(c) });
   }
 

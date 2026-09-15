@@ -51,9 +51,12 @@ Return ONLY a JSON object of the form:
 {"diagnosis":"...","findings":[{"label":"...","detail":"...","location":"...","size":"...","pattern":"...","imageSupport":0.0,"severity":"normal|minor|significant","zone":"...","bbox":[left,top,width,height]}]}
 
 Rules:
-- "diagnosis" is a short worklist label, at most 80 characters, e.g.
-  "No acute cardiopulmonary findings" or "Right lower-lobe consolidation".
-  No headings, no full paragraph, no markdown.
+- "diagnosis" is a short worklist label: 3–8 words, at most 50 characters.
+  Use a noun phrase such as "Mild cardiomegaly" or "Right lower-lobe consolidation".
+  Never write a sentence. Never start with "The chest X-ray". Never truncate mid-word.
+  Use a normal/negative label only when the report itself says the study is
+  normal or has no acute finding. Never replace a named abnormality with a
+  stock normal phrase.
 - At most 6 findings, ordered most clinically important first.
 - Group related observations into ONE finding. Never emit one finding per sentence.
 - "label" is a short clinical phrase under 60 characters, e.g. "Clear lung fields" or "Cardiomegaly".
@@ -88,7 +91,9 @@ Rules:
   spanning both sides. Minimum box size 8% in each direction.
 - Only use information present in the report. Never invent a finding.
 - If the report describes an entirely normal study, return a single finding
-  summarising that, with a box over the whole thorax.`;
+  summarising that, with a box over the whole thorax.
+- Do not copy example phrases. The diagnosis and labels must come from the
+  report in front of you.`;
 
 function isConfigured() {
   return Boolean(
@@ -206,15 +211,70 @@ function toDataUrl(image) {
 function parseDiagnosis(raw) {
   const text = String(raw || '').replace(/\s+/g, ' ').trim().replace(/^["']|["']$/g, '');
   if (!text) return '';
-  // Dashboard column — keep it to a short clinical label.
-  return text.split(/[.\n]/)[0].trim().slice(0, 80);
+  // Dashboard column — a short clinical label, never a cut-off sentence.
+  const first = text.split(/[.\n]/)[0].trim();
+  if (looksLikeProse(first)) return '';
+  return first.slice(0, LABEL_MAX);
+}
+
+const LABEL_MAX = 50;
+const GENERIC_NORMAL = /\bno acute cardiopulmonary (findings?|process|abnormalit(?:y|ies))\b/i;
+
+function looksLikeProse(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t) return false;
+  if (t.length > LABEL_MAX) return true;
+  if (/^(the |this |there |it |findings\b|impression\b)/i.test(t)) return true;
+  if (/\b(demonstrates|shows|reveals|indicates|compatible with|consistent with)\b/i.test(t)) return true;
+  if ((t.match(/,/g) || []).length >= 2) return true;
+  return false;
+}
+
+function isGenericNormal(text) {
+  return GENERIC_NORMAL.test(String(text || ''));
+}
+
+function impressionFromReport(reportText) {
+  const text = String(reportText || '');
+  const block = text.match(/\b(?:impression|conclusion)\s*[:.\-]\s*([\s\S]+)/i);
+  if (!block) return '';
+  return parseDiagnosis(block[1].split(/\n/)[0]);
+}
+
+function fallbackDiagnosis(reportText) {
+  const text = String(reportText || '');
+  if (isGenericNormal(text) || /\bnormal (chest|cardiac silhouette|lung volumes)\b/i.test(text)) {
+    return 'Normal chest radiograph';
+  }
+  return '';
+}
+
+function pickDiagnosis(azureDiagnosis, findings = [], reportText = '') {
+  const azure = parseDiagnosis(azureDiagnosis);
+  const impression = impressionFromReport(reportText);
+  const labels = (Array.isArray(findings) ? findings : [])
+    .map((f) => parseDiagnosis(f?.label || f?.sentence))
+    .filter(Boolean);
+  const specificImpression = impression && !isGenericNormal(impression) ? impression : '';
+  const specificAzure = azure && !isGenericNormal(azure) ? azure : '';
+  const specificLabel = labels.find((label) => label && !isGenericNormal(label));
+  return specificImpression
+    || specificAzure
+    || specificLabel
+    || azure
+    || impression
+    || labels[0]
+    || fallbackDiagnosis(reportText);
 }
 
 function needsAzureDiagnosis(c = {}) {
-  if (c.diagnosisSource === 'azure') return false;
   if (!String(c.reportText || '').trim()) return false;
-  if (c.diagnosisSource === 'local') return true;
   const d = String(c.diagnosis || '').trim();
+  if (looksLikeProse(d)) return true;
+  const impression = impressionFromReport(c.reportText);
+  if (isGenericNormal(d) && impression && !isGenericNormal(impression)) return true;
+  if (c.diagnosisSource === 'azure') return false;
+  if (c.diagnosisSource === 'local') return true;
   if (!d) return true;
   if (/^(awaiting ai analysis|ai report)$/i.test(d)) return true;
   if (/^chest x[- ]?ray/i.test(d)) return true;
@@ -236,7 +296,7 @@ function parseSummary(content) {
     throw new Error('Azure OpenAI did not return valid JSON.');
   }
   const findings = parseFindingsList(parsed);
-  const diagnosis = parseDiagnosis(parsed?.diagnosis) || parseDiagnosis(findings[0]?.label);
+  const diagnosis = pickDiagnosis(parsed?.diagnosis, findings, '');
   return { findings, diagnosis };
 }
 
@@ -245,10 +305,14 @@ const DIAGNOSIS_PROMPT = `You write the Diagnosis column for a chest X-ray workl
 Return ONLY JSON of the form: {"diagnosis":"..."}
 
 Rules:
-- One short clinical label, at most 80 characters.
-- Examples: "No acute cardiopulmonary findings", "Mild cardiomegaly", "Right lower-lobe pneumonia".
-- No report headings, no full paragraph, no markdown, no trailing period unless it is an abbreviation.
-- Use only what the report states. If the study is normal, say so.`;
+- One short worklist label: 3–8 words, at most 50 characters, a noun phrase.
+- If the report names an abnormality, that abnormality IS the diagnosis
+  (e.g. "Mild cardiomegaly", "Right lower-lobe pneumonia", "Left rib fracture").
+- Use a normal/negative label only when the report itself states the study is
+  normal or has no acute finding, e.g. "Normal chest radiograph".
+- Do not copy a stock phrase. Do not ignore a named finding.
+- Never write a sentence or start with "The chest X-ray". Never truncate mid-word.
+- No report headings, no full paragraph, no markdown, no trailing period unless it is an abbreviation.`;
 
 async function chatJson(systemPrompt, userContent, maxTokens) {
   if (!isConfigured()) {
@@ -273,7 +337,7 @@ async function chatJson(systemPrompt, userContent, maxTokens) {
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userContent },
       ],
-      temperature: 0.1,
+      temperature: 0.3,
       max_tokens: maxTokens,
       response_format: { type: 'json_object' },
     }),
@@ -318,7 +382,11 @@ async function summariseFindings(reportText, image = null) {
 
   const parsed = await chatJson(SYSTEM_PROMPT, userContent, 1100);
   const findings = parseFindingsList(parsed);
-  const diagnosis = parseDiagnosis(parsed?.diagnosis) || parseDiagnosis(findings[0]?.label);
+  const diagnosis = pickDiagnosis(
+    parseDiagnosis(parsed?.diagnosis) || parseDiagnosis(findings[0]?.label),
+    findings,
+    text
+  );
   return { findings, diagnosis };
 }
 
@@ -331,7 +399,7 @@ async function summariseDiagnosis(reportText) {
   const text = String(reportText || '').trim();
   if (!text) throw new Error('This case has no report text to summarise.');
   const parsed = await chatJson(DIAGNOSIS_PROMPT, text, 200);
-  const diagnosis = parseDiagnosis(parsed?.diagnosis);
+  const diagnosis = pickDiagnosis(parsed?.diagnosis, [], text);
   if (!diagnosis) throw new Error('Azure OpenAI did not return a diagnosis.');
   return diagnosis;
 }
@@ -342,6 +410,7 @@ module.exports = {
   isConfigured,
   clampBbox,
   parseDiagnosis,
+  pickDiagnosis,
   needsAzureDiagnosis,
   ZONES,
 };

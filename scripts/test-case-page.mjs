@@ -54,6 +54,8 @@ const stored = {
   diagnosis: "Mild cardiomegaly",
   remarks: "",
   reportText: "The heart is mildly enlarged.",
+  createdBy: "USR-DOCTOR-0002",
+  createdByName: "Dr. Priya Nair",
   findings: [
     { label: "Enlarged heart", location: "Cardiac silhouette", pattern: "Other", sentence: "The heart is mildly enlarged." },
   ],
@@ -79,9 +81,83 @@ test("cases list shows the study", () => {
   assert.ok(listRoot.textContent.includes("Mei Chen"));
   assert.ok(listRoot.textContent.includes("Urgent"));
   assert.ok(listRoot.textContent.includes("Mild cardiomegaly"));
+  assert.ok(listRoot.textContent.includes("Dr. Priya Nair"));
+  assert.ok(listRoot.textContent.includes("Doctor"));
+  assert.ok(listRoot.querySelector("#filter-my-cases"), "doctors should see My cases");
   assert.ok(![...listRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Delete"),
     "doctors should not delete cases from the list");
 });
+
+{
+  const alexCase = {
+    ...structuredClone(stored),
+    caseId: "CASE-ALEX",
+    patientName: "David Lim",
+    createdBy: "USR-DOCTOR-0001",
+    createdByName: "Dr. Alex Wong",
+  };
+  const adminCase = {
+    ...structuredClone(stored),
+    caseId: "CASE-ADMIN",
+    patientName: "Admin Patient",
+    createdBy: "USR-ADMIN-0001",
+    createdByName: "System Admin",
+  };
+  api.listCases = async () => ({ cases: [structuredClone(stored), alexCase, adminCase] });
+  state.user = { role: "doctor", userId: "USR-DOCTOR-0002", name: "Dr. Priya Nair" };
+  await renderCasesPage({ target: listRoot });
+  assert.ok(listRoot.textContent.includes("CASE-1"));
+  assert.ok(listRoot.textContent.includes("CASE-ALEX"));
+
+  const doctorSelect = listRoot.querySelector("#filter-doctor");
+  assert.ok(doctorSelect, "Doctor in charge filter missing");
+  const doctorLabels = [...doctorSelect.querySelectorAll("option")].map((o) => o.textContent.trim());
+  assert.ok(doctorLabels.includes("All doctors"));
+  assert.ok(doctorLabels.includes("Dr. Priya Nair"));
+  assert.ok(doctorLabels.includes("Dr. Alex Wong"));
+  assert.ok(!doctorLabels.includes("System Admin"), "admin must not appear in the doctor filter");
+  doctorSelect.value = "USR-DOCTOR-0001";
+  doctorSelect.dispatchEvent(new window.Event("change"));
+
+  test("doctor in charge filter keeps that doctor's studies", () => {
+    assert.equal(listRoot.querySelector("#filter-doctor")?.value, "USR-DOCTOR-0001");
+    const allChip = [...listRoot.querySelectorAll('[role="tab"]')].find((b) => b.textContent.trim() === "All");
+    assert.equal(allChip?.getAttribute("aria-selected"), "true");
+    assert.equal(listRoot.querySelector("#filter-my-cases")?.getAttribute("aria-selected"), "false");
+    assert.ok(listRoot.textContent.includes("CASE-ALEX"));
+    assert.ok(listRoot.textContent.includes("David Lim"));
+    assert.ok(!listRoot.textContent.includes("CASE-1"));
+    assert.ok(!listRoot.textContent.includes("Mei Chen"));
+  });
+
+  const mine = listRoot.querySelector("#filter-my-cases");
+  assert.ok(mine, "My cases filter missing");
+  mine.dispatchEvent(new window.Event("click"));
+  await new Promise((r) => setTimeout(r, 0));
+
+  test("My cases keeps only studies this doctor is in charge of", () => {
+    const mineChip = listRoot.querySelector("#filter-my-cases");
+    const allChip = [...listRoot.querySelectorAll('[role="tab"]')].find((b) => b.textContent.trim() === "All");
+    assert.equal(mineChip?.getAttribute("aria-selected"), "true");
+    assert.equal(allChip?.getAttribute("aria-selected"), "false");
+    assert.ok(listRoot.textContent.includes("CASE-1"));
+    assert.ok(listRoot.textContent.includes("Mei Chen"));
+    assert.ok(!listRoot.textContent.includes("CASE-ALEX"));
+    assert.ok(!listRoot.textContent.includes("David Lim"));
+    assert.equal(listRoot.querySelector("#filter-doctor")?.value, "");
+  });
+
+  state.user = { role: "nurse", userId: "u-nurse", name: "Nurse" };
+  await renderCasesPage({ target: listRoot });
+  test("nurses do not see My cases on the archive", () => {
+    assert.ok(!listRoot.querySelector("#filter-my-cases"));
+    assert.ok(listRoot.querySelector("#filter-doctor"), "nurses can still filter by doctor in charge");
+    assert.ok(listRoot.textContent.includes("CASE-1"));
+    assert.ok(listRoot.textContent.includes("CASE-ALEX"));
+  });
+
+  state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+}
 
 const root = document.getElementById("root");
 await renderCasePage({ target: root });
@@ -92,6 +168,8 @@ test("case record shows history, diagnosis, findings and remarks", () => {
   assert.ok(root.textContent.includes("Mei Chen"));
   assert.ok(root.textContent.includes("Urgent"));
   assert.ok(root.textContent.includes("Mild cardiomegaly"));
+  assert.ok(root.textContent.includes("Doctor in charge"));
+  assert.ok(root.textContent.includes("Dr. Priya Nair"));
   assert.ok(root.textContent.includes("Enlarged heart"));
   assert.ok(root.querySelector("#case-remarks"), "remarks box missing");
   assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Review X-ray"));

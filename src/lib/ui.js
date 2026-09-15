@@ -56,6 +56,7 @@ export function statusChips({ value, onChange, extra }) {
       const on = value === opt.id;
       return el("button", {
         type: "button",
+        id: opt.buttonId,
         role: "tab",
         "aria-selected": on ? "true" : "false",
         class: on

@@ -8,7 +8,7 @@ import { svgIcon } from "./icons.js";
 import { needsAzureDiagnosis } from "../lib/diagnosis.js";
 import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
-import { urgentBadge, patientDisplayName } from "../lib/tags.js";
+import { urgentBadge, patientDisplayName, doctorInCharge } from "../lib/tags.js";
 import { PAGE, searchField, statusChips, metricCard, emptyState, pageHeading, sortWorklist } from "../lib/ui.js";
 import { statusLabel, statusBadgeClass, isGenerating, caseStatus } from "../lib/caseStatus.js";
 import { CASES_CHANGED } from "../lib/analysisJob.js";
@@ -167,6 +167,7 @@ export async function renderDashboardPage({ target }) {
           statusBadge(c.status),
           c.urgent ? urgentBadge({ class: "ml-1" }) : null
         ),
+        el("td", { class: "text-slate-700" }, doctorInCharge(c)),
         el("td", { class: "max-w-md" }, diagnosisCell(c)),
         el("td", { class: "space-x-1 whitespace-nowrap" },
           el("button", {
@@ -241,7 +242,7 @@ export async function renderDashboardPage({ target }) {
           el("div", { class: "flex flex-wrap items-center gap-3" },
             searchField({
               value: q,
-              placeholder: "Search Patient ID, case, diagnosis…",
+              placeholder: "Search Patient ID, case, doctor, diagnosis…",
               onQuery: (value) => { q = value; state.pendingFilter.q = value; },
               onSearch: () => { page = 1; selected.clear(); refresh(); },
             }),
@@ -281,11 +282,11 @@ export async function renderDashboardPage({ target }) {
             })
           : el("div", {},
               el("div", { class: "overflow-x-auto" },
-                el("table", { class: "w-full min-w-[760px] text-left text-sm" },
+                el("table", { class: "w-full min-w-[900px] text-left text-sm" },
                   el("thead", { class: "bg-slate-50 text-slate-600" },
                     el("tr", {},
                       isAdmin() ? headerCheckbox(pageIds, selected, (on) => { togglePage(selected, pageIds, on); render(); }) : null,
-                      ["Patient ID", "Date", "Status", "Diagnosis", "Actions"].map((h) =>
+                      ["Patient ID", "Date", "Status", "Doctor", "Diagnosis", "Actions"].map((h) =>
                         el("th", { class: "p-4" }, h)
                       )
                     )

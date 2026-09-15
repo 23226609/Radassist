@@ -7,7 +7,7 @@ import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
-import { urgentBadge, patientDisplayName } from "../lib/tags.js";
+import { urgentBadge, patientDisplayName, doctorInCharge } from "../lib/tags.js";
 import { PAGE, searchField, emptyState, pageHeading } from "../lib/ui.js";
 import { statusLabel } from "../lib/caseStatus.js";
 import { CASES_CHANGED } from "../lib/analysisJob.js";
@@ -376,7 +376,8 @@ export async function renderPatientPage({ target }) {
                               el("div", { class: "font-semibold text-slate-900" }, c.caseId),
                               c.urgent ? urgentBadge() : null
                             ),
-                            el("p", { class: "text-sm text-slate-600" }, c.diagnosis || "No diagnosis")
+                            el("p", { class: "text-sm text-slate-600" }, c.diagnosis || "No diagnosis"),
+                            el("p", { class: "text-xs text-slate-500" }, "Doctor in charge: ", doctorInCharge(c))
                           ),
                           el("span", { class: "text-xs text-slate-500" },
                             c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : "",

@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { needsAzureDiagnosis } from "../src/lib/diagnosis.js";
 
 const require = createRequire(import.meta.url);
-const { parseDiagnosis } = require("../backend/utils/azureFindings.js");
+const { parseDiagnosis, pickDiagnosis } = require("../backend/utils/azureFindings.js");
 
 let passed = 0;
 let failed = 0;
@@ -25,9 +25,27 @@ test("trims a short clinical label", () => {
   assert.equal(parseDiagnosis("  Mild cardiomegaly.  "), "Mild cardiomegaly");
 });
 
-test("drops a second sentence and caps the length", () => {
-  const long = `${"Right lower-lobe consolidation recommended for follow-up imaging and clinical correlation".repeat(2)}`;
-  assert.ok(parseDiagnosis(long).length <= 80);
+test("drops a second sentence and rejects cut-off prose", () => {
+  assert.equal(parseDiagnosis("Mild cardiomegaly. Extra sentence."), "Mild cardiomegaly");
+  assert.equal(parseDiagnosis(
+    "The chest X-ray demonstrates normal lung volumes, a normal cardiac silhouette, a"
+  ), "");
+});
+
+test("rewrites a cut-off sentence on the worklist", () => {
+  assert.equal(needsAzureDiagnosis({
+    diagnosis: "The chest X-ray demonstrates normal lung volumes, a normal cardiac silhouette, a",
+    diagnosisSource: "azure",
+    reportText: "The chest X-ray demonstrates normal lung volumes.\nIMPRESSION: Normal study.",
+  }), true);
+});
+
+test("turns a prose impression into a short normal label", () => {
+  assert.equal(pickDiagnosis(
+    "",
+    [],
+    "The chest X-ray demonstrates normal lung volumes, a normal cardiac silhouette.\nIMPRESSION: The chest X-ray demonstrates normal lung volumes, a normal cardiac silhouette, a"
+  ), "Normal chest radiograph");
 });
 
 test("skips cases Azure already labelled", () => {
@@ -36,6 +54,38 @@ test("skips cases Azure already labelled", () => {
     diagnosisSource: "azure",
     reportText: "The heart is enlarged.",
   }), false);
+});
+
+test("re-labels a stock Azure normal when the impression names a finding", () => {
+  assert.equal(needsAzureDiagnosis({
+    diagnosis: "No acute cardiopulmonary findings",
+    diagnosisSource: "azure",
+    reportText: "The lungs are clear.\nIMPRESSION: Mild cardiomegaly.",
+  }), true);
+});
+
+test("prefers the report impression over a stock Azure normal", () => {
+  assert.equal(pickDiagnosis(
+    "No acute cardiopulmonary findings",
+    [{ label: "Clear lung fields" }],
+    "FINDINGS: Clear lungs.\nIMPRESSION: Mild cardiomegaly."
+  ), "Mild cardiomegaly");
+});
+
+test("uses a specific finding when Azure and impression are stock normals", () => {
+  assert.equal(pickDiagnosis(
+    "No acute cardiopulmonary findings",
+    [{ label: "Clear lung fields" }],
+    "IMPRESSION: No acute cardiopulmonary process."
+  ), "Clear lung fields");
+});
+
+test("keeps a stock normal when nothing more specific is available", () => {
+  assert.equal(pickDiagnosis(
+    "No acute cardiopulmonary findings",
+    [{ label: "No acute cardiopulmonary findings" }],
+    "IMPRESSION: No acute cardiopulmonary process."
+  ), "No acute cardiopulmonary findings");
 });
 
 test("upgrades the first-sentence fallback", () => {

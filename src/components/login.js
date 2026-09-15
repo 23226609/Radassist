@@ -8,6 +8,8 @@ import { svgIcon } from "./icons.js";
 
 const DEMO_USERS = [
   { role: "doctor", username: "doctor", password: "doctor123", label: "Doctor · Dr. Alex Wong" },
+  { role: "doctor", username: "priya", password: "priya123", label: "Doctor · Dr. Priya Nair" },
+  { role: "doctor", username: "marcus", password: "marcus123", label: "Doctor · Dr. Marcus Chen" },
   { role: "nurse", username: "nurse", password: "nurse123", label: "Nurse · Jamie Lee" },
   { role: "admin", username: "admin", password: "admin123", label: "Admin · System Admin" },
 ];
