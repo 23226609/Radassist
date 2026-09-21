@@ -26,7 +26,32 @@ export function getSession() {
   } catch { return null; }
 }
 
-async function request(method, path, body, { raw, headers } = {}) {
+const missingCaseIds = new Map();
+const MISSING_CASE_MS = 60_000;
+
+function rememberMissingCase(id) {
+  const sid = String(id || "").trim();
+  if (sid) missingCaseIds.set(sid, Date.now() + MISSING_CASE_MS);
+}
+
+function isMissingCase(id) {
+  const sid = String(id || "").trim();
+  const until = missingCaseIds.get(sid);
+  if (!until) return false;
+  if (Date.now() > until) {
+    missingCaseIds.delete(sid);
+    return false;
+  }
+  return true;
+}
+
+function missingCaseError(id) {
+  const err = new Error(`Case ${id} not found`);
+  err.status = 404;
+  return err;
+}
+
+async function request(method, path, body, { raw, headers, signal } = {}) {
   const opts = {
     method,
     cache: "no-store",
@@ -35,6 +60,7 @@ async function request(method, path, body, { raw, headers } = {}) {
       ...(headers || {}),
     },
   };
+  if (signal) opts.signal = signal;
   const t = token();
   if (t) opts.headers.Authorization = `Bearer ${t}`;
 
@@ -45,7 +71,15 @@ async function request(method, path, body, { raw, headers } = {}) {
     opts.body = JSON.stringify(body);
   }
 
-  const res = await fetch(`${BASE}${path}`, opts);
+  let res;
+  try {
+    res = await fetch(`${BASE}${path}`, opts);
+  } catch (err) {
+    if (err?.name === "AbortError") throw err;
+    const e = new Error("Backend unreachable");
+    e.status = 0;
+    throw e;
+  }
 
   if (raw) return res;
 
@@ -70,11 +104,21 @@ export const api = {
   logout: () => request("POST", "/auth/logout"),
 
   // Cases
-  listCases: (params = {}) => {
+  listCases: (params = {}, opts = {}) => {
     const q = new URLSearchParams(params).toString();
-    return request("GET", `/cases${q ? "?" + q : ""}`);
+    return request("GET", `/cases${q ? "?" + q : ""}`, undefined, opts);
   },
-  getCase: (id) => request("GET", `/cases/${encodeURIComponent(id)}`),
+  getCase: async (id, opts = {}) => {
+    const sid = String(id || "").trim();
+    if (!sid) throw missingCaseError(id);
+    if (isMissingCase(sid)) throw missingCaseError(sid);
+    try {
+      return await request("GET", `/cases/${encodeURIComponent(sid)}`, undefined, opts);
+    } catch (err) {
+      if (err?.status === 404) rememberMissingCase(sid);
+      throw err;
+    }
+  },
   createCase: (formData) =>
     request("POST", "/cases", formData, { headers: {} }), // FormData keeps its own Content-Type
   updateCase: (id, payload) => request("PUT", `/cases/${encodeURIComponent(id)}`, payload),
@@ -83,6 +127,10 @@ export const api = {
     request("POST", `/cases/${encodeURIComponent(id)}/summarise-findings`),
   summariseDiagnosis: (id) =>
     request("POST", `/cases/${encodeURIComponent(id)}/summarise-diagnosis`),
+  shareCase: (id) => request("POST", `/cases/${encodeURIComponent(id)}/share`),
+  unshareCase: (id) => request("DELETE", `/cases/${encodeURIComponent(id)}/share`),
+  getSharedCase: (token) => request("GET", `/share/${encodeURIComponent(token)}`),
+  sharedImageUrl: (token) => `${BASE}/share/${encodeURIComponent(token)}/image`,
   deleteCase: (id) => request("DELETE", `/cases/${encodeURIComponent(id)}`),
   deleteCases: (ids) => request("POST", "/cases/bulk-delete", { ids }),
   imageUrl: (imageId) => `${BASE}/images/${imageId}`,
@@ -108,6 +156,8 @@ export const api = {
     const q = new URLSearchParams(params).toString();
     return request("GET", `/users${q ? "?" + q : ""}`);
   },
+  setUserActive: (id, isActive) =>
+    request("PUT", `/users/${encodeURIComponent(id)}/active`, { isActive }),
 
   // Audit
   listAudit: (params = {}) => {
@@ -118,5 +168,5 @@ export const api = {
   deleteAuditLogs: (ids) => request("POST", "/audit-logs/bulk-delete", { ids }),
 
   // Stats
-  stats: () => request("GET", "/stats"),
+  stats: (opts = {}) => request("GET", "/stats", undefined, opts),
 };

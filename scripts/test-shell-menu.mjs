@@ -66,6 +66,7 @@ test("hamburger opens the menu for a larger content area when closed", () => {
 
 test("doctors see Audit log in the menu", () => {
   assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Audit log"));
+  assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Users"));
 });
 
 {
@@ -75,6 +76,16 @@ test("doctors see Audit log in the menu", () => {
   test("nurses do not see Audit log in the menu", () => {
     assert.ok([...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Worklist"));
     assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Audit log"));
+    assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Users"));
+  });
+}
+
+{
+  state.user = { role: "admin", userId: "a1", name: "Admin" };
+  const { root: adminRoot } = Shell({ onLogout() {} });
+  document.body.appendChild(adminRoot);
+  test("admins see Users in the menu", () => {
+    assert.ok([...adminRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Users"));
   });
 }
 

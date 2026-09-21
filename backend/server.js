@@ -73,6 +73,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/cases', caseRoutes);
 app.use('/api/patients', patientRoutes);
 app.use('/api/images', imageRoutes);
+app.use('/api/share', require('./routes/share'));
 app.use('/api/audit-logs', auditRoutes);
 app.use('/api/stats', statsRoutes);
 

@@ -5,5 +5,6 @@ const { authenticate, authorize } = require('../middleware/auth');
 
 router.use(authenticate);
 router.get('/', authorize('admin'), c.listUsers);
+router.put('/:id/active', authorize('admin'), c.setUserActive);
 
 module.exports = router;

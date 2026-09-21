@@ -96,8 +96,10 @@ async function tick() {
     if (!isGenerating(c)) {
       finish(true, "Draft ready — pending approve.", c);
     }
-  } catch {
-    /* keep waiting until timeout */
+  } catch (err) {
+    if (err?.status === 404) {
+      finish(false, "This case could not be loaded. It may have been removed.");
+    }
   }
 }
 

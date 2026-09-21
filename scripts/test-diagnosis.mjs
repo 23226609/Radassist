@@ -80,6 +80,14 @@ test("uses a specific finding when Azure and impression are stock normals", () =
   ), "Clear lung fields");
 });
 
+test("prefers a hemithorax white-out over a stock consolidation label", () => {
+  assert.equal(pickDiagnosis(
+    "Bilateral lower lobe consolidations",
+    [{ label: "Bilateral lower lobe consolidations" }],
+    "The patient's right hemithorax is completely opaque (white-out). The left lung is aerated.\nConclusion: Right hemithorax white-out."
+  ), "Right hemithorax white-out");
+});
+
 test("keeps a stock normal when nothing more specific is available", () => {
   assert.equal(pickDiagnosis(
     "No acute cardiopulmonary findings",

@@ -2,12 +2,14 @@
 // All case-related operations: list, create (upload + AI), read, update, delete.
 
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const Case = require('../models/Case');
 const ApiError = require('../utils/ApiError');
 const catchAsync = require('../utils/catchAsync');
 const addAuditLog = require('../utils/auditLogger');
 const { analyzeXray } = require('../utils/aiService');
 const azureFindings = require('../utils/azureFindings');
+const { mergeFindingsFromReport, dedupeFindings } = require('../utils/findingsMerge');
 const { bucket, downloadImage } = require('./_gridfs');
 const { nameFieldsFrom } = require('../utils/patientName');
 const { toPublicCase, statusFilter } = require('../utils/caseStatus');
@@ -92,25 +94,10 @@ exports.listCases = catchAsync(async (req, res) => {
 });
 
 exports.getCase = catchAsync(async (req, res, next) => {
-  // Accept both the human-friendly `caseId` (e.g. CASE-MTPHHNL7-O1T) and
-  // a raw Mongo `_id` (legacy / orphaned records where `caseId` is empty
-  // and `_id` is a UUID string rather than an ObjectId).
-  const id = String(req.params.id || "").trim();
-  let c = null;
-  if (id) {
-    c = await Case.findOne({ caseId: id }).lean();
-    if (!c) {
-      // Fall back to a raw lookup that bypasses schema casting so we can
-      // match both ObjectId and string `_id` values.
-      try {
-        c = await mongoose.connection.db.collection("cases").findOne({ _id: id });
-      } catch {
-        c = null;
-      }
-    }
-  }
+  const c = await findCaseByAnyId(req.params.id);
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
-  res.json({ success: true, case: toPublicCase(c) });
+  const raw = typeof c.toObject === 'function' ? c.toObject() : c;
+  res.json({ success: true, case: toPublicCase(raw, { includeShareToken: true }) });
 });
 
 // ---------------------------------------------------------------------------
@@ -263,7 +250,7 @@ async function finishAnalysis({ caseId, tmpPath, patientId, age, sex, history, u
       const image = await downloadImage(c.imageId);
       const summarised = await azureFindings.summariseFindings(reportText, image);
       if (summarised.findings?.length) {
-        findings = summarised.findings;
+        findings = dedupeFindings(summarised.findings);
         await addAuditLog(
           userId,
           'CASE_UPDATED',
@@ -286,7 +273,7 @@ async function finishAnalysis({ caseId, tmpPath, patientId, age, sex, history, u
   }
 
   c.reportText = reportText;
-  c.findings = findings;
+  c.findings = dedupeFindings(findings);
   c.diagnosis = diagnosis;
   c.diagnosisSource = diagnosisSource;
   c.status = 'pending_approve';
@@ -307,6 +294,9 @@ async function findCaseByAnyId(id) {
   if (!sid) return null;
   let c = await Case.findOne({ caseId: sid });
   if (c) return c;
+  // Missing CASE-* ids are gone from Mongo; skip ObjectId / raw _id
+  // lookups so deleted-case polls do not burn Cosmos RUs.
+  if (/^CASE-/i.test(sid)) return null;
   if (mongoose.Types.ObjectId.isValid(sid)) {
     try {
       c = await Case.findById(sid);
@@ -373,7 +363,85 @@ exports.finalizeCase = catchAsync(async (req, res, next) => {
   await c.save();
   await addAuditLog(req.user.userId, 'CASE_FINALIZED', `Finalized case ${c.caseId || c._id}`, c.caseId || String(c._id), null, 'finalized');
 
-  res.json({ success: true, case: toPublicCase(c) });
+  res.json({ success: true, case: toPublicCase(c, { includeShareToken: true }) });
+});
+
+exports.createShareLink = catchAsync(async (req, res, next) => {
+  const c = await findCaseByAnyId(req.params.id);
+  if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
+  if (c.status !== 'finalized') {
+    return next(ApiError.badRequest('Only a finalized report can be shared.'));
+  }
+  if (!c.shareToken) {
+    c.shareToken = crypto.randomBytes(24).toString('base64url');
+    await c.save();
+    await addAuditLog(
+      req.user.userId,
+      'CASE_SHARED',
+      `Created a share link for ${c.caseId || c._id}`,
+      c.caseId || String(c._id)
+    );
+  }
+  res.json({
+    success: true,
+    token: c.shareToken,
+    case: toPublicCase(c, { includeShareToken: true }),
+  });
+});
+
+exports.revokeShareLink = catchAsync(async (req, res, next) => {
+  const c = await findCaseByAnyId(req.params.id);
+  if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
+  c.shareToken = null;
+  await c.save();
+  await addAuditLog(
+    req.user.userId,
+    'CASE_SHARED',
+    `Revoked the share link for ${c.caseId || c._id}`,
+    c.caseId || String(c._id)
+  );
+  res.json({ success: true, case: toPublicCase(c, { includeShareToken: true }) });
+});
+
+async function findSharedCase(token) {
+  const t = String(token || '').trim();
+  if (!t) return null;
+  return Case.findOne({ shareToken: t, status: 'finalized', ...OWNED });
+}
+
+exports.getSharedCase = catchAsync(async (req, res, next) => {
+  const c = await findSharedCase(req.params.token);
+  if (!c) return next(ApiError.notFound('This share link is invalid or has been turned off.'));
+  const pub = toPublicCase(c);
+  res.json({
+    success: true,
+    case: {
+      caseId: pub.caseId,
+      patientId: pub.patientId,
+      patientName: pub.patientName,
+      firstName: pub.firstName,
+      middleName: pub.middleName,
+      lastName: pub.lastName,
+      age: pub.age,
+      sex: pub.sex,
+      history: pub.history,
+      diagnosis: pub.diagnosis,
+      reportText: pub.reportText,
+      remarks: pub.remarks,
+      findings: pub.findings,
+      status: pub.status,
+      imageId: pub.imageId,
+      createdByName: pub.createdByName,
+      finalizedByName: pub.finalizedByName,
+    },
+  });
+});
+
+exports.streamSharedImage = catchAsync(async (req, res, next) => {
+  const c = await findSharedCase(req.params.token);
+  if (!c || !c.imageId) return next(ApiError.notFound('Image not found.'));
+  req.params.id = String(c.imageId);
+  return exports.streamImage(req, res, next);
 });
 
 async function removeCaseDoc(c) {
@@ -470,10 +538,7 @@ exports.summariseFindings = catchAsync(async (req, res, next) => {
     return next(ApiError.badRequest('Azure AI did not return any findings for this report.'));
   }
 
-  const kept = (c.findings || []).filter(
-    (f) => f.status !== 'pending' || !['AI', 'Azure'].includes(f.source)
-  );
-  c.findings = [...kept, ...findings];
+  c.findings = dedupeFindings(mergeFindingsFromReport(c.findings, findings));
   if (summarised.diagnosis) {
     c.diagnosis = summarised.diagnosis;
     c.diagnosisSource = 'azure';

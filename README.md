@@ -156,13 +156,13 @@ Shows stats (total, urgent, finalized, pending approve). Tiles and chips filter 
 While a new film is generating, the worklist sits under a centered **Generating the report** overlay. The row status is **Generating** until the draft lands, then **Pending approve**. After sign-off it is **Finalized**.
 
 - **View** → case chart (history, diagnosis, findings list, remarks)
-- **Review** → X-ray + finding carousel (the reporting screen). Blocked while the draft is still generating.
+- **Review** → X-ray + findings list with an editable selected card (the reporting screen). Blocked while the draft is still generating.
 
 Admins can tick rows and bulk-delete.
 
 ### 5. Report review (the main clinical screen)
 
-Left: film from GridFS with bbox overlays. Right: one finding at a time (prev/next/dots), then remarks.
+Left: film from GridFS with bbox overlays. Right: a point-form list of every finding, then the selected finding as an editable card, then remarks.
 
 On open (doctor/admin, not generating, not finalized):
 
@@ -175,7 +175,7 @@ Every edit of findings, remarks, or the report body is written to MongoDB (`case
 Clinician can:
 
 - Edit label / location / size / pattern on non-finalized cases
-- **+ Add manually** — jumps to a new card (`source: "manual"`)
+- **+ Add manually** — selects a new card (`source: "manual"`)
 - **Save draft** / **Finalize & approve**
 - **Mark urgent** / **Remove urgent** (allowed after finalize)
 - Save remarks (allowed after finalize; does **not** rewrite a finalized report)
@@ -343,7 +343,7 @@ Frontend (jsdom via linkedom, no browser):
 npm test
 ```
 
-That runs the suite in `scripts/test-*.mjs`: report unwrap/parse, findings carousel, Azure bbox, confidence, export, review popup, diagnosis, patients, new patient, cases, pagination, new-case drop zone, audit bulk-delete.
+That runs the suite in `scripts/test-*.mjs`: report unwrap/parse, findings list, Azure bbox, confidence, export, review popup, diagnosis, patients, new patient, cases, pagination, new-case drop zone, audit bulk-delete.
 
 Against a **running** backend:
 
@@ -369,7 +369,7 @@ Dry-run by default; pass `--apply` to write.
 
 1. Start backend, Vite, and `start_server.sh` before the session. Confirm `/api/health` says `mongo: "up"` and `:8001/health` is OK.
 2. Restart Express after any backend edit (`node server.js` does not hot-reload).
-3. Walk: New patient → New case → Review (carousel, add manual finding, remarks, urgent) → Patients list shows the name and Urgent chip → Finalize → remarks still save.
+3. Walk: New patient → New case → Review (findings list, add manual finding, remarks, urgent) → Patients list shows the name and Urgent chip → Finalize → remarks still save.
 4. Show nurse login: read-only review, no Mark urgent / Save.
 5. Show admin bulk-delete on a throwaway row, not on the last demo case.
 

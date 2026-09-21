@@ -14,6 +14,22 @@ import { statusLabel, statusBadgeClass, isGenerating, caseStatus } from "../lib/
 import { CASES_CHANGED } from "../lib/analysisJob.js";
 import { forgetCases } from "../lib/records.js";
 
+let dashboardLive = null;
+
+function newDashboardAbort() {
+  return typeof AbortController === "function"
+    ? new AbortController()
+    : { abort() {}, signal: { aborted: false } };
+}
+
+function isAbortError(err) {
+  return err?.name === "AbortError" || err?.code === 20;
+}
+
+export function stopDashboardWatch() {
+  dashboardLive?.abort();
+}
+
 const diagnosisRequested = new Set();
 const diagnosisPending = new Set();
 
@@ -26,6 +42,10 @@ function statusBadge(s) {
 }
 
 export async function renderDashboardPage({ target }) {
+  dashboardLive?.abort();
+  dashboardLive = newDashboardAbort();
+  const { signal } = dashboardLive;
+
   // State scoped to this render call so we can re-fetch without leaking
   // listeners.
   let q = state.pendingFilter.q;
@@ -42,30 +62,35 @@ export async function renderDashboardPage({ target }) {
   const caseIdOf = (c) => c.caseId || c._id;
 
   async function refresh() {
+    if (signal.aborted) return;
     loading = true; error = ""; render();
     try {
-      const data = await api.listCases({ status: status === "all" || status === "urgent" ? "" : status, q });
+      const data = await api.listCases(
+        { status: status === "all" || status === "urgent" ? "" : status, q },
+        { signal }
+      );
+      if (signal.aborted) return;
       cases = sortWorklist(data.cases || []);
       if (urgentOnly) cases = cases.filter((c) => c.urgent);
       state.cases = cases;
       for (const id of [...selected]) {
         if (!cases.some((c) => caseIdOf(c) === id)) selected.delete(id);
       }
-      try { stats = (await api.stats()).stats; } catch { stats = null; }
+      try { stats = (await api.stats({ signal })).stats; } catch { stats = null; }
+      if (signal.aborted) return;
       online = true;
       fillDiagnoses(cases);
     } catch (err) {
+      if (signal.aborted || isAbortError(err)) return;
       error = err.message; online = false;
     } finally {
+      if (signal.aborted) return;
       loading = false;
       render();
     }
   }
 
-  if (target._stopCaseWatch) target._stopCaseWatch();
-  const watch = new AbortController();
-  target._stopCaseWatch = () => watch.abort();
-  window.addEventListener(CASES_CHANGED, () => refresh(), { signal: watch.signal });
+  window.addEventListener(CASES_CHANGED, () => refresh(), { signal });
 
   async function fillDiagnoses(list) {
     if (!["doctor", "admin"].includes(state.user?.role)) return;
@@ -74,12 +99,14 @@ export async function renderDashboardPage({ target }) {
       return id && !isGenerating(c) && needsAzureDiagnosis(c) && !diagnosisRequested.has(id);
     });
     await Promise.all(todo.slice(0, 6).map(async (c) => {
+      if (signal.aborted) return;
       const id = c.caseId || c._id;
       diagnosisRequested.add(id);
       diagnosisPending.add(id);
       render();
       try {
         const data = await api.summariseDiagnosis(id);
+        if (signal.aborted) return;
         const updated = data.case;
         if (updated) {
           cases = cases.map((row) =>

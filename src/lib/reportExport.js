@@ -39,6 +39,107 @@ export function isManualFinding(f) {
   return String(f?._id || f?.id || "").startsWith("tmp-");
 }
 
+function normalizeWs(s) {
+  return String(s || "").replace(/\s+/g, " ").trim();
+}
+
+function unitMatchesNeedle(unit, needle) {
+  const s = normalizeWs(unit).toLowerCase();
+  const n = normalizeWs(needle).toLowerCase();
+  if (!s || !n) return false;
+  if (s.includes(n)) return true;
+  // Azure often stores a longer paraphrase than the CURV sentence.
+  if (n.length >= 20 && s.length >= 20 && n.includes(s)) return true;
+  return false;
+}
+
+// Drop the whole sentence that contains a phrase, not the matching words
+// inside it — otherwise "Clear lung fields" leaves "The chest X-ray
+// demonstrates  without evidence of consolidation…".
+export function stripPassage(text, passage) {
+  const needle = normalizeWs(passage);
+  if (!needle || needle.length < 6) return String(text || "");
+  const src = String(text || "").replace(/\r\n/g, "\n");
+  const cleaned = src.replace(/[^.!?\n]+(?:[.!?]+)?/g, (unit) => (
+    unitMatchesNeedle(unit, needle) ? "" : unit
+  ));
+  return cleaned
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/ +\./g, ".")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// Drops a rejected finding's wording from the stored report so Word/PDF
+// and a later Azure re-summary no longer include it.
+export function removeFindingFromReport(reportText, finding) {
+  const split = splitReportAndRemarks(reportText);
+  let body = splitManualFindings(split.body).body;
+  const passages = [finding?.sentence, finding?.label]
+    .map((s) => String(s || "").trim())
+    .filter((s, i, arr) => s.length >= 6 && arr.indexOf(s) === i);
+  for (const passage of passages) body = stripPassage(body, passage);
+  return applyRemarksToReport(body, split.remarks);
+}
+
+export function formatFindingSentence(f) {
+  const label = String(f?.label || "").trim() || "Finding";
+  const location = String(f?.location || "").trim();
+  const size = String(f?.size || "").trim();
+  const pattern = String(f?.pattern || "").trim();
+  let s = label;
+  if (location) s += ` in ${location}`;
+  if (size) s += `, ${size}`;
+  if (pattern && pattern !== "Other") s += `, ${pattern.toLowerCase()}`;
+  if (!/[.!?]$/.test(s)) s += ".";
+  return s;
+}
+
+function replaceContainingSentence(text, needle, replacement) {
+  const src = String(text || "").replace(/\r\n/g, "\n");
+  const needleNorm = normalizeWs(needle);
+  const repl = String(replacement || "").trim();
+  if (!needleNorm || needleNorm.length < 6 || !repl) return { text: src, replaced: false };
+  let replaced = false;
+  const cleaned = src.replace(/[^.!?\n]+(?:[.!?]+)?/g, (unit) => {
+    if (replaced || !unitMatchesNeedle(unit, needleNorm)) return unit;
+    replaced = true;
+    const lead = unit.match(/^\s*/)?.[0] || "";
+    return lead + (/[.!?]$/.test(repl) ? repl : `${repl}.`);
+  });
+  return {
+    text: cleaned
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n[ \t]+/g, "\n")
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim(),
+    replaced,
+  };
+}
+
+// When a doctor edits a finding card, rewrite the matching sentence in the
+// CURV report so Word/PDF/share stay in sync.
+export function applyFindingChangeToReport(reportText, prev, next) {
+  const split = splitReportAndRemarks(reportText);
+  let body = splitManualFindings(split.body).body;
+  const sentence = formatFindingSentence(next);
+  const needles = [prev?.sentence, prev?.label]
+    .map((s) => String(s || "").trim())
+    .filter((s, i, arr) => s.length >= 6 && arr.indexOf(s) === i);
+  for (const needle of needles) {
+    const out = replaceContainingSentence(body, needle, sentence);
+    if (out.replaced) {
+      body = out.text;
+      break;
+    }
+  }
+  const applied = applyRemarksToReport(body, split.remarks);
+  return { ...applied, sentence };
+}
+
 function formatManualFinding(f, i) {
   const label = String(f?.label || "").trim() || "Finding";
   const lines = [`${i + 1}. ${label}`];
@@ -184,10 +285,16 @@ async function rasterizeJpeg(bytes) {
 }
 
 async function loadCaseFilm(c) {
+  const shared = c?.shareImageUrl;
   const id = c?.imageId;
-  if (!id) return null;
+  if (!shared && !id) return null;
   try {
-    const blob = await api.fetchImage(id);
+    const blob = shared
+      ? await fetch(shared).then((res) => {
+        if (!res.ok) throw new Error(`Image fetch failed: HTTP ${res.status}`);
+        return res.blob();
+      })
+      : await api.fetchImage(id);
     const bytes = new Uint8Array(await blob.arrayBuffer());
     const meta = parseImageMeta(bytes) || {};
     const film = {

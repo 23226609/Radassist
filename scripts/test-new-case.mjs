@@ -121,6 +121,49 @@ test("dropping a non-image leaves the current X-ray in place", () => {
   assert.ok(root.textContent.includes("chest.png"));
 });
 
+test("shows a Remove button after a film is chosen", () => {
+  const remove = [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === "Remove");
+  assert.ok(remove, "Remove button missing");
+});
+
+{
+  const remove = [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === "Remove");
+  remove.dispatchEvent(new window.Event("click", { bubbles: true }));
+}
+
+test("Remove clears the chosen film so another can be picked", () => {
+  assert.equal(state.selectedFile, null);
+  assert.ok(!root.querySelector("img"), "preview still on the page");
+  assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Remove"));
+  assert.ok(/drag/i.test(dropZone().textContent), "empty drop hint missing after remove");
+});
+
+{
+  const file = new File(["second-xray"], "followup.jpg", { type: "image/jpeg" });
+  const ev = new window.Event("drop", { bubbles: true, cancelable: true });
+  Object.defineProperty(ev, "dataTransfer", {
+    configurable: true,
+    value: { files: [file], dropEffect: "copy" },
+  });
+  dropZone().dispatchEvent(ev);
+}
+
+test("a new film can be dropped after Remove", () => {
+  assert.equal(state.selectedFile?.name, "followup.jpg");
+  assert.ok(root.textContent.includes("followup.jpg"));
+  assert.ok(root.querySelector("img"), "preview missing after second drop");
+});
+
+{
+  const file = new File(["xray-bytes"], "chest.png", { type: "image/png" });
+  const ev = new window.Event("drop", { bubbles: true, cancelable: true });
+  Object.defineProperty(ev, "dataTransfer", {
+    configurable: true,
+    value: { files: [file], dropEffect: "copy" },
+  });
+  dropZone().dispatchEvent(ev);
+}
+
 test("submit button is Upload X-Ray", () => {
   assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Upload X-Ray"));
 });

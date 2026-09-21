@@ -1,11 +1,11 @@
 // Drop local caches after Mongo add/delete so lists match the database.
 
-import { state } from "../state.js";
+import { state, setPage } from "../state.js";
 import { CASES_CHANGED, stopAnalysisWatchIf } from "./analysisJob.js";
 
-function emitSync() {
+function emitSync(ids = []) {
   try {
-    window.dispatchEvent(new CustomEvent(CASES_CHANGED, { detail: { sync: true } }));
+    window.dispatchEvent(new CustomEvent(CASES_CHANGED, { detail: { sync: true, ids } }));
   } catch { /* tests */ }
 }
 
@@ -15,8 +15,11 @@ export function forgetCases(ids = []) {
   state.cases = (state.cases || []).filter(
     (c) => !set.has(String(c.caseId || "")) && !set.has(String(c._id || ""))
   );
-  if (set.has(String(state.selectedCaseId || ""))) state.selectedCaseId = null;
-  emitSync();
+  const viewingDeleted = set.has(String(state.selectedCaseId || ""));
+  const leave = viewingDeleted && (state.page === "review" || state.page === "case");
+  if (viewingDeleted) state.selectedCaseId = null;
+  emitSync([...set]);
+  if (leave) setPage("dashboard");
 }
 
 export function forgetPatients(patientIds = []) {

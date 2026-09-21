@@ -75,8 +75,17 @@ export async function renderNewCasePage({ target }) {
     render();
   }
 
+  function clearFile() {
+    if (busy) return;
+    if (preview) URL.revokeObjectURL(preview);
+    preview = null;
+    state.selectedFile = null;
+    render();
+  }
+
   function onPickFile(e) {
     acceptFile(e.target.files?.[0]);
+    e.target.value = "";
   }
 
   function paintDropZone(node, active) {
@@ -267,13 +276,30 @@ export async function renderNewCasePage({ target }) {
         },
           svgIcon("image", { size: 32, class: "text-cyan-600" }),
           el("b", { class: "mt-2" }, state.selectedFile ? state.selectedFile.name : "Drag an X-ray here, or choose PNG, JPG, JPEG, or WebP"),
-          el("span", { class: "text-xs text-slate-500 mt-1" }, "PNG, JPG, JPEG, or WebP · stored with the case · analysed for a draft report"),
+          el("span", { class: "text-xs text-slate-500 mt-1" },
+            state.selectedFile
+              ? "Remove the film below if you want a different image, or drop another file to replace it."
+              : "PNG, JPG, JPEG, or WebP · stored with the case · analysed for a draft report"
+          ),
           el("input", { type: "file", accept: ".png,.jpg,.jpeg,.webp,image/*", class: "hidden", onChange: onPickFile })
         ),
         preview
           ? el("div", { class: "mt-3 flex items-center gap-3" },
               el("img", { src: preview, class: "h-28 rounded-lg grayscale" }),
-              el("span", { class: "text-sm text-slate-500" }, "Preview only. The original file is stored when you upload.")
+              el("div", { class: "min-w-0 flex-1" },
+                el("p", { class: "truncate text-sm font-medium text-slate-800" }, state.selectedFile?.name || "Selected film"),
+                el("p", { class: "text-sm text-slate-500" }, "Preview only. The original file is stored when you upload.")
+              ),
+              el("button", {
+                type: "button",
+                class: "inline-flex shrink-0 items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
+                disabled: busy,
+                onClick: (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  clearFile();
+                },
+              }, svgIcon("x", { size: 16 }), "Remove")
             )
           : null
       ),

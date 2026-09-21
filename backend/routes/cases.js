@@ -12,6 +12,8 @@ router.post('/bulk-delete', authorize('admin'), c.deleteCases);
 router.get('/:id', c.getCase);
 router.put('/:id', authorize('doctor', 'admin'), c.updateCase);
 router.post('/:id/finalize', authorize('doctor', 'admin'), c.finalizeCase);
+router.post('/:id/share', authorize('doctor', 'admin'), c.createShareLink);
+router.delete('/:id/share', authorize('doctor', 'admin'), c.revokeShareLink);
 router.post('/:id/summarise-findings', authorize('doctor', 'admin'), c.summariseFindings);
 router.post('/:id/summarise-diagnosis', authorize('doctor', 'admin'), c.summariseDiagnosis);
 router.delete('/:id', authorize('admin'), c.deleteCase);

@@ -29,6 +29,7 @@ function isActive(item) {
   if (item.page === "dashboard") return page === "dashboard" || page === "review";
   if (item.page === "patients") return page === "patients" || page === "patient";
   if (item.page === "cases") return page === "cases" || page === "case";
+  if (item.page === "users") return page === "users";
   return page === item.page;
 }
 
@@ -51,6 +52,7 @@ function sidebar({ onLogout }) {
     { page: "patients", icon: "users", label: "Patients" },
     { page: "cases", icon: "file-text", label: "Case archive" },
     ...(!nurse ? [{ page: "audit", icon: "list", label: "Audit log" }] : []),
+    ...(state.user?.role === "admin" ? [{ page: "users", icon: "users", label: "Users" }] : []),
   ];
   const create = nurse ? [] : [
     { page: "new", icon: "plus", label: "New case" },
@@ -107,6 +109,7 @@ const TITLES = {
   new: "New case",
   review: "Report review",
   audit: "Audit log",
+  users: "Users",
 };
 
 export function Shell({ onLogout }) {

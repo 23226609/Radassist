@@ -48,15 +48,80 @@ app.add_middleware(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_prompt(patient_id: str = "", age: str = "", sex: str = "", history: str = "") -> str:
+def _opaque_side_hint(image_path: str) -> str:
+    """Cheap left/right brightness check so a white-out film cannot be ignored.
+
+    CURV often never 'sees' a complete hemithorax white-out and emits the same
+    bilateral-consolidation template for every chest film. If one lung field is
+    much brighter (more white) than the other, tell the model which patient
+    side that is. Standard PA/AP: the patient's RIGHT is on the VIEWER'S LEFT.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return ""
+    try:
+        im = Image.open(image_path).convert("L")
+    except Exception:
+        return ""
+    im.thumbnail((320, 320))
+    w, h = im.size
+    if w < 40 or h < 40:
+        return ""
+    field = im.crop((int(w * 0.08), int(h * 0.16), int(w * 0.92), int(h * 0.88)))
+    fw, fh = field.size
+    third = max(8, fw // 3)
+    left_px = list(field.crop((0, 0, third, fh)).getdata())
+    right_px = list(field.crop((fw - third, 0, fw, fh)).getdata())
+    if not left_px or not right_px:
+        return ""
+    left_mean = sum(left_px) / len(left_px)
+    right_mean = sum(right_px) / len(right_px)
+    if abs(left_mean - right_mean) < 32:
+        return ""
+    if left_mean > right_mean:
+        viewer, patient = "left", "right"
+    else:
+        viewer, patient = "right", "left"
+    return (
+        f"This image file is not symmetric: the viewer's {viewer} lung field is "
+        f"much more opaque (white) than the other side. On a standard chest "
+        f"X-ray that is the patient's {patient} hemithorax. Report a white-out / "
+        f"complete opacification of the patient's {patient} hemithorax. Do not "
+        f"call this bilateral lower-lobe consolidation."
+    )
+
+
+def _build_prompt(patient_id: str = "", age: str = "", sex: str = "",
+                  history: str = "", film_hint: str = "") -> str:
     """The plain report instruction the CURV fine-tune was trained to answer.
 
     Asking this model for JSON pushes it outside its training distribution and
     it starts looping, so we ask for the report in its native form and let the
     frontend derive findings from the text. Real patient details are supplied
     so the model fills the header instead of inventing a clinical history.
+
+    A bare "write a radiology report" cue makes this 3B checkpoint emit a stock
+    "bilateral lower lobe consolidations" template for every film, including a
+    complete hemithorax white-out. The first Findings sentence must name both
+    sides or that template wins.
     """
-    prompt = "Generate a detailed radiology report for this chest X-ray."
+    prompt = (
+        "Look at this frontal chest X-ray. The patient's RIGHT is on YOUR LEFT. "
+        "Write a standard radiology report for THIS film only. Start with the "
+        "patient details, then Findings, then Conclusion. Do not add a section "
+        "titled Header.\n\n"
+        "The first sentence of Findings must say, for each side, whether the "
+        "lung is DARK (air) or WHITE (opaque). "
+        "If one whole hemithorax is white and the other is dark, that is a "
+        "WHITE-OUT. Name the patient's side (right or left) in Findings and "
+        "again in the Conclusion. "
+        "Do not write 'bilateral lower lobe consolidations' unless BOTH lungs "
+        "really show the same basal finding. "
+        "Do not reuse a stock report from another patient."
+    )
+    if film_hint:
+        prompt += "\n\n" + film_hint
 
     details = [
         ("Patient ID", patient_id),
@@ -67,19 +132,24 @@ def _build_prompt(patient_id: str = "", age: str = "", sex: str = "", history: s
     known = [f"{label}: {value.strip()}" for label, value in details if value and value.strip()]
     if known:
         prompt += (
-            "\n\nUse exactly these patient details in the report header. "
-            "Do not invent any other patient details or clinical history.\n"
+            "\n\nUse exactly these patient details as the first lines of the report. "
+            "Do not invent any other patient details, clinical history, "
+            "or comparison with previous imaging.\n"
             + "\n".join(known)
         )
 
-    # Left to itself the model signs off with "Radiologist: [Your Name]" and
-    # similar bracketed blanks, which read as unfinished in the saved report.
     prompt += (
-        "\n\nEnd the report after the conclusion. Do not add a signature, "
-        "date or any placeholder written in square brackets. "
-        "Name abnormalities that are visible. Only conclude there is no "
-        "acute cardiopulmonary finding when the lungs, heart and pleural "
-        "spaces actually look normal."
+        "\n\nAnswer the clinical history in Findings. If the history mentions "
+        "a fall, trauma, or rib pain, comment on the ribs and bony thorax and "
+        "say whether a pneumothorax is present. If you cannot see a fracture, "
+        "say the ribs are not clearly fractured on this frontal film; do not "
+        "replace that with a lung-only report. "
+        "Never mention prior studies, old films, or comparison with previous imaging. "
+        "Do not write that the lungs are clear or that there is no acute "
+        "cardiopulmonary disease if you have named an opacity, white-out, "
+        "consolidation, or pneumonia. "
+        "End the report after the conclusion. Do not add a signature, date or "
+        "any placeholder written in square brackets."
     )
     return prompt
 
@@ -98,7 +168,13 @@ def _ai_analyze(image_path: str, patient_id: str = "", age: str = "",
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": _build_prompt(patient_id, age, sex, history)},
+                    {
+                        "type": "text",
+                        "text": _build_prompt(
+                            patient_id, age, sex, history,
+                            film_hint=_opaque_side_hint(image_path),
+                        ),
+                    },
                     {"type": "input_image", "image_url": image_path},
                 ],
             }
@@ -117,7 +193,7 @@ def _ai_analyze(image_path: str, patient_id: str = "", age: str = "",
     result = response.json()
     content = result["choices"][0]["message"]["content"]
 
-    return {"report": _plain_text(_dedupe_report(content)), "findings": []}
+    return {"report": _tidy_report(_plain_text(_dedupe_report(content))), "findings": []}
 
 
 # Sentence boundary: a ., ! or ? followed by whitespace.
@@ -235,6 +311,91 @@ def _plain_text(text: str) -> str:
     # Removing rules and headings can leave runs of blank lines behind.
     out = []
     for line in stripped:
+        if not line.strip() and out and not out[-1].strip():
+            continue
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+_SCAFFOLD_HEAD = re.compile(
+    r"(?i)^(?:header|radiology report|frontal chest x-?ray)\s*:?\s*$"
+)
+_COMPARISON_HEAD = re.compile(
+    r"(?i)^(?:frontal chest x-?ray\s*)?(?:comparison of (?:the )?two hemithoraces)\s*:?\s*$"
+)
+_HEMI_LINE = re.compile(
+    r"(?i)^(?:[-*]\s*)?(?:left|right)\s+hemithorax\s*:"
+)
+_FINDING_SIGNAL = re.compile(
+    r"(?i)\b(?:opacif|white-?out|opaque (?:right|left) hemithorax|"
+    r"consolidation|pneumonia|atelectasis)\b"
+)
+_NO_ACUTE = re.compile(
+    r"(?i)\b(?:no (?:evidence|signs?) of acute cardiopulmonary|"
+    r"no acute cardiopulmonary|"
+    r"(?:the )?lungs? (?:are|appear) (?:clear|normal))\b"
+)
+_NO_ACUTE_TAIL = re.compile(
+    r"(?i)\s*,?\s*(?:and\s+)?there is no (?:evidence|signs?) of acute cardiopulmonary.*$"
+)
+_PRIOR_CLAUSE = re.compile(
+    r"(?i)(?:\s*,?\s*)?(?:given its location and appearance )?on prior studies"
+    r"|(?:\s*,?\s*)?(?:compared with|compared to) previous "
+    r"(?:imaging|studies|films|examinations)[^.]*"
+)
+
+
+def _tidy_report(text: str) -> str:
+    """Drop prompt scaffolding and a stock 'no acute disease' closer.
+
+    The left/right check is only to stop a normal-chest template. If it leaks
+    into the saved report, clinicians see a worksheet instead of a draft.
+    The 3B model also names an opacity and then denies acute disease in the
+    next sentence; keep the finding, drop the contradiction.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+
+    kept = []
+    skip_hemi = False
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if _COMPARISON_HEAD.match(line.strip()) or _SCAFFOLD_HEAD.match(line.strip()):
+            if _COMPARISON_HEAD.match(line.strip()):
+                skip_hemi = True
+            continue
+        if skip_hemi:
+            if not line.strip() or _HEMI_LINE.match(line.strip()):
+                continue
+            skip_hemi = False
+            if _is_heading(line):
+                kept.append(line)
+                continue
+        kept.append(line)
+
+    body = "\n".join(kept)
+    cleaned = []
+    drop_no_acute = bool(_FINDING_SIGNAL.search(body))
+    for raw in body.splitlines():
+        prefix = _LINE_PREFIX.match(raw).group(1)
+        parts = []
+        for sentence in _SENTENCE_SPLIT.split(raw[len(prefix):]):
+            clipped = _PRIOR_CLAUSE.sub("", sentence)
+            clipped = _NO_ACUTE_TAIL.sub("", clipped).strip(" ,")
+            if not clipped:
+                continue
+            if drop_no_acute and _NO_ACUTE.search(clipped):
+                continue
+            parts.append(clipped)
+        if not parts:
+            if _is_heading(raw) and not _SCAFFOLD_HEAD.match(raw.strip()):
+                cleaned.append(raw)
+            continue
+        cleaned.append(prefix + " ".join(parts))
+
+    out = []
+    for line in cleaned:
         if not line.strip() and out and not out[-1].strip():
             continue
         out.append(line)

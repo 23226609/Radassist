@@ -74,6 +74,7 @@ const caseSchema = new mongoose.Schema(
     // Metadata about the AI generation, if any
     aiProvider: { type: String, default: '' },
     aiModel: { type: String, default: '' },
+    shareToken: { type: String, default: null, trim: true, sparse: true, unique: true },
   },
   { timestamps: true }
 );

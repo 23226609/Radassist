@@ -6,7 +6,7 @@
 //      plus optional pre-structured findings in `findings`.
 //   2. Finding cards are stored on the case during generate (Azure when
 //      configured). Opening Review only shows them — it does not call Azure.
-//      If a case has no cards, a local parse of the report fills the carousel.
+//      If a case has no cards, a local parse of the report fills the list.
 //   3. The X-ray is mandatory — it always renders, with bbox overlays from
 //      the findings.
 //   4. The generated report lives in MongoDB (used by Azure to build
@@ -22,9 +22,39 @@ import { state, setPage, toast } from "../state.js";
 import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { reportPopupUrl } from "../lib/reportPopup.js";
-import { downloadReportDocx, downloadReportPdf, composeReportText, splitReportAndRemarks } from "../lib/reportExport.js";
+import { downloadReportDocx, downloadReportPdf, composeReportText, splitReportAndRemarks, splitManualFindings, removeFindingFromReport, applyFindingChangeToReport } from "../lib/reportExport.js";
+import { mergeFindingsFromReport, overlayAzureOnParsed, dedupeFindings } from "../lib/findingsSync.js";
 import { urgentBadge, patientDisplayName, doctorInCharge } from "../lib/tags.js";
 import { isGenerating, isAwaitingApprove, statusLabel } from "../lib/caseStatus.js";
+import { forgetCases } from "../lib/records.js";
+import { CASES_CHANGED } from "../lib/analysisJob.js";
+
+let reviewLive = null;
+let reviewWatchId = "";
+
+function newAbort() {
+  return typeof AbortController === "function"
+    ? new AbortController()
+    : { abort() {}, signal: { aborted: false } };
+}
+
+function isAbortError(err) {
+  return err?.name === "AbortError" || err?.code === 20;
+}
+
+export function stopReviewWatch() {
+  reviewLive?.abort();
+  reviewWatchId = "";
+}
+
+try {
+  window.addEventListener(CASES_CHANGED, (ev) => {
+    const ids = (ev.detail?.ids || []).map(String);
+    if (reviewWatchId && ids.includes(String(reviewWatchId))) {
+      stopReviewWatch();
+    }
+  });
+} catch { /* tests */ }
 
 const PATTERNS = ["Nodular", "Diffuse", "Linear", "Ground-glass", "Consolidation", "Other"];
 
@@ -46,6 +76,19 @@ function isUnsavedManual(f) {
   if (!isManualFinding(f)) return false;
   if (f.draft === true) return true;
   return String(f._id || f.id || "").startsWith("tmp-");
+}
+
+function findingPointMeta(f) {
+  const bits = [];
+  if (f?.location) bits.push(String(f.location).trim());
+  if (f?.size) bits.push(String(f.size).trim());
+  if (f?.pattern && f.pattern !== "Other") bits.push(f.pattern);
+  const cleaned = bits.filter(Boolean);
+  if (cleaned.length) return cleaned.join(" · ");
+  const extra = String(f?.sentence || f?.detail || "").replace(/\s+/g, " ").trim();
+  if (!extra) return "";
+  if (extra.toLowerCase() === String(f?.label || "").trim().toLowerCase()) return "";
+  return extra.length > 90 ? extra.slice(0, 87).trim() + "…" : extra;
 }
 
 function hasBbox(f) {
@@ -90,6 +133,7 @@ const LOCATION_HINTS = [
   "left hilum", "mediastinum", "right cardiophrenic", "left cardiophrenic",
   "right costophrenic", "left costophrenic", "perihilar", "retrocardiac",
   "right apex", "left apex", "right base", "left base",
+  "upper lobes", "mid lung", "lung area",
 ];
 const SIZE_REGEX = /(about\s+)?([~]?\s*)([0-9]+(\.[0-9]+)?)\s*(cm|mm|centimeter|millimeter|millimetres?|centimeters?)/i;
 
@@ -97,6 +141,7 @@ function inferPattern(text) {
   const t = (text || "").toLowerCase();
   // Nodular first because sentences sometimes mention both nodule and consolidation
   if (/\bnodul|\bmass\b|\bcoin lesion\b|\bround(?!ed glass)/.test(t)) return "Nodular";
+  if (/white-?out|opaque hemithorax|complete opacif/.test(t)) return "Diffuse";
   if (/ground[- ]?glass|ggo/.test(t)) return "Ground-glass";
   if (/consolidat|air[- ]?space|airspace/.test(t)) return "Consolidation";
   if (/opacity|opacit/.test(t)) return "Consolidation";
@@ -159,14 +204,46 @@ function splitBlock(block) {
   return { header, body };
 }
 
+function shortFindingLabel(text) {
+  let s = String(text || "").replace(/\s+/g, " ").trim();
+  s = s.replace(/^(the\s+)?(chest\s+x-?ray|study|film|examination)\s+(demonstrates|shows|reveals|indicates|findings are)\s+/i, "");
+  s = s.replace(/^(there\s+is|there\s+are)\s+/i, "");
+  s = s.split(/\s+(?:without|with no|but\b|which\b|and there is|and there are)\s+/i)[0];
+  s = s.split(",")[0].trim().replace(/[.!?]+$/, "");
+  if (s.length > 60) s = s.slice(0, 57).trim() + "…";
+  if (s.length < 3) return "";
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 function pickLabel(block) {
   // Prefer the first real observation; fall back to the section heading.
   const { header, body } = splitBlock(block);
   const statement = body
     .map((line) => line.split(/(?<=[.!?])\s+/)[0].trim())
     .find((s) => s.length > 4);
-  const label = statement || header || "AI finding";
+  const label = shortFindingLabel(statement) || shortFindingLabel(header) || "AI finding";
   return label.length > 80 ? label.slice(0, 77) + "…" : label;
+}
+
+function isBoilerplateLine(line) {
+  return /^(radiology report|chest x-?ray( examination)?|patient id|age|sex|date of examination|examiner|description of findings|conclusion|impression|clinician-added findings|radiologist remarks)\b/i.test(String(line || "").trim());
+}
+
+function findingsProse(text) {
+  const src = String(text || "");
+  const section = src.match(/(?:description of findings|findings)\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:conclusion|impression|recommendation|clinician-added findings|radiologist remarks)\s*:?\s*(?:\n|$)|$)/i);
+  if (section?.[1]?.trim()) return section[1].trim();
+  const colon = src.match(/(?:description of findings|findings)\s*:\s*([\s\S]*?)(?=\n\s*(?:conclusion|impression|recommendation|clinician-added findings|radiologist remarks)\s*:|$)/i);
+  if (colon?.[1]?.trim()) return colon[1].trim();
+  return src;
+}
+
+function splitFindingUnits(text) {
+  return String(text || "")
+    .split(/\n+/)
+    .flatMap((line) => line.split(/(?<=[.!?])\s+/))
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 12 && !isBoilerplateLine(s) && !/^#{1,6}\s+/.test(s));
 }
 
 export function parseFindingsFromReport(reportText, existingCount = 0) {
@@ -206,13 +283,16 @@ export function parseFindingsFromReport(reportText, existingCount = 0) {
     }
   }
 
+  // Prose reports (CURV / edited popup drafts): use Description of Findings,
+  // not the patient header or the conclusion. Include short added lines such
+  // as "Lung cancer in lung area."
+  if (blocks.length === 0) {
+    splitFindingUnits(findingsProse(text)).forEach((s) => blocks.push(s));
+  }
+
   // Last resort: split the whole text into sentences.
   if (blocks.length === 0) {
-    text
-      .split(/(?<=[.!?])\s+/)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 25 && !/^#{1,6}\s+/.test(s))
-      .forEach((s) => blocks.push(s));
+    splitFindingUnits(text).forEach((s) => blocks.push(s));
   }
 
   // De-dup near-identical blocks.
@@ -224,7 +304,7 @@ export function parseFindingsFromReport(reportText, existingCount = 0) {
     return true;
   });
 
-  const findings = unique.slice(0, 6).map((block, idx) => {
+  const findings = unique.slice(0, 12).map((block, idx) => {
     const cleaned = extractSection(block);
     const pattern = inferPattern(cleaned);
     const location = detectLocation(cleaned);
@@ -277,6 +357,28 @@ export function unwrapLegacyReport(raw) {
 
 // Cache of imageId -> object URL so we don't re-fetch on every render().
 const _imageCache = new Map();
+export async function resyncMachineFindings(caseId, stored) {
+  if (!caseId || !stored || stored.status === "finalized") return stored;
+  const previous = stored.findings || [];
+  const body = splitManualFindings(splitReportAndRemarks(stored.reportText || "").body).body;
+  let parsed = parseFindingsFromReport(body, 0);
+  try {
+    const data = await api.summariseFindings(caseId);
+    const next = unwrapLegacyReport(data.case || stored);
+    const azure = (next.findings || []).filter((f) => !isManualFinding(f));
+    parsed = overlayAzureOnParsed(parsed, azure, stored.reportText || next.reportText);
+  } catch {
+    // Local parse is the source of truth for add / edit / delete in the draft.
+  }
+  const findings = mergeFindingsFromReport(previous, parsed, stored.reportText);
+  try {
+    const updated = await api.updateCase(caseId, { findings });
+    return unwrapLegacyReport(updated.case || { ...stored, findings });
+  } catch {
+    return { ...stored, findings };
+  }
+}
+
 async function getImageObjectUrl(imageId) {
   if (!imageId) return null;
   if (_imageCache.has(imageId)) return _imageCache.get(imageId);
@@ -292,6 +394,11 @@ async function getImageObjectUrl(imageId) {
 }
 
 export async function renderReviewPage({ target }) {
+  reviewLive?.abort();
+  reviewLive = newAbort();
+  const { signal } = reviewLive;
+  let leaving = false;
+
   // Local working copy.  Support both caseId (new) and _id (legacy).
   let localCase = state.cases.find(
     (c) => c.caseId === state.selectedCaseId || c._id === state.selectedCaseId
@@ -299,14 +406,24 @@ export async function renderReviewPage({ target }) {
   let busy = false;
   let msg = "";
   let imageSrc = null; // resolved object URL once the blob is fetched
-  let carouselIndex = 0; // which finding card the carousel is showing
+  let selectedIndex = 0; // which finding is selected in the list / editor
   let showBoxes = true;
   let drawStart = null;
   let remarksDraft = "";
   let remarksDirty = false;
 
   // Effective case ID that works with both caseId (new) and _id (legacy)
-  const getEffectiveCaseId = () => localCase?.caseId || localCase?._id;
+  const getEffectiveCaseId = () => localCase?.caseId || localCase?._id || state.selectedCaseId;
+  reviewWatchId = String(getEffectiveCaseId() || "");
+
+  function leaveMissingCase() {
+    if (leaving || signal.aborted) return;
+    leaving = true;
+    reviewLive.abort();
+    reviewWatchId = "";
+    toast("This case is no longer available.");
+    forgetCases([getEffectiveCaseId()].filter(Boolean));
+  }
 
   function syncRemarksFromCase() {
     const split = splitReportAndRemarks(localCase?.reportText || "");
@@ -329,12 +446,20 @@ export async function renderReviewPage({ target }) {
 
   async function refreshFromServer() {
     const caseId = getEffectiveCaseId();
-    if (!caseId) return;
+    if (!caseId || signal.aborted || leaving) return;
     try {
-      const data = await api.getCase(caseId);
+      const data = await api.getCase(caseId, { signal });
+      if (signal.aborted || leaving) return;
       localCase = data.case || data;
       // One-shot fixup: unwrap the legacy `{"report":"..."}` string shape.
       localCase = unwrapLegacyReport(localCase);
+      const tidy = dedupeFindings(localCase.findings || []);
+      if (tidy.length !== (localCase.findings || []).length) {
+        localCase = { ...localCase, findings: tidy };
+        if (state.user?.role !== "nurse" && localCase.status !== "finalized") {
+          persistClinicianEdits().catch(() => {});
+        }
+      }
       syncRemarksFromCase();
       // Sync the cache so the rest of the app sees the same case.
       const idx = state.cases.findIndex(
@@ -352,6 +477,11 @@ export async function renderReviewPage({ target }) {
       }
       render();
     } catch (err) {
+      if (signal.aborted || leaving || isAbortError(err)) return;
+      if (err?.status === 404) {
+        leaveMissingCase();
+        return;
+      }
       toast(err.message);
     }
   }
@@ -370,17 +500,22 @@ export async function renderReviewPage({ target }) {
       } else if (state.selectedCaseId) {
         // Try to fetch the case directly from the server
         try {
-          const data = await api.getCase(state.selectedCaseId);
+          const data = await api.getCase(state.selectedCaseId, { signal });
           localCase = data.case || data;
           if (localCase) {
             state.cases = [localCase, ...state.cases];
             state.selectedCaseId = localCase.caseId || localCase._id;
           }
-        } catch {
-          // Fall through to "not found" message
+        } catch (err) {
+          if (isAbortError(err)) return;
+          if (err?.status === 404) {
+            leaveMissingCase();
+            return;
+          }
         }
       }
     } catch (err) {
+      if (isAbortError(err)) return;
       target.appendChild(el("p", { class: "p-8 text-red-700" }, "Backend unreachable: " + err.message));
       return;
     }
@@ -420,10 +555,33 @@ export async function renderReviewPage({ target }) {
   }
 
   function patchFinding(id, patch, { refresh = false } = {}) {
+    const prev = (localCase.findings || []).find((f) => String(f._id || f.id) === String(id));
+    if (!prev) return;
+    const next = { ...prev, ...patch };
+    const clinicalKeys = ["label", "location", "size", "pattern", "sentence"];
+    const clinicalChanged = clinicalKeys.some((k) => (
+      Object.prototype.hasOwnProperty.call(patch, k) && String(patch[k] ?? "") !== String(prev[k] ?? "")
+    ));
+
+    let reportText = localCase.reportText;
+    if (clinicalChanged && !isDraftFindingId(id)) {
+      if (isManualFinding(next)) {
+        const findings = (localCase.findings || []).map((f) => (
+          String(f._id || f.id) === String(id) ? next : f
+        ));
+        reportText = applyLocalEdits(reportText, { findings }).reportText;
+      } else {
+        const applied = applyFindingChangeToReport(reportText, prev, next);
+        reportText = applied.reportText;
+        next.sentence = applied.sentence;
+      }
+    }
+
     localCase = {
       ...localCase,
+      reportText,
       findings: (localCase.findings || []).map((f) => (
-        String(f._id || f.id) === String(id) ? { ...f, ...patch } : f
+        String(f._id || f.id) === String(id) ? next : f
       )),
     };
     // Text fields keep their own caret — remounting on every keystroke made
@@ -454,11 +612,11 @@ export async function renderReviewPage({ target }) {
     };
     const next = [...(localCase.findings || []), newFinding];
     localCase = { ...localCase, findings: next };
-    carouselIndex = next.length - 1;
+    selectedIndex = next.length - 1;
     render();
   }
 
-  function removeFinding(id, index = carouselIndex) {
+  function removeFinding(id, index = selectedIndex) {
     const findings = [...(localCase.findings || [])];
     const idx = findings.findIndex((f, i) => {
       const fid = String(f._id || f.id || "");
@@ -466,16 +624,30 @@ export async function renderReviewPage({ target }) {
       return (id == null || id === "" || !fid) && i === index;
     });
     const removed = idx >= 0 ? findings[idx] : null;
-    if (!removed || !isManualFinding(removed)) return;
+    if (!removed) return;
     findings.splice(idx, 1);
-    localCase = { ...localCase, findings };
-    if (carouselIndex >= findings.length) carouselIndex = Math.max(0, findings.length - 1);
+    const stripped = isDraftFindingId(removed._id || removed.id)
+      ? { reportText: localCase.reportText, remarks: remarksDraft }
+      : removeFindingFromReport(localCase.reportText, removed);
+    const composed = applyLocalEdits(stripped.reportText, { remarks: remarksDraft, findings });
+    localCase = {
+      ...localCase,
+      findings,
+      reportText: composed.reportText,
+      remarks: composed.remarks,
+    };
+    if (selectedIndex >= findings.length) selectedIndex = Math.max(0, findings.length - 1);
     render();
     if (isDraftFindingId(removed._id || removed.id)) return;
     persistClinicianEdits({ includeDraft: true }).catch((err) => {
       hintMongo("");
       toast(err.message || "Could not delete this finding.");
     });
+  }
+
+  function acceptFinding(id) {
+    patchFinding(id, { status: "accepted" }, { refresh: true });
+    toast("Finding accepted.");
   }
 
   async function finishManualFinding() {
@@ -497,7 +669,7 @@ export async function renderReviewPage({ target }) {
   function canDrawOnFilm() {
     if (!localCase || isGenerating(localCase)) return false;
     if (state.user?.role === "nurse" || localCase.status === "finalized") return false;
-    return isManualFinding((localCase.findings || [])[carouselIndex]);
+    return isManualFinding((localCase.findings || [])[selectedIndex]);
   }
 
   function paintLiveBox(stage, bbox) {
@@ -555,7 +727,7 @@ export async function renderReviewPage({ target }) {
       tag.className = "absolute -top-5 left-0 bg-black px-1 text-xs text-white";
       node.appendChild(tag);
     }
-    tag.textContent = `F${carouselIndex + 1}`;
+    tag.textContent = `F${selectedIndex + 1}`;
     const hint = document.querySelector("[data-bbox-hint]");
     if (hint) hint.textContent = "Drag on the X-ray to redraw this box.";
   }
@@ -567,7 +739,7 @@ export async function renderReviewPage({ target }) {
     const bbox = boxFromCorners(drawStart, eventToPct(e, stage));
     drawStart = null;
     e.preventDefault?.();
-    const f = (localCase.findings || [])[carouselIndex];
+    const f = (localCase.findings || [])[selectedIndex];
     if (f) {
       // Do not remount the page here. Replacing the DOM on pointerup makes the
       // following click land on Finish this finding and the button vanishes.
@@ -621,8 +793,19 @@ export async function renderReviewPage({ target }) {
   function persistClinicianEdits({ includeDraft = false } = {}) {
     clearTimeout(saveTimer);
     const run = async () => {
+      if (signal.aborted || leaving) return;
       hintMongo("Saving to MongoDB…");
-      const data = await api.getCase(getEffectiveCaseId());
+      let data;
+      try {
+        data = await api.getCase(getEffectiveCaseId(), { signal });
+      } catch (err) {
+        if (signal.aborted || leaving || isAbortError(err)) return;
+        if (err?.status === 404) {
+          leaveMissingCase();
+          return;
+        }
+        throw err;
+      }
       const stored = unwrapLegacyReport(data.case || data);
       const note = String(remarksDraft || "").trim();
       if (stored.status === "finalized" || state.user?.role === "nurse") {
@@ -637,7 +820,7 @@ export async function renderReviewPage({ target }) {
         return stored;
       }
       const findings = findingsForSave(localCase.findings, { includeDraft });
-      const composed = applyLocalEdits(stored.reportText, { remarks: note, findings });
+      const composed = applyLocalEdits(localCase.reportText || stored.reportText, { remarks: note, findings });
       const payload = {
         diagnosis: localCase.diagnosis,
         reportText: composed.reportText,
@@ -725,6 +908,32 @@ export async function renderReviewPage({ target }) {
     }
   }
 
+  async function shareReport() {
+    if (localCase.status !== "finalized") {
+      toast("Finalize the report before sharing.");
+      return;
+    }
+    busy = true;
+    render();
+    try {
+      const data = await api.shareCase(getEffectiveCaseId());
+      localCase = unwrapLegacyReport(data.case || { ...localCase, shareToken: data.token });
+      const token = data.token || localCase.shareToken;
+      const url = `${window.location.origin}${window.location.pathname}#/share/${encodeURIComponent(token)}`;
+      try {
+        await navigator.clipboard.writeText(url);
+        toast("Share link copied. Anyone with the link can open this report.");
+      } catch {
+        window.prompt("Copy this share link:", url);
+      }
+    } catch (err) {
+      toast(err.message || "Could not create a share link.");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
   async function toggleUrgent() {
     if (state.user?.role === "nurse") return;
     const next = !localCase.urgent;
@@ -782,11 +991,11 @@ export async function renderReviewPage({ target }) {
     const visible = findings;
     const patientName = patientDisplayName(localCase);
 
-    function findingCard(f) {
+    function findingCard(f, index) {
       const isNew = isUnsavedManual(f);
       return el("article", {
-        class: "card mb-3",
-        dataset: { id: f._id || f.id },
+        class: "rounded-xl border border-slate-200 bg-slate-50 p-4",
+        dataset: { id: f._id || f.id, findingIndex: String(index) },
       },
         el("div", { class: "flex justify-between items-start gap-2" },
           el("div", { class: "flex-1" },
@@ -794,7 +1003,7 @@ export async function renderReviewPage({ target }) {
               el("small", { class: "font-bold text-cyan-700 text-xs" },
                 isManualFinding(f)
                   ? (isNew ? "NEW FINDING (unsaved)" : "MANUAL FINDING")
-                  : `FINDING ${f._id || f.id}`
+                  : `FINDING ${index + 1}`
               ),
             ),
             edit
@@ -813,10 +1022,11 @@ export async function renderReviewPage({ target }) {
                   class: "rounded-full bg-cyan-50 px-3 py-0.5 text-cyan-700 text-sm",
                   title: confidenceTitle(f),
                 }, `${Math.round((f.confidence ?? 0) * 100)}%`),
+            f.status === "accepted" && el("b", { class: "rounded-full bg-green-50 px-3 py-0.5 text-sm text-green-700" }, "Accepted"),
             edit && isManualFinding(f) && el("button", {
               id: "delete-manual-finding",
               class: "rounded-lg border border-red-200 px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-50",
-              onClick: () => removeFinding(f._id || f.id, carouselIndex),
+              onClick: () => removeFinding(f._id || f.id, selectedIndex),
             }, "Delete")
           )
         ),
@@ -858,56 +1068,86 @@ export async function renderReviewPage({ target }) {
           class: "mt-3 w-full rounded-xl bg-cyan-600 px-3 py-2 text-sm font-semibold text-white hover:bg-cyan-700 disabled:opacity-50",
           disabled: busy,
           onClick: finishManualFinding,
-        }, "Finish this finding")
+        }, "Finish this finding"),
+        edit && !isManualFinding(f) && el("div", { class: "mt-3 flex justify-center gap-2" },
+          f.status !== "accepted" && el("button", {
+            id: `accept-finding-${f._id || f.id}`,
+            class: "min-w-[7.5rem] rounded-xl bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700",
+            onClick: () => acceptFinding(f._id || f.id),
+          }, "Accept"),
+          el("button", {
+            id: `reject-finding-${f._id || f.id}`,
+            class: "min-w-[7.5rem] rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50",
+            onClick: () => removeFinding(f._id || f.id, selectedIndex),
+          }, "Reject")
+        )
       );
     }
 
-    // Findings shown one at a time with prev/next and dot indicators, so a
-    // long list of AI findings doesn't push the report off the screen.
-    function findingsCarousel(items) {
-      if (carouselIndex > items.length - 1) carouselIndex = items.length - 1;
-      if (carouselIndex < 0) carouselIndex = 0;
+    // Point-form list of every finding, with the selected row opened as the
+    // editable card so the film box, Accept/Reject, and fields stay bound.
+    function findingsPanel(items) {
+      if (selectedIndex > items.length - 1) selectedIndex = items.length - 1;
+      if (selectedIndex < 0) selectedIndex = 0;
 
-      const go = (i) => {
-        carouselIndex = (i + items.length) % items.length;
+      const select = (i) => {
+        selectedIndex = i;
         render();
       };
+
+      const active = items[selectedIndex];
 
       return el("div", {},
         el("div", { class: "flex items-center justify-between gap-2" },
           el("b", { class: "text-slate-900" }, "Findings"),
           el("span", { class: "text-xs font-semibold text-slate-500" },
-            `${carouselIndex + 1} of ${items.length}`
+            `${items.length} ${items.length === 1 ? "finding" : "findings"}`
           )
         ),
 
-        el("div", { class: "mt-3 flex items-stretch gap-2" },
-          el("button", {
-            class: "shrink-0 rounded-xl border border-slate-300 px-2 text-slate-600 hover:bg-slate-50 disabled:opacity-40",
-            disabled: items.length < 2,
-            title: "Previous finding",
-            onClick: () => go(carouselIndex - 1),
-          }, svgIcon("arrow-left", { size: 16 })),
-
-          el("div", { class: "min-w-0 flex-1" }, findingCard(items[carouselIndex])),
-
-          el("button", {
-            class: "shrink-0 rounded-xl border border-slate-300 px-2 text-slate-600 hover:bg-slate-50 disabled:opacity-40 rotate-180",
-            disabled: items.length < 2,
-            title: "Next finding",
-            onClick: () => go(carouselIndex + 1),
-          }, svgIcon("arrow-left", { size: 16 }))
+        el("ul", {
+          id: "findings-list",
+          class: "mt-3 max-h-64 overflow-y-auto divide-y divide-slate-100 rounded-xl border border-slate-200",
+        },
+          ...items.map((f, i) => {
+            const selected = i === selectedIndex;
+            const isNew = isUnsavedManual(f);
+            const meta = findingPointMeta(f);
+            return el("li", {},
+              el("button", {
+                type: "button",
+                class: `flex w-full items-start gap-2 px-3 py-2.5 text-left transition-colors ${
+                  selected ? "bg-cyan-50" : "bg-white hover:bg-slate-50"
+                }`,
+                title: `${i + 1}. ${f.label || "Finding"}`,
+                "aria-current": selected ? "true" : "false",
+                onClick: () => select(i),
+              },
+                el("span", {
+                  class: `mt-0.5 w-5 shrink-0 text-sm font-bold ${selected ? "text-cyan-700" : "text-slate-400"}`,
+                }, `${i + 1}.`),
+                el("span", { class: "min-w-0 flex-1" },
+                  el("span", { class: "flex items-start justify-between gap-2" },
+                    el("span", { class: "font-semibold text-slate-900" }, f.label || "Finding"),
+                    el("span", { class: "flex shrink-0 flex-wrap justify-end gap-1" },
+                      isManualFinding(f)
+                        ? el("b", { class: "rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600" },
+                            isNew ? "New" : "Manual")
+                        : el("b", { class: "rounded-full bg-cyan-50 px-2 py-0.5 text-[11px] font-semibold text-cyan-700" },
+                            `${Math.round((f.confidence ?? 0) * 100)}%`),
+                      f.status === "accepted" && el("b", {
+                        class: "rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-semibold text-green-700",
+                      }, "Accepted")
+                    )
+                  ),
+                  meta ? el("span", { class: "mt-0.5 block text-sm text-slate-500" }, meta) : null
+                )
+              )
+            );
+          })
         ),
 
-        items.length > 1 && el("div", { class: "mt-1 flex flex-wrap justify-center gap-1.5" },
-          ...items.map((f, i) =>
-            el("button", {
-              class: `h-2.5 rounded-full transition-all ${i === carouselIndex ? "w-6 bg-cyan-600" : "w-2.5 bg-slate-300 hover:bg-slate-400"}`,
-              title: `${i + 1}. ${f.label || "Finding"}`,
-              onClick: () => go(i),
-            })
-          )
-        )
+        active && el("div", { class: "mt-3" }, findingCard(active, selectedIndex))
       );
     }
 
@@ -965,6 +1205,11 @@ export async function renderReviewPage({ target }) {
             disabled: busy || generating,
             onClick: () => download("pdf"),
           }, svgIcon("download", { size: 16 }), "PDF"),
+          canFlag && localCase.status === "finalized" && el("button", {
+            class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
+            disabled: busy,
+            onClick: shareReport,
+          }, svgIcon("share", { size: 16 }), localCase.shared || localCase.shareToken ? "Copy share link" : "Share"),
           edit && el("button", {
             class: "rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50",
             disabled: busy,
@@ -1029,7 +1274,7 @@ export async function renderReviewPage({ target }) {
                 ? el("img", { src: _imageSrc, class: "pointer-events-none block max-h-[560px] max-w-full h-auto w-auto", alt: "Chest X-ray" })
                 : el("div", { class: "pointer-events-none flex h-[320px] w-full min-w-[240px] items-center justify-center text-slate-300 text-sm" }, localCase.imageId ? "Loading image…" : "No image"),
               (() => {
-                const active = visible[carouselIndex];
+                const active = visible[selectedIndex];
                 if (!showBoxes || !hasBbox(active)) return null;
                 return el("div", {
                   class: "pointer-events-none absolute border-2 border-yellow-300 bg-yellow-300/25",
@@ -1042,7 +1287,7 @@ export async function renderReviewPage({ target }) {
                   },
                   title: active.label,
                 },
-                  el("span", { class: "absolute -top-5 left-0 bg-black px-1 text-xs text-white" }, `F${carouselIndex + 1}`)
+                  el("span", { class: "absolute -top-5 left-0 bg-black px-1 text-xs text-white" }, `F${selectedIndex + 1}`)
                 );
               })()
             )
@@ -1064,7 +1309,7 @@ export async function renderReviewPage({ target }) {
                 )
               )
             : el("div", { class: "card" },
-                findingsCarousel(visible),
+                findingsPanel(visible),
                 edit && el("button", {
                   class: "mt-2 w-full rounded-xl border border-cyan-600 px-3 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50",
                   onClick: addFinding,
@@ -1104,6 +1349,17 @@ export async function renderReviewPage({ target }) {
   }
 
   await refreshFromServer();
+  if (signal.aborted || leaving) return;
   if (localCase && !isGenerating(localCase)) fillFromLocalParser();
+  window.addEventListener("focus", () => {
+    if (!signal.aborted) refreshFromServer();
+  }, { signal });
+  window.addEventListener("message", (ev) => {
+    if (signal.aborted) return;
+    const ids = [localCase?.caseId, localCase?._id].filter(Boolean).map(String);
+    if (ev?.data?.type === "radassist-case-updated" && ids.includes(String(ev.data.caseId || ""))) {
+      refreshFromServer();
+    }
+  }, { signal });
   render();
 }

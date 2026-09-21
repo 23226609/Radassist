@@ -1,12 +1,13 @@
 # Summarising findings with Azure AI
 
-The review page shows findings as cards in a carousel. By default those cards
-come from a regex parser in `src/components/review.js`, which splits the report
-on numbered sections. That works, but it is literal: it produces one card per
-sentence and the card titles are whole sentences.
+The review page shows findings as a point-form list, with the selected row
+opened as an editable card. By default those cards come from a regex parser
+in `src/components/review.js`, which splits the report on numbered sections.
+That works, but it is literal: it produces one finding per sentence and the
+titles are whole sentences.
 
-This page sets up Azure OpenAI to do the summarising instead, so the carousel
-shows a handful of grouped cards with short clinical titles.
+This page sets up Azure OpenAI to do the summarising instead, so the list
+shows a handful of grouped findings with short clinical titles.
 
 Azure is **optional**. With nothing configured the app keeps using the local
 parser, so the project still runs on a laptop with no Azure account.

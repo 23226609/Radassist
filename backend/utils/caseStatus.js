@@ -10,7 +10,12 @@ function toPublicCase(doc, extra = {}) {
   if (o.imageId && o.imageUrl === undefined) {
     o.imageUrl = `/api/images/${o.imageId}`;
   }
-  return { ...o, ...extra };
+  const token = o.shareToken || '';
+  delete o.shareToken;
+  o.shared = Boolean(token);
+  if (extra.includeShareToken && token) o.shareToken = token;
+  const { includeShareToken, ...rest } = extra;
+  return { ...o, ...rest };
 }
 
 function statusFilter(status) {

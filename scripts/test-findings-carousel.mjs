@@ -1,8 +1,8 @@
 // scripts/test-findings-carousel.mjs
 //
-// Renders the real review page into a linkedom DOM and drives the findings
-// carousel, so this exercises src/components/review.js itself rather than a
-// copy of its logic.
+// Renders the real review page into a linkedom DOM and drives the hybrid
+// findings list + selected card, so this exercises src/components/review.js
+// itself rather than a copy of its logic.
 //
 //   npm install --no-save linkedom
 //   node scripts/test-findings-carousel.mjs
@@ -124,22 +124,34 @@ await renderReviewPage({ target: root });
 
 const text = () => root.textContent.replace(/\s+/g, " ");
 const cards = () => root.querySelectorAll("article");
-const byTitle = (t) => root.querySelector(`[title="${t}"]`);
-const dots = () =>
-  [...root.querySelectorAll("button")].filter((b) => /^\d+\. /.test(b.getAttribute("title") || ""));
+const points = (scope = root) =>
+  [...scope.querySelectorAll("#findings-list button")];
+const selectedLabel = (scope = root) =>
+  scope.querySelector("article input[id^='finding-label-']")?.value
+  || scope.querySelector("article h3")?.textContent
+  || "";
 
-console.log("\n=== findings carousel ===");
+console.log("\n=== findings list + selected card ===");
 
 test("renders exactly one finding card at a time", () => {
   assert.equal(cards().length, 1, `expected 1 card, saw ${cards().length}`);
 });
 
-test("shows a position counter for the three findings", () => {
-  assert.ok(text().includes("1 of 3"), `counter missing in: ${text().slice(0, 200)}`);
+test("shows a count of all findings", () => {
+  assert.ok(text().includes("3 findings"), `count missing in: ${text().slice(0, 200)}`);
 });
 
-test("shows the first finding first", () => {
-  assert.ok(text().includes("Heart size normal"));
+test("the point-form list shows every finding at once", () => {
+  const labels = points().map((b) => b.textContent);
+  assert.equal(points().length, 3, `expected 3 list rows, saw ${points().length}`);
+  assert.ok(labels.some((t) => t.includes("Heart size normal")));
+  assert.ok(labels.some((t) => t.includes("Lungs clear")));
+  assert.ok(labels.some((t) => t.includes("Low confidence item")));
+});
+
+test("shows the first finding selected", () => {
+  assert.equal(points()[0].getAttribute("aria-current"), "true");
+  assert.equal(selectedLabel(), "Heart size normal");
 });
 
 test("shows the patient name on the view page", () => {
@@ -155,8 +167,8 @@ test("doctors can mark the case urgent", () => {
   assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Mark urgent"));
 });
 
-test("renders one navigation dot per finding", () => {
-  assert.equal(dots().length, 3, `expected 3 dots, saw ${dots().length}`);
+test("renders one list row per finding", () => {
+  assert.equal(points().length, 3, `expected 3 list rows, saw ${points().length}`);
 });
 
 test("Hide boxes removes the overlays from the film", () => {
@@ -175,44 +187,41 @@ test("Show boxes brings the overlays back", () => {
   assert.ok(root.textContent.includes("F1"));
 });
 
-test("next button advances to the second finding", () => {
-  byTitle("Next finding").dispatchEvent(new window.Event("click"));
-  assert.ok(text().includes("2 of 3"), "counter did not advance");
-  assert.ok(text().includes("Lungs clear"), "second finding not shown");
-  assert.equal(cards().length, 1, "more than one card after advancing");
-  assert.ok(root.textContent.includes("F2"), "active box should follow the card");
+test("clicking a list row selects that finding", () => {
+  points()[1].dispatchEvent(new window.Event("click"));
+  assert.equal(points()[1].getAttribute("aria-current"), "true");
+  assert.equal(selectedLabel(), "Lungs clear", "second finding not shown in the card");
+  assert.equal(cards().length, 1, "more than one card after selecting");
+  assert.ok(root.textContent.includes("F2"), "active box should follow the selected finding");
   assert.ok(!root.textContent.includes("F1"), "previous finding box should hide");
   assert.equal(root.querySelectorAll("[data-bbox]").length, 1);
 });
 
-test("previous button goes back", () => {
-  byTitle("Previous finding").dispatchEvent(new window.Event("click"));
-  assert.ok(text().includes("1 of 3"), "counter did not go back");
-  assert.ok(text().includes("Heart size normal"));
+test("clicking another row jumps to that finding", () => {
+  points()[0].dispatchEvent(new window.Event("click"));
+  assert.equal(points()[0].getAttribute("aria-current"), "true");
+  assert.equal(selectedLabel(), "Heart size normal");
 });
 
-test("previous from the first finding wraps to the last", () => {
-  byTitle("Previous finding").dispatchEvent(new window.Event("click"));
-  assert.ok(text().includes("3 of 3"), `expected wrap to 3 of 3, got: ${text().slice(0, 120)}`);
-  assert.ok(text().includes("Low confidence item"));
+test("clicking the last row selects the last finding", () => {
+  points()[2].dispatchEvent(new window.Event("click"));
+  assert.equal(points()[2].getAttribute("aria-current"), "true");
+  assert.equal(selectedLabel(), "Low confidence item");
 });
 
-test("next from the last finding wraps to the first", () => {
-  byTitle("Next finding").dispatchEvent(new window.Event("click"));
-  assert.ok(text().includes("1 of 3"), "did not wrap back to the first finding");
+test("clicking the first row returns to the first finding", () => {
+  points()[0].dispatchEvent(new window.Event("click"));
+  assert.equal(points()[0].getAttribute("aria-current"), "true");
+  assert.equal(selectedLabel(), "Heart size normal");
 });
 
-test("clicking a dot jumps straight to that finding", () => {
-  dots()[2].dispatchEvent(new window.Event("click"));
-  assert.ok(text().includes("3 of 3"));
-  assert.ok(text().includes("Low confidence item"));
-});
-
-test("Add manually opens a new card at the end of the carousel", () => {
+test("Add manually opens a new card at the end of the list", () => {
   const add = [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === "+ Add manually");
   assert.ok(add, "Add manually button missing");
   add.dispatchEvent(new window.Event("click"));
-  assert.ok(text().includes("4 of 4"), `expected 4 of 4 after add, got: ${text().slice(0, 180)}`);
+  assert.equal(points().length, 4, `expected 4 list rows after add, saw ${points().length}`);
+  assert.ok(text().includes("4 findings"), `expected 4 findings after add, got: ${text().slice(0, 180)}`);
+  assert.equal(points()[3].getAttribute("aria-current"), "true", "new finding should be selected");
   assert.ok(text().includes("NEW FINDING (unsaved)"), "new finding card not shown");
   assert.ok(text().includes("Finish this finding"), "Finish this finding button missing");
   assert.ok(root.querySelector("#delete-manual-finding"), "unsaved manual cards should have Delete");
@@ -220,7 +229,7 @@ test("Add manually opens a new card at the end of the carousel", () => {
   const label = root.querySelector("input[id^='finding-label-tmp-']");
   assert.ok(label, "new finding label input missing");
   assert.equal(label.value, "New finding");
-  assert.equal(cards().length, 1, "carousel should still show one card");
+  assert.equal(cards().length, 1, "editor should still show one card");
   assert.ok(text().includes("Manual"), "manual cards should say Manual, not a confidence %");
   assert.ok(![...root.querySelectorAll("article")].some((n) => /50%/.test(n.textContent)),
     "manual cards should not show a 50% score");
@@ -303,10 +312,12 @@ test("does not require a Summarise with Azure AI button", () => {
   assert.equal(btn, undefined, "manual Azure button should be gone — summarisation runs on page open");
 });
 
-test("findings have no Accept or Reject actions", () => {
+test("AI findings can be accepted or rejected", () => {
+  const aiDot = [...root.querySelectorAll("button")].find((b) => (b.getAttribute("title") || "").startsWith("2. "));
+  aiDot?.dispatchEvent(new window.Event("click"));
   const labels = [...root.querySelectorAll("button")].map((b) => b.textContent.trim());
-  assert.ok(!labels.includes("Accept"), "Accept should be gone");
-  assert.ok(!labels.includes("Reject"), "Reject should be gone");
+  assert.ok(labels.includes("Accept"), "Accept missing on AI finding cards");
+  assert.ok(labels.includes("Reject"), "Reject missing on AI finding cards");
 });
 
 test("the confidence threshold slider is gone", () => {
@@ -426,12 +437,13 @@ test("the remarks box sits under the findings in the right column", () => {
   });
   del.click();
   await new Promise((r) => setTimeout(r, 50));
-  test("deleting a manual finding removes it from Mongo and the carousel", () => {
+  test("deleting a manual finding removes it from Mongo and the list", () => {
     assert.ok(saved, "Delete should persist immediately");
     assert.ok(!(saved.findings || []).some((f) => f.source === "manual"),
       "deleted manual finding should not remain in the save payload");
     assert.equal((saved.findings || []).length, 3, "AI findings should stay");
-    assert.ok(tfRoot.textContent.replace(/\s+/g, " ").includes("3 of 3"));
+    assert.ok(tfRoot.textContent.replace(/\s+/g, " ").includes("3 findings"));
+    assert.equal(points(tfRoot).length, 3);
     assert.equal(tfRoot.querySelector("#delete-manual-finding"), null);
   });
 }
@@ -455,6 +467,7 @@ test("the remarks box sits under the findings in the right column", () => {
     assert.ok(box, "remarks box missing on finalized case");
     assert.ok(!box.disabled && !box.hasAttribute("readonly"), "remarks must stay writable after finalize");
     assert.ok([...finRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Save remarks"));
+    assert.ok([...finRoot.querySelectorAll("button")].some((b) => /share link|Share/i.test(b.textContent)));
     assert.ok(![...finRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Finalize & approve"));
   });
 
@@ -493,6 +506,94 @@ test("the remarks box sits under the findings in the right column", () => {
   test("marking urgent saves { urgent: true } on the case", () => {
     assert.ok(flagged, "updateCase was not called");
     assert.equal(flagged.urgent, true);
+  });
+}
+
+{
+  const rejectCase = {
+    ...structuredClone(testCase),
+    reportText: "The lungs are clear. Heart size is normal.",
+    findings: [
+      {
+        _id: "ai-lungs",
+        label: "Lungs clear",
+        sentence: "The lungs are clear.",
+        status: "pending",
+        source: "AI",
+        bbox: [10, 10, 20, 20],
+        confidence: 0.6,
+        pattern: "Other",
+      },
+    ],
+  };
+  state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+  state.cases = [rejectCase];
+  state.selectedCaseId = rejectCase.caseId;
+  api.getCase = async () => ({ case: structuredClone(rejectCase) });
+  let saved = null;
+  api.updateCase = async (_id, payload) => {
+    saved = payload;
+    return { case: { ...structuredClone(rejectCase), ...payload } };
+  };
+  const rjRoot = document.createElement("div");
+  document.body.appendChild(rjRoot);
+  await renderReviewPage({ target: rjRoot });
+  const reject = [...rjRoot.querySelectorAll("button")].find((b) => b.textContent.trim() === "Reject");
+  test("pending AI cards have Accept and Reject", () => {
+    assert.ok([...rjRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Accept"));
+    assert.ok(reject, "Reject missing");
+  });
+  reject.click();
+  await new Promise((r) => setTimeout(r, 50));
+  test("rejecting a finding removes it from the cards and the report", () => {
+    assert.ok(saved, "Reject should persist");
+    assert.equal((saved.findings || []).length, 0);
+    assert.ok(!String(saved.reportText || "").includes("The lungs are clear."));
+    assert.ok(String(saved.reportText || "").includes("Heart size is normal."));
+  });
+}
+
+{
+  const editCase = {
+    ...structuredClone(testCase),
+    reportText: "The right lower lobe shows some atelectasis. Heart size is normal.",
+    findings: [
+      {
+        _id: "ai-atelectasis",
+        label: "Mild atelectasis right lower lobe",
+        sentence: "The right lower lobe shows some atelectasis.",
+        status: "pending",
+        source: "AI",
+        location: "right lower lobe",
+        size: "",
+        pattern: "Other",
+        bbox: [10, 10, 20, 20],
+        confidence: 0.7,
+      },
+    ],
+  };
+  state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+  state.cases = [editCase];
+  state.selectedCaseId = editCase.caseId;
+  api.getCase = async () => ({ case: structuredClone(editCase) });
+  let saved = null;
+  api.updateCase = async (_id, payload) => {
+    saved = payload;
+    return { case: { ...structuredClone(editCase), ...payload } };
+  };
+  const editRoot = document.createElement("div");
+  document.body.appendChild(editRoot);
+  await renderReviewPage({ target: editRoot });
+  const loc = editRoot.querySelector("input[id^='finding-location-']");
+  loc.value = "left mid zone";
+  loc.dispatchEvent(new window.Event("input", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 700));
+  test("editing a finding rewrites that sentence in the saved report", () => {
+    assert.ok(saved, "finding edit should persist");
+    assert.equal(saved.findings[0].location, "left mid zone");
+    assert.ok(String(saved.reportText || "").includes("left mid zone"));
+    assert.ok(!String(saved.reportText || "").includes("The right lower lobe shows some atelectasis."));
+    assert.ok(String(saved.reportText || "").includes("Heart size is normal."));
   });
 }
 

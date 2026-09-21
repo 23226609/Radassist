@@ -1,6 +1,6 @@
 // scripts/test-report-export.mjs
 import assert from "node:assert";
-import { buildReportSections, buildReportPdfBytes, applyRemarksToReport, splitReportAndRemarks, composeReportText, MANUAL_FINDINGS_HEADING, parseImageMeta, fitImageBox } from "../src/lib/reportExport.js";
+import { buildReportSections, buildReportPdfBytes, applyRemarksToReport, splitReportAndRemarks, composeReportText, MANUAL_FINDINGS_HEADING, parseImageMeta, fitImageBox, removeFindingFromReport, applyFindingChangeToReport } from "../src/lib/reportExport.js";
 
 let passed = 0;
 let failed = 0;
@@ -61,6 +61,47 @@ test("clearing remarks removes them from the stored report", () => {
   const cleared = applyRemarksToReport(withNote.reportText, "   ");
   assert.equal(cleared.reportText, "Heart size normal.");
   assert.equal(cleared.remarks, "");
+});
+
+test("rejecting a finding removes its sentence from the report", () => {
+  const report = "The lungs are clear. Heart size is normal.\n\nRadiologist remarks\nCheck old films.";
+  const out = removeFindingFromReport(report, {
+    label: "Clear lungs",
+    sentence: "The lungs are clear.",
+  });
+  assert.ok(!out.reportText.includes("The lungs are clear."));
+  assert.ok(out.reportText.includes("Heart size is normal."));
+  assert.ok(out.reportText.includes("Check old films."));
+});
+
+test("rejecting a finding drops the whole report sentence, not just the label", () => {
+  const report = "The chest X-ray demonstrates clear lung fields without evidence of consolidation. Heart size is normal.";
+  const out = removeFindingFromReport(report, {
+    label: "Clear lung fields",
+    sentence: "Lungs look clear.",
+  });
+  assert.ok(!out.reportText.includes("clear lung fields"));
+  assert.ok(!out.reportText.includes("demonstrates"));
+  assert.ok(!out.reportText.includes("without evidence of consolidation"));
+  assert.ok(out.reportText.includes("Heart size is normal."));
+});
+
+test("editing a finding rewrites its sentence in the report", () => {
+  const report = "The right lower lobe shows some atelectasis. Heart size is normal.";
+  const out = applyFindingChangeToReport(report, {
+    label: "Mild atelectasis right lower lobe",
+    sentence: "The right lower lobe shows some atelectasis.",
+    location: "right lower lobe",
+  }, {
+    label: "Mild atelectasis right lower lobe",
+    location: "left mid zone",
+    size: "2 cm",
+    pattern: "Consolidation",
+  });
+  assert.ok(out.reportText.includes("Mild atelectasis right lower lobe in left mid zone, 2 cm, consolidation."));
+  assert.ok(!out.reportText.includes("The right lower lobe shows some atelectasis."));
+  assert.ok(out.reportText.includes("Heart size is normal."));
+  assert.equal(out.sentence, "Mild atelectasis right lower lobe in left mid zone, 2 cm, consolidation.");
 });
 
 test("writes a real PDF header and the report body", () => {

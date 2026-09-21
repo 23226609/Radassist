@@ -2,7 +2,7 @@
 //
 // Turns a free-text radiology report (and, when we have it, the X-ray itself)
 // into a short list of structured findings using Azure OpenAI, so the review
-// page carousel shows a few clean cards with boxes over the right anatomy.
+// page list shows a few clean cards with boxes over the right anatomy.
 //
 // Configuration (backend/.env) — see docs/azure-findings.md for setup:
 //   AZURE_OPENAI_ENDPOINT    https://<resource>.openai.azure.com
@@ -59,6 +59,9 @@ Rules:
   stock normal phrase.
 - At most 6 findings, ordered most clinically important first.
 - Group related observations into ONE finding. Never emit one finding per sentence.
+- Never emit two findings with the same label.
+- A unilateral white-out / opaque hemithorax is ONE finding. Do not add a
+  second card that only says the opposite lung is clear; put that in "detail".
 - "label" is a short clinical phrase under 60 characters, e.g. "Clear lung fields" or "Cardiomegaly".
 - "detail" is one sentence quoting what the report says.
 - "location" is the anatomy in the report's own words, or "" if it does not say.
@@ -249,7 +252,21 @@ function fallbackDiagnosis(reportText) {
   return '';
 }
 
+function whiteoutDiagnosis(reportText) {
+  const t = String(reportText || '');
+  const m = t.match(
+    /\b(?:white-?out|complete opacification|opacif(?:ied|ication))\b[^.]{0,80}?\b(right|left)\b|\b(right|left)\b[^.]{0,40}?\b(?:hemithorax|lung)\b[^.]{0,40}?\b(?:white-?out|opaque|opacif)/i
+  );
+  if (!m) return '';
+  const side = String(m[1] || m[2] || '').toLowerCase();
+  if (side === 'right') return 'Right hemithorax white-out';
+  if (side === 'left') return 'Left hemithorax white-out';
+  return '';
+}
+
 function pickDiagnosis(azureDiagnosis, findings = [], reportText = '') {
+  const whiteout = whiteoutDiagnosis(reportText);
+  if (whiteout) return whiteout;
   const azure = parseDiagnosis(azureDiagnosis);
   const impression = impressionFromReport(reportText);
   const labels = (Array.isArray(findings) ? findings : [])

@@ -11,6 +11,7 @@ export const state = {
   cases: [],          // all cases cached in memory
   selectedCaseId: null,
   selectedPatientId: null,
+  shareToken: null,
   pendingFilter: { status: "all", q: "", urgentOnly: false },
   loading: false,
   errorMsg: "",
@@ -59,6 +60,8 @@ export function parseHash(hash = currentHash()) {
     return { page: "cases", selectedCaseId: null };
   }
   if (head === "review" && parts[1]) return { page: "review", selectedCaseId: parts[1] };
+  if (head === "share" && parts[1]) return { page: "share", shareToken: parts.slice(1).join("/") };
+  if (head === "users") return { page: "users" };
   if (head === "new") return { page: "new" };
   return { page: "dashboard" };
 }
@@ -83,6 +86,11 @@ export function hashFor(s = state) {
       return s.selectedCaseId
         ? `#/review/${encodeURIComponent(s.selectedCaseId)}`
         : "#/cases";
+    case "share":
+      return s.shareToken
+        ? `#/share/${encodeURIComponent(s.shareToken)}`
+        : "#/dashboard";
+    case "users": return "#/users";
     case "audit": return "#/audit";
     default: return "#/dashboard";
   }
@@ -94,10 +102,12 @@ export function applyHash() {
   const patch = { page };
   if (next.selectedCaseId !== undefined) patch.selectedCaseId = next.selectedCaseId;
   if (next.selectedPatientId !== undefined) patch.selectedPatientId = next.selectedPatientId;
+  if (next.shareToken !== undefined) patch.shareToken = next.shareToken;
   if (
     page === state.page
     && (next.selectedCaseId === undefined || next.selectedCaseId === state.selectedCaseId)
     && (next.selectedPatientId === undefined || next.selectedPatientId === state.selectedPatientId)
+    && (next.shareToken === undefined || next.shareToken === state.shareToken)
   ) {
     return false;
   }

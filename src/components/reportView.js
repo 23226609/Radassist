@@ -6,7 +6,7 @@
 import { el, mount } from "../dom.js";
 import { api } from "../api.js";
 import { state, toast } from "../state.js";
-import { unwrapLegacyReport } from "./review.js";
+import { unwrapLegacyReport, resyncMachineFindings } from "./review.js";
 import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, applyRemarksToReport } from "../lib/reportExport.js";
 import { svgIcon } from "./icons.js";
 import { reportPopupUrl, isReportPopup, reportPopupCaseId } from "../lib/reportPopup.js";
@@ -46,6 +46,7 @@ export async function renderReportViewPage({ target }) {
     await load();
   } catch (err) {
     error = err.message || "Could not load the report.";
+    stored = null;
   }
 
   let saveTimer = null;
@@ -56,8 +57,14 @@ export async function renderReportViewPage({ target }) {
     if (n) n.textContent = text;
   }
 
+  function notifyOpener() {
+    try {
+      window.opener?.postMessage({ type: "radassist-case-updated", caseId }, "*");
+    } catch { /* popup tests / no opener */ }
+  }
+
   function queuePersist() {
-    if (!canRemark()) return;
+    if (!stored || !canRemark()) return;
     hintMongo("Saving to MongoDB…");
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
@@ -68,6 +75,8 @@ export async function renderReportViewPage({ target }) {
   async function persist({ silent } = {}) {
     if (!stored || !canRemark()) return;
     clearTimeout(saveTimer);
+    const typedBody = draftBody;
+    const typedRemarks = remarks;
     const run = async () => {
       if (!silent) {
         busy = true;
@@ -76,21 +85,32 @@ export async function renderReportViewPage({ target }) {
       try {
         hintMongo("Saving to MongoDB…");
         const next = canEdit()
-          ? applyRemarksToReport(draftBody, remarks)
-          : { remarks: String(remarks || "").trim() };
+          ? applyRemarksToReport(typedBody, typedRemarks)
+          : { remarks: String(typedRemarks || "").trim() };
         const updated = await api.updateCase(caseId, next);
         stored = unwrapLegacyReport(updated.case || { ...stored, ...next });
+        if (!silent && canEdit()) {
+          hintMongo("Updating finding cards…");
+          stored = await resyncMachineFindings(caseId, stored);
+        }
         const split = splitReportAndRemarks(stored.reportText || "");
-        draftBody = split.body;
-        remarks = stored.remarks || next.remarks || remarks;
+        if (draftBody === typedBody) draftBody = split.body;
+        if (remarks === typedRemarks) remarks = stored.remarks || next.remarks || remarks;
         hintMongo(canEdit() ? "Report saved in MongoDB." : "Notes saved in MongoDB.");
         if (!silent) {
           toast(canEdit()
-            ? "Report saved in MongoDB."
+            ? "Report saved. Finding cards now match this draft."
             : "Remarks saved. The finalized report was not changed.");
+          notifyOpener();
         }
       } catch (err) {
         hintMongo("");
+        if (err?.status === 404) {
+          stored = null;
+          error = "This case is no longer available.";
+          paint();
+          return;
+        }
         toast(err.message || "Could not save.");
         if (silent) throw err;
       } finally {
@@ -192,7 +212,7 @@ export async function renderReportViewPage({ target }) {
             canRemark() && el("p", { class: "mt-3 text-xs text-slate-500" },
               stored?.status === "finalized"
                 ? "The report is locked. Remarks are saved as notes only and are not written into the report, Word, or PDF."
-                : "Every edit is saved to MongoDB on this case (reportText). Downloads always use that latest saved copy."
+                : "Typing saves the draft. Click Save report to add, update, or remove finding cards from what you changed."
             ),
             canRemark() && el("p", { id: "mongo-report-status", class: "mt-1 text-xs font-medium text-cyan-700" })
           )

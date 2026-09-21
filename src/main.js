@@ -5,13 +5,15 @@ import { state, setState, setPage, subscribe, applyHash, parseHash } from "./sta
 import { api, getSession } from "./api.js";
 import { Shell } from "./components/header.js";
 import { renderLoginPage, renderRegisterPage } from "./components/login.js";
-import { renderDashboardPage } from "./components/dashboard.js";
+import { renderDashboardPage, stopDashboardWatch } from "./components/dashboard.js";
 import { renderNewCasePage } from "./components/newCase.js";
-import { renderReviewPage } from "./components/review.js";
+import { renderReviewPage, stopReviewWatch } from "./components/review.js";
 import { renderAuditPage } from "./components/audit.js";
 import { renderPatientsPage, renderPatientPage } from "./components/patients.js";
 import { renderNewPatientPage } from "./components/newPatient.js";
 import { renderCasesPage, renderCasePage } from "./components/cases.js";
+import { renderUsersPage } from "./components/users.js";
+import { renderSharePage } from "./components/shareView.js";
 import { isReportPopup, renderReportViewPage } from "./components/reportView.js";
 import { el, mount } from "./dom.js";
 import { stopAnalysisWatch } from "./lib/analysisJob.js";
@@ -34,11 +36,28 @@ function routeFromHash() {
     page: route.page,
     selectedCaseId: route.selectedCaseId ?? null,
     selectedPatientId: route.selectedPatientId ?? null,
+    shareToken: route.shareToken ?? null,
   };
 }
 
 async function bootstrap() {
+  const route = parseHash();
   const session = getSession();
+  if (route.page === "share") {
+    setState({
+      token: session?.token || null,
+      user: session?.user || null,
+      page: "share",
+      shareToken: route.shareToken || null,
+    }, { replaceHash: true });
+    if (session?.token) {
+      try {
+        const me = await api.me();
+        setState({ user: me.user }, { skipHash: true });
+      } catch { /* public share still works */ }
+    }
+    return;
+  }
   if (session?.token) {
     const route = routeFromHash();
     setState({
@@ -61,6 +80,15 @@ async function bootstrap() {
 }
 
 function render() {
+  if (state.page === "share") {
+    const target = el("div");
+    mount(app,
+      el("div", { class: "min-h-screen bg-slate-50 text-slate-900" }, target)
+    );
+    renderSharePage({ target });
+    return;
+  }
+
   // Login / Register are full-page views.
   if (!state.user) {
     if (state.page === "register") renderRegisterPage();
@@ -82,7 +110,11 @@ function render() {
     return;
   }
 
-  if (state.user?.role === "nurse" && state.page === "audit") {
+  if (state.user?.role === "nurse" && (state.page === "audit" || state.page === "users")) {
+    setPage("dashboard");
+    return;
+  }
+  if (state.user?.role !== "admin" && state.page === "users") {
     setPage("dashboard");
     return;
   }
@@ -99,12 +131,16 @@ function render() {
     case "new-patient": pageNode = "new-patient";  break;
     case "cases":     pageNode = "cases";     break;
     case "case":      pageNode = "case";      break;
+    case "users":     pageNode = "users";     break;
     default:          pageNode = "dashboard";
   }
 
   const shell = Shell({ onLogout: logout });
   mount(app, shell.root);
   const target = shell.main;
+
+  if (pageNode !== "dashboard") stopDashboardWatch();
+  if (pageNode !== "review") stopReviewWatch();
 
   // Now mount the page content into target.
   if (pageNode === "dashboard") {
@@ -125,6 +161,8 @@ function render() {
     renderCasesPage({ target });
   } else if (pageNode === "case") {
     renderCasePage({ target });
+  } else if (pageNode === "users") {
+    renderUsersPage({ target });
   }
 }
 
@@ -136,7 +174,7 @@ try {
     if (isReportPopup()) return;
     const next = parseHash();
     if (!state.user) {
-      if (next.page === "register" || next.page === "login") applyHash();
+      if (next.page === "register" || next.page === "login" || next.page === "share") applyHash();
       return;
     }
     if (next.page === "login" || next.page === "register") return;
