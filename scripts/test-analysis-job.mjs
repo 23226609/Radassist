@@ -37,9 +37,11 @@ console.log("\n=== analysis job ===");
 test("maps completed to pending approve", () => {
   assert.equal(caseStatus("completed"), "pending_approve");
   assert.equal(statusLabel("completed"), "Pending approve");
-  assert.equal(statusLabel("pending"), "Generating");
+  assert.equal(statusLabel("pending"), "Awaiting AI");
   assert.equal(statusLabel("finalized"), "Finalized");
-  assert.equal(isGenerating({ status: "pending" }), true);
+  assert.equal(isGenerating({ status: "pending" }), false);
+  assert.equal(isGenerating({ status: "pending", analysisState: "running", diagnosis: "Generating report…" }), true);
+  assert.equal(isGenerating({ status: "pending", diagnosis: "Generating report…" }), true);
   assert.equal(isAwaitingApprove({ status: "completed" }), true);
 });
 
@@ -51,6 +53,8 @@ test("maps completed to pending approve", () => {
       case: {
         caseId: "CASE-JOB-1",
         status: calls === 1 ? "pending" : "pending_approve",
+        analysisState: calls === 1 ? "running" : "done",
+        diagnosis: calls === 1 ? "Generating report…" : "AI report",
       },
     };
   };

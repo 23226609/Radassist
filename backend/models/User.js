@@ -4,7 +4,7 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
-const ROLES = ['doctor', 'nurse', 'admin'];
+const { ROLES } = require('../utils/roles');
 
 const userSchema = new mongoose.Schema(
   {

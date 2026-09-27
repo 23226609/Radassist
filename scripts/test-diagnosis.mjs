@@ -164,7 +164,7 @@ const leftover = {
   reportText: "Chest X-Ray Report\n\nThe lungs are clear.",
 };
 
-state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+state.user = { role: "radiologist", userId: "u1", name: "Dr Test" };
 api.listCases = async () => ({ cases: [structuredClone(leftover)] });
 api.stats = async () => ({ stats: { totalCases: 1, finalizedCases: 0, pendingCases: 0 } });
 let asked = null;

@@ -59,6 +59,18 @@ const caseSchema = new mongoose.Schema(
     // the end of reportText when they save, so downloads include them.
     remarks: { type: String, default: '' },
     findings: { type: [findingSchema], default: [] },
+    // none = film stored, AI not started; running = CURV in progress; done = draft ready.
+    analysisState: { type: String, enum: ['none', 'running', 'done'], default: 'none' },
+    editLog: {
+      type: [{
+        at: { type: Date, default: Date.now },
+        userId: { type: String, default: '' },
+        userName: { type: String, default: '' },
+        kind: { type: String, enum: ['ai', 'manual'], default: 'manual' },
+        summary: { type: String, default: '' },
+      }],
+      default: [],
+    },
     status: { type: String, enum: STATUS, default: 'pending' },
     urgent: { type: Boolean, default: false },
     // Ownership / audit

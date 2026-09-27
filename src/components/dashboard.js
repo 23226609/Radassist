@@ -10,9 +10,10 @@ import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
 import { urgentBadge, patientDisplayName, doctorInCharge } from "../lib/tags.js";
 import { PAGE, searchField, statusChips, metricCard, emptyState, pageHeading, sortWorklist } from "../lib/ui.js";
-import { statusLabel, statusBadgeClass, isGenerating, caseStatus } from "../lib/caseStatus.js";
+import { statusLabel, statusBadgeClass, isGenerating, isAwaitingAi, caseStatus } from "../lib/caseStatus.js";
 import { CASES_CHANGED } from "../lib/analysisJob.js";
 import { forgetCases } from "../lib/records.js";
+import { canUpload, canEditReport, isAdmin as roleIsAdmin } from "../lib/roles.js";
 
 let dashboardLive = null;
 
@@ -33,11 +34,11 @@ export function stopDashboardWatch() {
 const diagnosisRequested = new Set();
 const diagnosisPending = new Set();
 
-function statusBadge(s) {
+function statusBadge(c) {
   return el(
     "span",
-    { class: `rounded-full px-2 py-0.5 text-xs font-bold ${statusBadgeClass(s)}` },
-    statusLabel(s)
+    { class: `rounded-full px-2 py-0.5 text-xs font-bold ${statusBadgeClass(c.status, c)}` },
+    statusLabel(c.status, c)
   );
 }
 
@@ -58,7 +59,7 @@ export async function renderDashboardPage({ target }) {
   let online = null;
   let page = 1;
   const selected = new Set();
-  const isAdmin = () => state.user?.role === "admin";
+  const isAdmin = () => roleIsAdmin(state.user);
   const caseIdOf = (c) => c.caseId || c._id;
 
   async function refresh() {
@@ -93,7 +94,7 @@ export async function renderDashboardPage({ target }) {
   window.addEventListener(CASES_CHANGED, () => refresh(), { signal });
 
   async function fillDiagnoses(list) {
-    if (!["doctor", "admin"].includes(state.user?.role)) return;
+    if (!canEditReport(state.user)) return;
     const todo = (list || []).filter((c) => {
       const id = c.caseId || c._id;
       return id && !isGenerating(c) && needsAzureDiagnosis(c) && !diagnosisRequested.has(id);
@@ -172,13 +173,13 @@ export async function renderDashboardPage({ target }) {
       return el(
         "tr",
         {
-          class: "border-t cursor-pointer hover:bg-cyan-50/60",
+          class: "border-t cursor-pointer hover:bg-blue-50/60",
           onClick: () => { state.selectedCaseId = id; setPage("case"); },
         },
         isAdmin() ? rowCheckbox(id, selected, (rowId, on) => { toggleSelected(selected, rowId, on); render(); }) : null,
         el("td", { class: "p-4 font-bold text-slate-900" },
           el("button", {
-            class: "hover:text-cyan-700 hover:underline",
+            class: "hover:text-ha-blue hover:underline",
             onClick: (e) => {
               e.stopPropagation();
               state.selectedPatientId = c.patientId;
@@ -191,14 +192,14 @@ export async function renderDashboardPage({ target }) {
         ),
         el("td", { class: "text-slate-600" }, c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : ""),
         el("td", { class: "space-x-1" },
-          statusBadge(c.status),
+          statusBadge(c),
           c.urgent ? urgentBadge({ class: "ml-1" }) : null
         ),
         el("td", { class: "text-slate-700" }, doctorInCharge(c)),
         el("td", { class: "max-w-md" }, diagnosisCell(c)),
         el("td", { class: "space-x-1 whitespace-nowrap" },
           el("button", {
-            class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-cyan-700 hover:bg-cyan-50 text-sm",
+            class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-ha-blue hover:bg-blue-50 text-sm",
             onClick: (e) => { e.stopPropagation(); state.selectedCaseId = id; setPage("case"); },
           }, svgIcon("eye", { size: 16 }), "View"),
           el("button", {
@@ -207,6 +208,10 @@ export async function renderDashboardPage({ target }) {
               e.stopPropagation();
               if (isGenerating(c)) {
                 toast("The report is still generating.");
+                return;
+              }
+              if (isAwaitingAi(c) && !canEditReport(state.user)) {
+                toast("Waiting for the radiologist to run AI.");
                 return;
               }
               state.selectedCaseId = id;
@@ -228,9 +233,9 @@ export async function renderDashboardPage({ target }) {
       pageHeading({
         title: "Worklist",
         subtitle: "Today’s reporting queue. Urgent stays at the top. Open Review for the film.",
-        actions: state.user?.role !== "nurse"
+        actions: canUpload(state.user)
           ? el("button", {
-              class: "inline-flex items-center gap-2 rounded-xl bg-cyan-600 px-4 py-2 font-semibold text-white hover:bg-cyan-700",
+              class: "inline-flex items-center gap-2 rounded-xl bg-ha-blue px-4 py-2 font-semibold text-white hover:bg-[#074f85]",
               onClick: () => setPage("new"),
             }, svgIcon("plus", { size: 16 }), "New case")
           : null,
@@ -243,7 +248,7 @@ export async function renderDashboardPage({ target }) {
 
       el("div", { class: "mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4" },
         metricCard({
-          n: totalCases, label: "Total cases", tone: "bg-cyan-600",
+          n: totalCases, label: "Total cases", tone: "bg-ha-blue",
           active: status === "all" && !urgentOnly,
           onClick: () => setFilter("all"),
         }),
@@ -274,11 +279,12 @@ export async function renderDashboardPage({ target }) {
               onSearch: () => { page = 1; selected.clear(); refresh(); },
             }),
             el("select", {
-              class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600",
+              class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-ha-blue",
               value: status === "urgent" ? "all" : status,
               onChange: (e) => setFilter(e.target.value),
             },
               el("option", { value: "all" }, "All statuses"),
+              el("option", { value: "pending" }, "Awaiting AI"),
               el("option", { value: "pending_approve" }, "Pending approve"),
               el("option", { value: "finalized" }, "Finalized")
             ),
@@ -304,7 +310,7 @@ export async function renderDashboardPage({ target }) {
               icon: "file-text",
               title: "No cases match this filter",
               hint: "Try another status, or add a new X-ray case.",
-              actionLabel: state.user?.role !== "nurse" ? "New case" : null,
+              actionLabel: canUpload(state.user) ? "New case" : null,
               onAction: () => setPage("new"),
             })
           : el("div", {},
@@ -313,7 +319,7 @@ export async function renderDashboardPage({ target }) {
                   el("thead", { class: "bg-slate-50 text-slate-600" },
                     el("tr", {},
                       isAdmin() ? headerCheckbox(pageIds, selected, (on) => { togglePage(selected, pageIds, on); render(); }) : null,
-                      ["Patient ID", "Date", "Status", "Doctor", "Diagnosis", "Actions"].map((h) =>
+                      ["Patient ID", "Date", "Status", "Uploaded by", "Diagnosis", "Actions"].map((h) =>
                         el("th", { class: "p-4" }, h)
                       )
                     )

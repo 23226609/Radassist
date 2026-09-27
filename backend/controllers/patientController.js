@@ -7,6 +7,7 @@ const ApiError = require('../utils/ApiError');
 const catchAsync = require('../utils/catchAsync');
 const addAuditLog = require('../utils/auditLogger');
 const { nameFieldsFrom } = require('../utils/patientName');
+const { normalizeRole } = require('../utils/roles');
 const {
   escapeRegex,
   findPatientRecord,
@@ -74,6 +75,16 @@ function summarisePatient(record, grouped = {}, cases = []) {
     age: record?.age || grouped.age || '',
     sex: record?.sex || grouped.sex || '',
     history: record?.history || grouped.history || '',
+    medicines: record?.medicines || '',
+    heartRate: record?.heartRate || '',
+    labResults: record?.labResults || '',
+    ward: record?.ward || '',
+    bed: record?.bed || '',
+    admissionStatus: record?.admissionStatus || '',
+    observations: Array.isArray(record?.observations) ? record.observations : [],
+    labOrders: Array.isArray(record?.labOrders) ? record.labOrders : [],
+    medOrders: Array.isArray(record?.medOrders) ? record.medOrders : [],
+    careNotes: Array.isArray(record?.careNotes) ? record.careNotes : [],
     remarks: record?.remarks || '',
     lastDiagnosis: lastDiagnosisOf(grouped, cases),
     lastStatus: grouped.lastStatus || cases[0]?.status || '',
@@ -204,11 +215,11 @@ exports.listPatients = catchAsync(async (req, res) => {
 });
 
 exports.createPatient = catchAsync(async (req, res, next) => {
-  if (req.user.role === 'nurse') {
-    return next(ApiError.forbidden('Nurses cannot add patients.'));
+  if (normalizeRole(req.user.role) === 'doctor') {
+    return next(ApiError.forbidden('Doctors cannot add patients.'));
   }
 
-  const { patientId, age, sex, history } = req.body || {};
+  const { patientId, age, sex, history, medicines, heartRate, labResults } = req.body || {};
   const names = nameFieldsFrom(req.body || {});
   if (!names.firstName || !names.lastName) {
     return next(ApiError.badRequest('First name and last name are required.'));
@@ -238,6 +249,9 @@ exports.createPatient = catchAsync(async (req, res, next) => {
     age: age != null ? String(age).trim() : '',
     sex: sexValue,
     history: history != null ? String(history) : '',
+    medicines: medicines != null ? String(medicines) : '',
+    heartRate: heartRate != null ? String(heartRate) : '',
+    labResults: labResults != null ? String(labResults) : '',
     remarks: '',
   });
 
@@ -259,7 +273,10 @@ exports.getPatient = catchAsync(async (req, res, next) => {
   const patientId = String(req.params.id || '').trim();
   if (!patientId) return next(ApiError.badRequest('Patient id is required.'));
 
-  const cases = await Case.find(caseFilter(patientId)).sort({ createdAt: -1 });
+  let cases = await Case.find(caseFilter(patientId)).sort({ createdAt: -1 });
+  if (normalizeRole(req.user.role) === 'doctor') {
+    cases = cases.filter((c) => c.status === 'finalized');
+  }
   let record = await findPatientRecord(patientId);
   if (!cases.length && !record) {
     return next(ApiError.notFound(`Patient ${patientId} not found`));
@@ -281,8 +298,8 @@ exports.getPatient = catchAsync(async (req, res, next) => {
 });
 
 exports.updatePatient = catchAsync(async (req, res, next) => {
-  if (req.user.role === 'nurse') {
-    return next(ApiError.forbidden('Nurses cannot edit patient notes.'));
+  if (normalizeRole(req.user.role) === 'doctor') {
+    return next(ApiError.forbidden('Doctors cannot edit patient charts.'));
   }
 
   const patientId = String(req.params.id || '').trim();
@@ -304,7 +321,11 @@ exports.updatePatient = catchAsync(async (req, res, next) => {
     });
   }
 
-  const { history, remarks, age, sex, name, firstName, middleName, lastName } = req.body || {};
+  const {
+    history, remarks, age, sex, name, firstName, middleName, lastName,
+    medicines, heartRate, labResults, ward, bed, admissionStatus,
+    observations, labOrders, medOrders, careNotes,
+  } = req.body || {};
   if (firstName !== undefined || middleName !== undefined || lastName !== undefined || name !== undefined) {
     const names = nameFieldsFrom({
       firstName: firstName !== undefined ? firstName : record.firstName,
@@ -318,6 +339,18 @@ exports.updatePatient = catchAsync(async (req, res, next) => {
     record.name = names.name;
   }
   if (history !== undefined) record.history = String(history);
+  if (medicines !== undefined) record.medicines = String(medicines);
+  if (heartRate !== undefined) record.heartRate = String(heartRate);
+  if (labResults !== undefined) record.labResults = String(labResults);
+  if (ward !== undefined) record.ward = String(ward);
+  if (bed !== undefined) record.bed = String(bed);
+  if (admissionStatus !== undefined && ['', 'reserved', 'admitted', 'discharged'].includes(admissionStatus)) {
+    record.admissionStatus = admissionStatus;
+  }
+  if (Array.isArray(observations)) record.observations = observations.slice(-40);
+  if (Array.isArray(labOrders)) record.labOrders = labOrders.slice(-40);
+  if (Array.isArray(medOrders)) record.medOrders = medOrders.slice(-40);
+  if (Array.isArray(careNotes)) record.careNotes = careNotes.slice(-40);
   if (remarks !== undefined) record.remarks = String(remarks);
   if (age !== undefined) record.age = String(age);
   if (sex !== undefined && ['Female', 'Male', 'Other', ''].includes(sex)) record.sex = sex;

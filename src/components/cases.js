@@ -12,6 +12,7 @@ import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButt
 import { urgentBadge, patientDisplayName, doctorInCharge, isDoctorInCharge, doctorFilterKey, doctorsInChargeOptions } from "../lib/tags.js";
 import { PAGE, searchField, statusChips, emptyState, pageHeading, sortWorklist } from "../lib/ui.js";
 import { statusLabel, statusBadgeClass, isGenerating } from "../lib/caseStatus.js";
+import { canUpload, canEditReport, isAdmin as roleIsAdmin } from "../lib/roles.js";
 import { CASES_CHANGED } from "../lib/analysisJob.js";
 import { forgetCases } from "../lib/records.js";
 
@@ -54,8 +55,8 @@ export async function renderCasesPage({ target }) {
   let error = "";
   let page = 1;
   const selected = new Set();
-  const isAdmin = () => state.user?.role === "admin";
-  const canFilterMine = () => state.user?.role === "doctor" || state.user?.role === "admin";
+  const isAdmin = () => roleIsAdmin(state.user);
+  const canFilterMine = () => canEditReport(state.user);
   const caseIdOf = (c) => c.caseId || c._id;
 
   if (target._stopCaseWatch) target._stopCaseWatch();
@@ -131,9 +132,9 @@ export async function renderCasesPage({ target }) {
       pageHeading({
         title: "Case archive",
         subtitle: "Every stored study — case ID, film, and report. The worklist is the daily queue.",
-        actions: state.user?.role !== "nurse"
+        actions: canUpload(state.user)
           ? el("button", {
-              class: "inline-flex items-center gap-2 rounded-xl bg-cyan-600 px-4 py-2 font-semibold text-white hover:bg-cyan-700",
+              class: "inline-flex items-center gap-2 rounded-xl bg-ha-blue px-4 py-2 font-semibold text-white hover:bg-[#074f85]",
               onClick: () => setPage("new"),
             }, svgIcon("plus", { size: 16 }), "New case")
           : null,
@@ -149,7 +150,7 @@ export async function renderCasesPage({ target }) {
             }),
             el("select", {
               id: "filter-doctor",
-              class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600",
+              class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-ha-blue",
               value: doctorFilter,
               "aria-label": "Doctor in charge",
               onChange: (e) => setDoctorFilter(e.target.value),
@@ -191,7 +192,7 @@ export async function renderCasesPage({ target }) {
                 : doctorFilter
                 ? "Choose another doctor, or All doctors, to see more studies."
                 : "Clear the search, or add a new X-ray from the worklist.",
-              actionLabel: state.user?.role !== "nurse" ? "New case" : null,
+              actionLabel: canUpload(state.user) ? "New case" : null,
               onAction: () => setPage("new"),
             })
           : (() => {
@@ -212,7 +213,7 @@ export async function renderCasesPage({ target }) {
                     el("tbody", {},
                       ...paged.items.map((c) =>
                         el("tr", {
-                          class: "border-t cursor-pointer hover:bg-cyan-50/60",
+                          class: "border-t cursor-pointer hover:bg-blue-50/60",
                           onClick: () => openCase(caseIdOf(c)),
                         },
                           isAdmin() ? rowCheckbox(caseIdOf(c), selected, (id, on) => { toggleSelected(selected, id, on); render(); }) : null,
@@ -224,7 +225,7 @@ export async function renderCasesPage({ target }) {
                           ),
                           el("td", {},
                             el("button", {
-                              class: "hover:text-cyan-700 hover:underline",
+                              class: "hover:text-ha-blue hover:underline",
                               onClick: (e) => {
                                 e.stopPropagation();
                                 openPatient(c.patientId);
@@ -242,7 +243,7 @@ export async function renderCasesPage({ target }) {
                           el("td", { class: "max-w-md" }, c.diagnosis || el("em", { class: "text-slate-400" }, "—")),
                           el("td", { class: "whitespace-nowrap" },
                             el("button", {
-                              class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-cyan-700 hover:bg-cyan-50 text-sm",
+                              class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-ha-blue hover:bg-blue-50 text-sm",
                               onClick: (e) => { e.stopPropagation(); openReview(caseIdOf(c), c); },
                             }, svgIcon("image", { size: 16 }), "Review")
                           )
@@ -269,8 +270,8 @@ export async function renderCasePage({ target }) {
   let busy = false;
   let remarksDraft = "";
 
-  const canRemark = () => state.user?.role !== "nurse";
-  const isAdmin = () => state.user?.role === "admin";
+  const canRemark = () => canEditReport(state.user);
+  const isAdmin = () => roleIsAdmin(state.user);
 
   async function load() {
     if (!caseId) {
@@ -378,7 +379,7 @@ export async function renderCasePage({ target }) {
                 el("h1", { class: "text-3xl font-bold text-slate-900" }, id || "Case"),
                 el("p", { class: "mt-1 text-slate-600 flex flex-wrap items-center gap-2" },
                   el("button", {
-                    class: "font-semibold hover:text-cyan-700 hover:underline",
+                    class: "font-semibold hover:text-ha-blue hover:underline",
                     onClick: () => openPatient(localCase.patientId),
                   }, patientDisplayName(localCase) || localCase.patientId),
                   patientDisplayName(localCase)

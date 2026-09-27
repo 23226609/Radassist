@@ -20,9 +20,9 @@ This plan follows the approved **Project Statement** (PANG Ho Yiu, 23226609) and
 
 Medical imaging analysis — especially chest X-ray interpretation — sits in many clinical workflows. The next generation of deep learning and vision-language models, both **generative** (**CURV**: Coherent Uncertainty-Aware Reasoning) and **discriminative** (**AHIVE**: Anatomy-aware Hierarchical Vision Encoding), has pushed the state of the art in writing text-based radiology reports from images [1][2].
 
-Even a well-trained diagnostic model still **languishes in scripts and local research environments**. Doctors also spend a long time writing the same reports by hand. Outside the lab, a machine-learning model is only as useful as it is **realisable on a fast, safe, accessible platform** that healthcare workers can actually open. Bridging that **deployment gap** into a practicum system is the distinctive part of this FYP [3].
+Even a well-trained diagnostic model still **languishes in scripts and local research environments**. Radiologists also spend a long time writing the same reports by hand. Outside the lab, a machine-learning model is only as useful as it is **realisable on a fast, safe, accessible platform** that healthcare workers can actually open. Bridging that **deployment gap** into a practicum system is the distinctive part of this FYP [3].
 
-The project therefore builds an **end-to-end web information system**: pretrained AI engines behind a solid web interface, turning raw model output into something a clinical user can engage with and **export as a document**.
+The project therefore builds an **end-to-end web information system**: pretrained AI engines behind a solid web interface, turning raw model output into something a **radiologist** can engage with and **export as a document**, while the **referring doctor** only reads reports that have already been signed off.
 
 The briefing slide shows the intended interaction: film on the left, numbered region boxes, grounded findings on the right. This prototype’s review screen is that layout in a browser.
 
@@ -32,33 +32,35 @@ The Project Statement names three operational bottlenecks [3]. The briefing slid
 
 | # | Bottleneck (statement) | What “better” looks like |
 | --- | --- | --- |
-| 1 | **Time-consuming report workflow.** Diagnostic imaging reports are professional work product and occupy valuable hours. | AI produces a first draft; the doctor reviews and finalises instead of typing from a blank page. |
-| 2 | **Accessibility of AI utilities.** Research models usually have no standard web UI; they stay with the “digital magician,” out of reach of the practitioner. | Browser login, upload, worklist — no Python notebook, no command line. |
-| 3 | **Batch / static I/O.** Image-in, text-out systems are not interactive. Radiologists need to upload on the fly, **see the region the model used**, and **edit the text**. | Side-by-side film + overlays + editable finding cards (diagnostic chips), then Word/PDF export. |
+| 1 | **Time-consuming report workflow.** Diagnostic imaging reports are professional work product and occupy valuable hours. | Technician uploads the film; the radiologist opens the case, **one click** starts AI, then reviews and finalises instead of typing from a blank page. |
+| 2 | **Accessibility of AI utilities.** Research models usually have no standard web UI; they stay with the “digital magician,” out of reach of the practitioner. | Browser login and worklist — no Python notebook, no command line. AI is **not** tied to the upload step; only the radiologist triggers it. |
+| 3 | **Batch / static I/O.** Image-in, text-out systems are not interactive. Radiologists need to **see the region the model used** and **edit the text**, with a clear record of what was AI vs what they typed. | Side-by-side film + overlays + editable finding cards; an **AI / manual attribution log while drafting**; the **signed report is clean** (no source tags). Word/PDF export of that final text. |
 
 This FYP is an **information-systems** project (workflow, UI, API, documents), not a new accuracy benchmark for CURV.
 
 ### A.1.3 Objectives
 
 1. Develop an **online prototype** that uses a pretrained AI model (**CURV**) to **assist** radiologists by generating X-ray reports (briefing + statement).
-2. Provide an **interactive, user-friendly interface** that speeds up report preparation: upload, grounded boxes, editable findings, finalise, export (briefing).
+2. Provide an **interactive, user-friendly interface** that speeds up report preparation: technician upload, radiologist one-click AI, grounded boxes, editable findings, finalise, export (briefing).
 3. Wrap the model in a **complete web information system** (sessions, async inference, persistence, document generation) so it is usable outside a research script [3].
-4. Keep the **clinician in the loop**: AI output is a draft until a doctor or admin finalises it. Nurses may read but not change clinical content.
+4. Keep the **radiologist in the loop**: AI output is a draft until a radiologist (or admin acting as radiologist) finalises it. Referring **doctors** may **read only finalized reports**. Technicians **upload films only**.
 5. Run **locally in Semester 1** (supervisor). Optional 24/7 server in **Semester 2**.
 
 ### A.1.4 Proposed system
 
-Working name: **RadAssist AI**. Clinician-in-the-loop web application:
+Working name: **RadAssist AI**. Role-separated, clinician-in-the-loop web application:
 
-1. Authorised staff (doctor, nurse, administrator) sign in.
-2. Patient chart (name, age, sex, history) before or at imaging.
-3. Upload chest X-ray. Sem 1 formats: **PNG / JPG / JPEG / WebP**. The statement lists DICOM as an example; a DICOM store/viewer is a **Semester 2 stretch**, not required for the first prototype.
-4. **Asynchronous** backend job calls **local CURV** (`mlx_vlm`); response is report text plus bounding boxes where a finding can be localised [3].
-5. Frontend renders the film with **interactive overlays** and **editable finding cards**; doctor remarks, urgency, explicit **finalisation**.
-6. Nurses **read** only.
-7. Audit log; **PDF / DOCX** export of the verified report [3].
+1. Authorised staff sign in as **technician**, **radiologist**, **doctor**, or **system administrator**.
+2. Patient chart (name, age, sex, history, **prior medicines**, **heart rate**, **lab test results**) before or at imaging.
+3. **Technician** uploads the chest X-ray to the system (the **only** technician function). Sem 1 formats: **PNG / JPG / JPEG / WebP**. The statement lists DICOM as an example; a DICOM store/viewer is a **Semester 2 stretch**, not required for the first prototype. Upload stores the film; it does **not** start AI.
+4. **Radiologist** opens the worklist, sees the uploaded film, and **one click** starts AI. **Asynchronous** backend job calls **local CURV** (`mlx_vlm`); response is report text plus bounding boxes where a finding can be localised [3].
+5. Frontend renders the film with **interactive overlays** and **editable finding cards**. While the radiologist edits, the review screen shows an **attribution log** (which sentences/findings are **AI** vs **manual**). Remarks, urgency, explicit **finalisation**.
+6. On finalise, the **issued report is the clean clinical text** — AI/manual markers stay in the system audit / draft log and are **not** printed in the report the doctor sees or exports.
+7. **Doctor** sees **only finalized** reports (read-only). They do not upload films, run AI, or edit findings.
+8. **System administrator** keeps the usual platform functions (all radiologist capabilities plus bulk delete, user/audit administration).
+9. Audit log; **PDF / DOCX** export of the **verified, unmarked** report [3].
 
-Decision-support prototype only — not a PACS, not a medical device, not a substitute for a radiologist. If CURV is down, the case is still stored so the clinician can write the report by hand.
+Decision-support prototype only — not a PACS, not a medical device, not a substitute for a radiologist. If CURV is down, the case is still stored so the radiologist can write the report by hand.
 
 **Out of scope unless Sem 2 time allows:** retraining CURV/AHIVE; full DICOM/PACS; hospital SSO; extra identifiers (e.g. HKID); CE/FDA claims; unattended auto-sign-off.
 
@@ -68,9 +70,9 @@ Four phases [3]. Success is measured as an **information system** (API behaviour
 
 | Phase | Statement plan | How this prototype implements it |
 | --- | --- | --- |
-| **1. Requirements & workflow** | Upload → async process → report + bboxes → render with overlays. | New case upload; Express returns 201 while CURV runs; worklist “Generating” overlay; Review shows film + boxes. |
-| **2. Frontend & interaction** | SPA; **bilateral binding** (text ↔ region); **confidence threshold** slider; **interactive sentence / chip** editing. | Vanilla JS SPA (Vite + Tailwind). Statement mentioned React/Vue as examples; a lightweight SPA meets the same interaction goals. **Now:** finding cards (chips) with inline edit; active card’s bbox on the film. **Later (Sem 2 polish):** hover binding both ways; a global confidence slider to show/hide boxes without reload. |
-| **3. Backend API gateway** | Node.js routes, sessions, queue; **document engine** (PDF/DOCX) after the user verifies edits. | Express + JWT; background AI job; `docx` / PDF download after save. Cosmos DB + GridFS persist patients, cases, images. |
+| **1. Requirements & workflow** | Upload → async process → report + bboxes → render with overlays. | **Technician** new-case upload (no AI). Radiologist **one-click generate**; Express returns immediately while CURV runs; worklist “Generating” overlay; Review shows film + boxes. |
+| **2. Frontend & interaction** | SPA; **bilateral binding** (text ↔ region); **confidence threshold** slider; **interactive sentence / chip** editing. | Vanilla JS SPA (Vite + Tailwind). Statement mentioned React/Vue as examples; a lightweight SPA meets the same interaction goals. **Now:** finding cards (chips) with inline edit; active card’s bbox on the film; **AI vs manual log on Review while drafting**. **Later (Sem 2 polish):** hover binding both ways; a global confidence slider to show/hide boxes without reload. |
+| **3. Backend API gateway** | Node.js routes, sessions, queue; **document engine** (PDF/DOCX) after the user verifies edits. | Express + JWT; background AI job started by radiologist; `docx` / PDF download after save — **export is the clean report**, not the draft attribution log. Cosmos DB + GridFS persist patients, cases, images. |
 | **4. Verification & (later) deploy** | Black-box API tests; upload-to-UI latency; browser compatibility. | Frontend unit tests + case e2e script. Sem 1: local demo. Sem 2: optional 24/7 host, more API tests, multi-browser check. |
 
 ---
@@ -114,7 +116,7 @@ Four phases [3]. Success is measured as an **information system** (API behaviour
 
 ### A.2.3 Data and ethics (resource, not hardware)
 
-Demo patients and films only. No real hospital export. No HKID, address, or other extra identifiers. Seed accounts (`admin123`, etc.) are for local demo only.
+Demo patients and films only. No real hospital export. No HKID, address, or other extra identifiers. Seed accounts (`admin123`, etc.) are for local demo only. Chart fields such as prior medicines, heart rate, and lab results are **synthetic demo data**, not real clinical records.
 
 ---
 
@@ -156,22 +158,25 @@ There is **no licence fee** for the application itself. The expensive part of a 
 
 | Benefit | Who | How the prototype shows it |
 | --- | --- | --- |
-| Faster first draft | Doctor | Upload → background CURV job → worklist row moves from *Generating* to *Pending approve* |
-| Structured findings, not only a wall of text | Doctor | Finding carousel: label, location, size, pattern, confidence, bbox on the film |
-| Human sign-off is mandatory | Patient safety (demo) | Status cannot skip to *Finalized* while the draft is still generating; nurses cannot finalise |
-| Role separation | Ward / clinic | Nurse: read-only; Doctor/Admin: edit; Admin: bulk delete |
-| Searchable worklist | All roles | Filter by status / urgent; live search; urgent rows sort first |
-| Export | Doctor | Word and PDF of the stored report (plus the uploaded film) |
-| Traceability | Admin / supervisor | Audit log of login, create, AI analyse, update, finalise, delete |
-| Patient chart independent of a film | Clerk / doctor | Patient can exist with zero studies; New Case can look up an existing ID |
-| Degraded operation | Ops | If CURV is down, the case is still saved; clinician can type the report |
+| Capture without reporting | Technician | Upload X-ray only; no AI, no edit, no finalise |
+| Faster first draft | Radiologist | Open uploaded film → **one click AI** → worklist row moves from *Generating* to *Pending approve* |
+| Structured findings, not only a wall of text | Radiologist | Finding carousel: label, location, size, pattern, confidence, bbox on the film |
+| Draft provenance | Radiologist | Review log marks each finding/sentence **AI** or **Manual** while editing |
+| Clean signed report | Doctor / export | After finalise, the report the doctor sees (and Word/PDF) has **no** AI/manual tags |
+| Human sign-off is mandatory | Patient safety (demo) | Status cannot skip to *Finalized* while the draft is still generating; technician and doctor cannot finalise |
+| Role separation | Clinic | Technician: upload only. Radiologist: AI + edit + finalise. Doctor: finalized reports only. Admin: platform + delete |
+| Searchable worklist | Per role | Filter by status / urgent; live search; urgent rows sort first. Doctor worklist = finalized only |
+| Export | Radiologist (and doctor of a finalized case) | Word and PDF of the stored **clean** report (plus the uploaded film) |
+| Traceability | Admin / supervisor | Audit log of login, upload, AI analyse, update, finalise, delete; draft AI/manual log retained in the case history even after the issued report is clean |
+| Patient chart independent of a film | Technician / radiologist | Patient can exist with zero studies; chart shows **medicines**, **heart rate**, **lab tests**; New Case can look up an existing ID |
+| Degraded operation | Ops | If CURV is down, the film is still saved; radiologist can type the report |
 
 ### A.4.2 Intangible
 
-- Reinforces **clinician-in-the-loop** as a design principle (AI drafts; human decides).
-- Gives nurses a way to **see** urgency and reports without being able to alter them.
+- Reinforces **radiologist-in-the-loop** as a design principle (technician captures; AI drafts; radiologist decides; doctor consumes the signed report).
+- Gives referring doctors a way to **see** signed reports and patient context without being able to alter imaging interpretation.
 - Student learning: full-stack web system, JWT roles, GridFS, local VLM, optional cloud NLP.
-- Reusable demo for the viva: one laptop, three processes, seeded users.
+- Reusable demo for the viva: one laptop, three processes, seeded users (technician / radiologist / doctor / admin).
 - Clear story for Semester 2 (hardening, CORS, cookies, possible deploy) without blocking Semester 1.
 
 ---
@@ -184,10 +189,10 @@ This is not a commercial product, so a classic NPV is not meaningful. The compar
 | --- | --- | --- | --- | --- |
 | **A. Do nothing / report-only FYP** | HKD 0 | Low | Weak viva | Fails “working system” expectation |
 | **B. Script: image in, text out (old demo)** | HKD 0 | Low–medium | Proves CURV works | No workflow, no roles, no persistence |
-| **C. Proposed local web system (recommended)** | HKD 0–350 | High | Full use-case demo, audit, HITL | Tied to student’s Mac for AI |
+| **C. Proposed local web system (recommended)** | HKD 0–350 | High | Full use-case demo, audit, HITL, role split | Tied to student’s Mac for AI |
 | **D. Full 24/7 hospital-like deploy now** | Higher VM/GPU | High + ops | Public URL | Supervisor deferred this to Sem 2; over-scope |
 
-**Conclusion:** Option C dominates. Incremental cloud cost is small compared with the jump from a one-page CURV tester to a role-based reporting workflow. Option D’s extra cost does not buy extra FYP marks in Semester 1 and conflicts with supervisor guidance. Intangible benefit of C (safety workflow, audit, nurse/doctor split) is exactly what a project titled *“AI-assisted Online System”* should show: **assisted**, not autonomous; **online** (browser + API), not a notebook.
+**Conclusion:** Option C dominates. Incremental cloud cost is small compared with the jump from a one-page CURV tester to a role-based reporting workflow. Option D’s extra cost does not buy extra FYP marks in Semester 1 and conflicts with supervisor guidance. Intangible benefit of C (safety workflow, audit, technician / radiologist / doctor split) is exactly what a project titled *“AI-assisted Online System”* should show: **assisted**, not autonomous; **online** (browser + API), not a notebook.
 
 Break-even in money terms is immediate: almost all spend is already-owned hardware and free software. The scarce resource is student hours, which are required by the FYP anyway.
 
@@ -207,31 +212,31 @@ The Gantt implements the four statement phases: WP1 = Phase 1 (requirements); WP
 | WP1 | Requirements, this plan, use cases, UI storyboards | **██** | ░ | | | review | | |
 | WP2 | Local CURV + FastAPI middleware | **██** | █ | | | | | |
 | WP3 | Express API, Cosmos, JWT roles, GridFS | █ | **███** | █ | | | | |
-| WP4 | Patients, new case upload, async generate | | **██** | █ | | | | |
-| WP5 | Review UI: film, boxes, carousel, remarks, urgent, finalise | | █ | **███** | █ | polish | | |
-| WP6 | Worklist, archive, audit, Word/PDF, nurse read-only | | | **██** | █ | | | |
+| WP4 | Patients, technician upload, radiologist one-click generate | | **██** | █ | | | | |
+| WP5 | Review UI: film, boxes, carousel, AI/manual log, remarks, urgent, finalise | | █ | **███** | █ | polish | | |
+| WP6 | Worklist (role-filtered), archive, audit, Word/PDF, doctor read-only finalized | | | **██** | █ | | | |
 | WP7 | Optional Azure diagnosis / finding cards | | | █ | █ | eval | | |
 | WP8 | Tests, seed data, bug-fix, viva script | | | █ | **██** | █ | | |
 | WP9 | FYP report chapters (analysis, design, implementation) | █ | █ | █ | **██** | **██** | **██** | |
 | WP10 | Sem 2: hardening + optional 24/7 deploy | | | | | █ | **██** | |
 | WP11 | Evaluation, limitations, viva | | | | demo | | █ | **██** |
 
-█ = planned intensive work. The implementation WPs 2–6 are **already substantially built** in the current prototype; remaining Sem 1 effort is documentation, evaluation, and polish.
+█ = planned intensive work. The implementation WPs 2–6 are **already substantially built** in the current prototype; remaining Sem 1 effort is aligning roles to this plan (technician / radiologist / doctor / admin), the Review attribution log, richer patient chart vitals/labs/meds, documentation, evaluation, and polish.
 
 ### A.6.2 Milestones
 
 | Milestone | Target | Exit criteria |
 | --- | --- | --- |
-| M1 Local CURV path | Early Sem 1 | Upload a film on localhost → markdown report returned |
-| M2 HITL web workflow | Mid Sem 1 | Doctor path: patient → upload → review → finalise; nurse cannot edit |
+| M1 Local CURV path | Early Sem 1 | Radiologist one-click on an uploaded film → markdown report returned |
+| M2 HITL web workflow | Mid Sem 1 | Technician uploads; radiologist AI → review → finalise; doctor sees only finalized; technician cannot edit |
 | M3 Supervisor checkpoint | When this document is submitted | Confirm scope: local demo OK; deploy Sem 2 |
-| M4 Sem 1 demo freeze | End of Sem 1 | Seeded users, three processes start script, no blocker bugs |
+| M4 Sem 1 demo freeze | End of Sem 1 | Seeded users (four roles), three processes start script, no blocker bugs |
 | M5 Optional deploy | Sem 2 | Reverse proxy + secrets; CURV still on a dedicated host |
 | M6 Viva | Sem 2 | 10-minute live walkthrough (see README demo script) |
 
 ### A.6.3 Dependencies and slack
 
-- WP5 depends on WP3–4 (case must exist with `imageId` and `reportText`).
+- WP5 depends on WP3–4 (case must exist with `imageId`; AI may still be unrun).
 - WP7 is optional; WP5 has a local markdown parser if Azure is off.
 - WP10 must not start until M3 (supervisor) agrees.
 - Critical path is **Mac + CURV remaining available** for any live demo.
@@ -255,9 +260,9 @@ Browser (Vite, localhost:5173)
 
 - **Presentation:** vanilla JS SPA + Tailwind (Vite). The Project Statement named React/Vue as example frameworks; the SPA behaviour (upload, overlays, chips, export) is what matters.
 - **Application:** REST, role middleware, audit writer.
-- **Data:** Patient, Case (findings, report, status, urgent), User, AuditLog, images in GridFS.
-- **AI:** local CURV for the report; optional Azure for short diagnosis labels and finding cards.
-- **Control principle:** AI never finalises. Status is `pending` → `pending_approve` → `finalized`.
+- **Data:** Patient (incl. medicines, heart rate, lab results), Case (findings, report, status, urgent, **draft attribution log**), User, AuditLog, images in GridFS.
+- **AI:** local CURV for the report; optional Azure for short diagnosis labels and finding cards. Started **only** by radiologist (or admin) click, not by technician upload.
+- **Control principle:** AI never finalises. Status is `pending` (film stored, AI not run or still generating) → `pending_approve` → `finalized`. Issued report text is unmarked.
 
 ### A.7.2 Why this, not the alternatives
 
@@ -265,17 +270,18 @@ Browser (Vite, localhost:5173)
 | --- | --- |
 | Standalone CURV webpage only | No patients, roles, audit, or sign-off — does not match “online system” |
 | Fully automatic reports | Clinically unacceptable; contradicts HITL |
+| AI on upload (no radiologist click) | Mixes capture with interpretation; technician would trigger clinical AI |
 | Cloud-only vision API, no local CURV | Loses the model already running on the Mac; ongoing token cost; weaker “we run the model” story |
 | Native desktop app | Harder to show “online”; worse for Sem 2 deploy |
 | Full PACS / DICOM in Sem 1 | Statement allows DICOM as an example format; raster upload is enough to prove the workflow. DICOM is a Sem 2 stretch. |
 
 ### A.7.3 Conditions of recommendation
 
-1. Keep the **human-in-the-loop** rule in every demo and in the report.
+1. Keep the **human-in-the-loop** rule in every demo and in the report: radiologist signs; doctor reads finalized only.
 2. Stay on **localhost for Sem 1**, as advised.
 3. Treat Azure OpenAI as **optional enhancement**, not a single point of failure.
 4. Do not collect extra personal identifiers.
-5. Label every AI output as draft / decision support in the UI and in the thesis.
+5. Label every AI output as draft / decision support **on the Review screen**; the **finalized report** presented to the doctor is unmarked clinical text.
 6. Sem 2 deploy only after CORS, registration lock-down, and secret handling are tightened.
 
 **Recommendation statement:** *The Department is requested to approve this project plan and the initial analysis below. The student will continue development on a local machine and will not require non-list hardware from the Department beyond standard lab PCs for documentation. The Apple Silicon Mac and CURV weights are student-provided.*
@@ -290,34 +296,37 @@ Browser (Vite, localhost:5173)
 
 | Actor | Type | Description |
 | --- | --- | --- |
-| Doctor | Primary | Registers patients, uploads films, edits findings, marks urgent, finalises, exports |
-| Nurse | Primary | Signs in, browses worklist / patients / cases, reads film and report; cannot change clinical content |
-| Administrator | Primary | All doctor functions plus bulk delete of cases, patients, and audit rows |
-| CURV (local VLM) | Supporting | Returns `{ report, findings }` for an uploaded image |
+| Technician | Primary | Signs in, optionally looks up / registers a patient for imaging, **uploads the X-ray**. No AI, no report edit, no finalise, no export of drafts |
+| Radiologist | Primary | Opens uploaded films, **one-click AI**, edits findings/report, marks urgent, finalises, exports. **Replaces the former “doctor” reporting function** |
+| Doctor | Primary | Referring clinician: browses **finalized reports only**; read-only film + clean report + patient chart (meds, heart rate, labs). Cannot upload, run AI, or edit |
+| System administrator | Primary | All radiologist functions plus bulk delete of cases, patients, and audit rows; user administration |
+| CURV (local VLM) | Supporting | Returns `{ report, findings }` when the radiologist requests analysis |
 | Azure OpenAI | Supporting (optional) | Short diagnosis label; finding cards with boxes |
 | Cosmos DB | Supporting | Persists users, patients, cases, audit, images |
 
 Guest / anonymous users have only Login and (demo) Register. Public register is **demo-only** and should be disabled in any later deploy.
 
+The previous nurse / “doctor does everything” split is **superseded**. Capture (technician), interpretation (radiologist), and consumption of signed reports (doctor) are three different jobs.
+
 ### B.1.2 Use case diagram
 
-Actors are specialised, so **inherited links are not redrawn**: Nurse can sign in, browse, and read a film; Doctor can do all of that plus reporting; Admin can do all of that plus delete. Supporting system **CURV** is on the right. Details of UC06–UC08 stay in the descriptions; on the diagram they sit under «extend» from Review.
+Actors are specialised by **job**, not by a linear generalisation of “nurse ⊂ doctor ⊂ admin”. Technician, radiologist, and doctor share sign-in and (role-filtered) browse. Supporting system **CURV** is on the right. Details of UC06–UC08 stay in the descriptions; on the diagram they sit under «extend» from Review.
 
 ```mermaid
 flowchart LR
-  Nurse((Nurse))
-  Doctor((Doctor))
+  Tech((Technician))
+  Rad((Radiologist))
+  Doc((Doctor))
   Admin((Admin))
 
-  Admin -->|«generalize»| Doctor
-  Doctor -->|«generalize»| Nurse
+  Admin -->|«generalize»| Rad
 
   subgraph SYS["System boundary — RadAssist AI"]
     direction TB
     UC_session["Sign in / Sign out"]
     UC_browse["Browse and search"]
     UC_review["Review film and findings"]
-    UC_patient["Register patient"]
+    UC_patient["Register / update patient chart"]
     UC_upload["Upload X-ray"]
     UC_gen["Generate draft report"]
     UC_edit["Edit / remark / urgent / finalise"]
@@ -325,20 +334,27 @@ flowchart LR
     UC_audit["View audit log"]
     UC_delete["Delete records"]
 
-    UC_upload -.->|«include»| UC_gen
+    UC_review -.->|«extend»| UC_gen
     UC_review -.->|«extend»| UC_edit
     UC_review -.->|«extend»| UC_export
   end
 
   CURV[[CURV]]
 
-  Nurse --> UC_session
-  Nurse --> UC_browse
-  Nurse --> UC_review
+  Tech --> UC_session
+  Tech --> UC_browse
+  Tech --> UC_patient
+  Tech --> UC_upload
 
-  Doctor --> UC_patient
-  Doctor --> UC_upload
-  Doctor --> UC_audit
+  Rad --> UC_session
+  Rad --> UC_browse
+  Rad --> UC_review
+  Rad --> UC_patient
+  Rad --> UC_audit
+
+  Doc --> UC_session
+  Doc --> UC_browse
+  Doc --> UC_review
 
   Admin --> UC_delete
 
@@ -348,21 +364,22 @@ flowchart LR
 Same diagram as a Word-friendly sketch (paste into draw.io or redraw in PowerPoint):
 
 ```
- Admin ──«generalize»──► Doctor ──«generalize»──► Nurse
-    │                      │                        │
-    │                      │                        ├── Sign in / Sign out
-    │                      │                        ├── Browse and search
-    │                      │                        └── Review film ──«extend»──► Edit / remark / urgent / finalise
-    │                      │                                        └──«extend»──► Export Word / PDF
-    │                      ├── Register patient
-    │                      ├── Upload X-ray ──«include»──► Generate draft ──► CURV
-    │                      └── View audit log
+ Admin ──«generalize»──► Radiologist
+    │                         ├── Sign in / Sign out
+    │                         ├── Browse and search
+    │                         ├── Review film ──«extend»──► One-click Generate draft ──► CURV
+    │                         │               └──«extend»──► Edit / remark / urgent / finalise
+    │                         │               └──«extend»──► Export Word / PDF
+    │                         ├── Register / update patient chart
+    │                         └── View audit log
     └── Delete records
+
+ Technician ── Sign in / Browse / Patient chart (create for imaging) / Upload X-ray
+ Doctor     ── Sign in / Browse finalized only / Review read-only (clean report)
 ```
 
-**Include:** Upload includes Generate draft (CURV runs after the case is stored).  
-**Extend:** from Review — edit findings, remarks, urgent, finalise, and export. Optional Azure finding-cards extend Review when configured (not shown, to keep the figure small).  
-**Who can do what:** see the role matrix in B.1.4 (that table replaces the old one-line-per-use-case drawing).
+**Include / extend:** Upload does **not** include Generate draft. Generate is an **extend** of Review (radiologist click). Edit, remarks, urgent, finalise, and export also extend Review. Optional Azure finding-cards extend Review when configured (not shown, to keep the figure small).  
+**Who can do what:** see the role matrix in B.1.4.
 
 ### B.1.3 Use case descriptions
 
@@ -371,79 +388,79 @@ Same diagram as a Word-friendly sketch (paste into draw.io or redraw in PowerPoi
 | Field | Content |
 | --- | --- |
 | ID | UC01 |
-| Actors | Doctor, Nurse, Admin |
+| Actors | Technician, Radiologist, Doctor, Admin |
 | Goal | Obtain a session so role-based screens are shown |
 | Precondition | Account exists and is active |
-| Main success | 1. User opens the app. 2. Enters username/email and password. 3. System verifies password, issues JWT, writes LOGIN audit. 4. User lands on the worklist. |
+| Main success | 1. User opens the app. 2. Enters username/email and password. 3. System verifies password, issues JWT, writes LOGIN audit. 4. User lands on the worklist appropriate to their role. |
 | Alternatives | Invalid credentials → error, stay on login. Deactivated account → forbidden. |
-| Postcondition | `user` + token in session; sidebar matches role (nurse has no New case / New patient / Audit). |
+| Postcondition | `user` + token in session; sidebar matches role (technician: upload only; doctor: no New case / no draft review; radiologist: Review + AI; admin: full). |
 
-#### UC02 Register patient
+#### UC02 Register / update patient chart
 
 | Field | Content |
 | --- | --- |
 | ID | UC02 |
-| Actors | Doctor, Admin |
-| Goal | Create a chart before any X-ray |
-| Precondition | Signed in as doctor/admin |
-| Main success | 1. Open New patient. 2. Enter first name, last name, age, sex (middle name and ID optional). 3. Empty ID → system assigns `PT-{year}-{nnnn}`. 4. Patient stored with no studies. 5. Chart opens. |
-| Alternatives | Duplicate / already found in type-ahead → open existing chart. Nurse → action hidden / API forbidden. |
-| Postcondition | Patient document exists; PATIENT_CREATED audit. |
+| Actors | Technician, Radiologist, Admin |
+| Goal | Create or update a chart before / around imaging |
+| Precondition | Signed in as technician, radiologist, or admin |
+| Main success | 1. Open New patient or existing chart. 2. Enter first name, last name, age, sex (middle name and ID optional). 3. Record **prior medicines**, **heart rate**, and **lab test results** (demo fields). 4. Empty ID → system assigns `PT-{year}-{nnnn}`. 5. Patient stored; studies optional. 6. Chart opens. |
+| Alternatives | Duplicate / already found in type-ahead → open existing chart. Doctor → chart **read-only** (may see meds / HR / labs with finalized studies). |
+| Postcondition | Patient document exists; PATIENT_CREATED / PATIENT_UPDATED audit. |
 
 #### UC03 Create case and upload X-ray
 
 | Field | Content |
 | --- | --- |
 | ID | UC03 |
-| Actors | Doctor, Admin |
-| Goal | Attach a film to a patient and start reporting |
-| Precondition | Signed in as doctor/admin; file is PNG/JPG/JPEG/WebP |
-| Main success | 1. Open New case (optionally from a chart). 2. Lookup patient ID or enter demographics. 3. Drop/select image. 4. Submit. 5. Image stored in GridFS; case saved as `pending`. 6. User returns to worklist; overlay “Generating the report”. |
-| Alternatives | Missing name/ID/file → validation toast. Nurse → forbidden. |
-| Postcondition | Case exists with `imageId`; CASE_CREATED audit; UC04 running in background. |
+| Actors | Technician (primary); Admin (may also upload) |
+| Goal | Attach a film to a patient so a radiologist can report. **This is the technician’s only clinical function.** |
+| Precondition | Signed in as technician or admin; file is PNG/JPG/JPEG/WebP |
+| Main success | 1. Open New case (optionally from a chart). 2. Lookup patient ID or enter demographics. 3. Drop/select image. 4. Submit. 5. Image stored in GridFS; case saved as `pending` (**AI not started**). 6. User returns to worklist. |
+| Alternatives | Missing name/ID/file → validation toast. Radiologist / doctor → upload hidden or forbidden (radiologist works from films already in the queue). |
+| Postcondition | Case exists with `imageId`; CASE_CREATED audit. UC04 is **not** running until the radiologist clicks. |
 
-#### UC04 Generate draft report
+#### UC04 Generate draft report (one-click AI)
 
 | Field | Content |
 | --- | --- |
 | ID | UC04 |
-| Actors | CURV (supporting); Doctor/Admin (initiator via UC03) |
-| Goal | Produce draft `reportText` and findings without blocking the upload response |
-| Precondition | Case stored; AI middleware reachable *or* failure handled |
-| Main success | 1. Backend writes a temp file. 2. POST to `/analyze` (timeout ~180s) with age/sex/history. 3. Map `{ report, findings }` onto the case. 4. Optional Azure short diagnosis. 5. Status → `pending_approve`. 6. Upsert patient from case. 7. AI_ANALYZED audit. |
-| Alternatives | CURV down/timeout → placeholder report, still `pending_approve`, clinician completes by hand. |
-| Postcondition | Clinician can open Review. Worklist overlay clears when status is no longer `pending`. |
+| Actors | CURV (supporting); Radiologist / Admin (initiator from Review or worklist **Analyse** control) |
+| Goal | Produce draft `reportText` and findings without blocking the UI; radiologist stays in control of **when** AI runs |
+| Precondition | Case stored with an image; user is radiologist/admin; AI middleware reachable *or* failure handled |
+| Main success | 1. Radiologist opens the case and **clicks once** to use AI. 2. Backend writes a temp file. 3. POST to `/analyze` (timeout ~180s) with age/sex/history (and chart context if available). 4. Map `{ report, findings }` onto the case; each generated finding/sentence tagged `source: ai` in the **draft log**. 5. Optional Azure short diagnosis. 6. Status → `pending_approve`. 7. Upsert patient from case. 8. AI_ANALYZED audit. |
+| Alternatives | CURV down/timeout → placeholder report, still `pending_approve`, radiologist completes by hand (`source: manual`). Technician / doctor → cannot start AI. |
+| Postcondition | Radiologist can continue Review. Worklist overlay clears when status is no longer generating. |
 
 #### UC05 Review film and findings
 
 | Field | Content |
 | --- | --- |
 | ID | UC05 |
-| Actors | Doctor, Admin (edit); Nurse (read-only) |
-| Goal | See film, boxes, and finding cards together |
-| Precondition | Case not still generating; user authenticated |
-| Main success | 1. Open Review from worklist. 2. Load case and image. 3. If needed, Azure summarise-findings or local parse into up to six cards. 4. Show carousel + overlays. |
-| Alternatives | Still `pending` → Review blocked. Nurse → same view, no save/finalise/urgent controls. |
-| Postcondition | User understands the draft; may continue to UC06–UC10. |
+| Actors | Radiologist, Admin (edit); Doctor (read-only, **finalized cases only**); Technician (may see that the film was uploaded, not the reporting workspace) |
+| Goal | See film, boxes, and finding cards together; for radiologist, also see **AI vs manual** attribution while drafting |
+| Precondition | User authenticated. Doctor: case must be `finalized`. Radiologist: case not still generating (or generating overlay). |
+| Main success | 1. Open Review from worklist. 2. Load case and image. 3. If needed, Azure summarise-findings or local parse into up to six cards. 4. Show carousel + overlays. 5. **Draft state:** each card/sentence shows **AI** or **Manual**; a compact log lists edits. 6. **Finalized state (doctor and export):** report body is **clean** — no source tags in the text. |
+| Alternatives | Still generating → Review blocked for editing. Doctor on non-finalized case → hidden / forbidden. Technician → no Review edit UI. |
+| Postcondition | Radiologist understands the draft and may continue to UC06–UC10. Doctor understands the signed report. |
 
 #### UC06 Edit findings or add manual finding
 
 | Field | Content |
 | --- | --- |
 | ID | UC06 |
-| Actors | Doctor, Admin |
-| Goal | Correct AI output or add a finding the model missed |
+| Actors | Radiologist, Admin |
+| Goal | Correct AI output or add a finding the model missed, with a visible draft log |
 | Precondition | UC05; case not finalised |
-| Main success | Edit label/location/size/pattern; or **+ Add manually** (`source: manual`); auto-save / Save draft to MongoDB. |
-| Alternatives | Finalised → fields locked. Nurse → no. |
-| Postcondition | `findings[]` updated; CASE_UPDATED audit. |
+| Main success | Edit label/location/size/pattern or rewrite report sentences; or **+ Add manually** (`source: manual`). Auto-save / Save draft to MongoDB. The Review **attribution log** records: original AI fragment, replacement text, actor, time. |
+| Alternatives | Finalised → fields locked; log no longer shown on the issued report (retained in audit / case history for viva). Doctor / technician → no. |
+| Postcondition | `findings[]` and draft log updated; CASE_UPDATED audit. Issued report text, if later finalised, does **not** contain the log. |
 
 #### UC07 Save remarks
 
 | Field | Content |
 | --- | --- |
 | ID | UC07 |
-| Actors | Doctor, Admin |
+| Actors | Radiologist, Admin |
 | Goal | Add follow-up notes that do not rewrite a locked report body after sign-off |
 | Precondition | Case exists |
 | Main success | Type remarks; save (allowed **after** finalise). Chart remarks on the patient are separate and are **not** copied into the case report. |
@@ -454,7 +471,7 @@ Same diagram as a Word-friendly sketch (paste into draw.io or redraw in PowerPoi
 | Field | Content |
 | --- | --- |
 | ID | UC08 |
-| Actors | Doctor, Admin (nurse can **see** the tag only) |
+| Actors | Radiologist, Admin (doctor can **see** the tag on a finalized case only) |
 | Goal | Triage flag (not a legal priority) |
 | Precondition | Case exists |
 | Main success | Toggle urgent; worklist and patient list show the chip; urgent rows sort first. Allowed after finalise. |
@@ -465,39 +482,43 @@ Same diagram as a Word-friendly sketch (paste into draw.io or redraw in PowerPoi
 | Field | Content |
 | --- | --- |
 | ID | UC09 |
-| Actors | Doctor, Admin |
-| Goal | Sign off: diagnosis, report text, and findings become immutable |
+| Actors | Radiologist, Admin |
+| Goal | Sign off: diagnosis, report text, and findings become immutable **clinical text without AI/manual labels** |
 | Precondition | Status is `pending_approve` (not still generating) |
-| Main success | Confirm Finalise & approve; `finalizedBy` recorded; CASE_FINALIZED audit. |
-| Alternatives | Still generating → refused. Nurse → forbidden. |
-| Postcondition | Status `finalized`; remarks and urgent still editable. |
+| Main success | Confirm Finalise & approve; system **strips source tags from the issued `reportText`**; `finalizedBy` recorded; CASE_FINALIZED audit. Draft attribution remains in an internal log / audit, not in the doctor-facing report. |
+| Alternatives | Still generating → refused. Technician / doctor → forbidden. |
+| Postcondition | Status `finalized`; remarks and urgent still editable by radiologist/admin; doctor can now see the case. |
 
 #### UC10 Export Word or PDF
 
 | Field | Content |
 | --- | --- |
 | ID | UC10 |
-| Actors | Doctor, Admin |
-| Goal | Take a copy of the stored CURV report plus the film |
-| Precondition | Case loaded; unsaved edits flushed first |
-| Main success | Download `.docx` or PDF. Finding cards stay on screen and are **not** merged into the file. |
+| Actors | Radiologist, Admin; Doctor (finalized case only) |
+| Goal | Take a copy of the stored **clean** report plus the film |
+| Precondition | Case loaded; unsaved edits flushed first; doctor only if finalized |
+| Main success | Download `.docx` or PDF. Finding cards stay on screen and are **not** merged into the file. File contains **no** AI/Manual watermarks. |
 | Postcondition | File on disk; database unchanged except last flush. |
 
 #### UC11 Browse worklist
 
 Dashboard: counts (total, urgent, finalized, pending approve), chips, search (`/` focuses), View vs Review, admin checkboxes.
 
+- **Technician:** sees uploads they sent (and generating/pending rows as “with radiologist”), no Analyse/Finalise.
+- **Radiologist / Admin:** full worklist including drafts.
+- **Doctor:** **finalized rows only**.
+
 #### UC12 View patient chart
 
-History, latest diagnosis, findings from studies, chart remarks. New case from chart fills demographics.
+Identity, history, **prior medicines**, **heart rate**, **lab test results**, latest **finalized** diagnosis where applicable, findings from studies the role may see, chart remarks. Technician / radiologist: New case from chart fills demographics. Doctor: read-only; studies list restricted to finalized.
 
 #### UC13 View case archive
 
-Same search/pagination pattern as the worklist; study-centric rather than triage-centric.
+Same search/pagination pattern as the worklist; study-centric rather than triage-centric; doctor still finalized-only.
 
 #### UC14 View audit log
 
-Doctor and admin may read; filter by text/action. Nurse: not in nav.
+Radiologist and admin may read; filter by text/action. Technician and doctor: not in nav.
 
 #### UC15 Delete records
 
@@ -505,7 +526,7 @@ Admin only: single or bulk delete of cases (and GridFS image), patients (chart +
 
 #### UC16 Search and filter
 
-Debounced search across IDs, names, diagnosis, report, history; status chips; urgent-only.
+Debounced search across IDs, names, diagnosis, report, history; status chips; urgent-only. Doctor search does not surface non-finalized cases.
 
 #### UC17 Sign out
 
@@ -513,15 +534,19 @@ Clear session; LOGOUT audit.
 
 ### B.1.4 Brief use-case–role matrix
 
-| Use case | Nurse | Doctor | Admin |
-| --- | --- | --- | --- |
-| UC01 Sign in / UC17 Sign out | Y | Y | Y |
-| UC11–13 Browse | Y | Y | Y |
-| UC05 Review (read) | Y | Y | Y |
-| UC02, UC03, UC06, UC09, UC10 | N | Y | Y |
-| UC07 Remarks / UC08 Urgent | N (see tag) | Y | Y |
-| UC14 Audit read | N | Y | Y |
-| UC15 Delete | N | N | Y |
+| Use case | Technician | Radiologist | Doctor | Admin |
+| --- | --- | --- | --- | --- |
+| UC01 Sign in / UC17 Sign out | Y | Y | Y | Y |
+| UC11–13 Browse | Y (own uploads) | Y (all) | Y (**finalized only**) | Y |
+| UC05 Review (read) | N (upload confirmation only) | Y (draft + final) | Y (finalized, **clean** report) | Y |
+| UC02 Patient chart write | Y | Y | N (read) | Y |
+| UC03 Upload X-ray | **Y (only function)** | N | N | Y |
+| UC04 One-click AI | N | Y | N | Y |
+| UC06 Edit / UC09 Finalise | N | Y | N | Y |
+| UC07 Remarks / UC08 Urgent | N | Y | N (see tag if finalized) | Y |
+| UC10 Export | N | Y | Y (finalized) | Y |
+| UC14 Audit read | N | Y | N | Y |
+| UC15 Delete | N | N | N | Y |
 
 ---
 
@@ -531,44 +556,47 @@ Clear session; LOGOUT audit.
 
 ```mermaid
 flowchart TD
-  A[Doctor signs in] --> B[Optional: register patient]
+  A[Technician signs in] --> B[Optional: register / update patient chart]
   B --> C[New case: demographics + drop X-ray]
   C --> D[API stores image in GridFS]
-  D --> E[Case status = pending]
-  E --> F[Return to worklist + generating overlay]
-  E --> G[Background: POST CURV /analyze]
-  G -->|report + findings| H[status = pending_approve]
-  G -->|timeout or error| I[placeholder report, still pending_approve]
-  H --> J[Doctor opens Review]
-  I --> J
-  F --> J
-  J --> K[Edit findings / remarks / urgent]
-  K --> L{Approve?}
-  L -->|Save draft| K
-  L -->|Finalise| M[status = finalized; lock report and findings]
-  M --> N[Optional: remarks / urgent still]
-  N --> O[Optional: Word or PDF]
+  D --> E[Case status = pending; AI not started]
+  E --> F[Technician done]
+  F --> G[Radiologist signs in and opens case]
+  G --> H[Sees X-ray; one click Use AI]
+  H --> I[Background: POST CURV /analyze]
+  I -->|report + findings tagged AI| J[status = pending_approve]
+  I -->|timeout or error| K[placeholder; radiologist types; tagged Manual]
+  J --> L[Review: film + cards + AI/Manual log]
+  K --> L
+  L --> M[Edit findings / remarks / urgent; log updates]
+  M --> N{Approve?}
+  N -->|Save draft| M
+  N -->|Finalise| O[status = finalized; issued report stripped of source tags]
+  O --> P[Doctor worklist now shows the case]
+  P --> Q[Doctor opens clean report; optional Word/PDF]
 ```
 
 ### B.2.2 Upload and AI generation (detail)
 
 ```mermaid
 flowchart TD
-  S[POST /api/cases multipart] --> V{Image + first name + last name + patientId?}
+  S[POST /api/cases multipart — technician] --> V{Image + first name + last name + patientId?}
   V -->|no| E1[400 validation]
   V -->|yes| GFS[Stream file to GridFS]
-  GFS --> SAVE[Insert case pending]
+  GFS --> SAVE[Insert case pending; do not call CURV]
   SAVE --> R201[HTTP 201 immediately]
-  R201 --> BG[Background job]
+  R201 --> WAIT[Wait for radiologist]
+  WAIT --> CLICK[Radiologist POST generate / Analyze]
+  CLICK --> BG[Background job]
   BG --> TMP[Write temp file]
   TMP --> AI[CURV middleware 180s]
-  AI -->|JSON report, findings| MAP[Map onto case]
+  AI -->|JSON report, findings| MAP[Map onto case; source=ai]
   MAP --> AZ{Azure configured?}
   AZ -->|yes| DIAG[Short worklist diagnosis]
   AZ -->|no| LOCAL[Keep first-sentence / local diagnosis]
   DIAG --> UP[Upsert patient]
   LOCAL --> UP
-  UP --> AUD[Audit CASE_CREATED + AI_ANALYZED]
+  UP --> AUD[Audit AI_ANALYZED]
   AI -->|fail| PH[Placeholder report]
   PH --> UP
 ```
@@ -577,23 +605,29 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  O[Open Review] --> G{status pending?}
-  G -->|yes| BLOCK[Do not enter review]
+  O[Open Review] --> ROLE{Role?}
+  ROLE -->|doctor| FINONLY{status finalized?}
+  FINONLY -->|no| HIDE[Not listed / 403]
+  FINONLY -->|yes| CLEAN[Show film + clean report; no AI/Manual badges]
+  ROLE -->|technician| TECH[No reporting Review]
+  ROLE -->|radiologist/admin| G{status generating?}
+  G -->|yes| BLOCK[Do not enter edit]
   G -->|no| LOAD[GET case + image]
-  LOAD --> CARDS{Calibrated Azure cards?}
+  LOAD --> NEEDAI{report exists?}
+  NEEDAI -->|no| CLICK[One-click Use AI]
+  CLICK --> UC04[UC04]
+  NEEDAI -->|yes| CARDS{Calibrated Azure cards?}
   CARDS -->|no| SUM[summarise-findings or local parse]
-  CARDS -->|yes| SHOW[Film + carousel]
+  CARDS -->|yes| SHOW[Film + carousel + AI/Manual log]
   SUM --> SHOW
-  SHOW --> ROLE{Role?}
-  ROLE -->|nurse| RO[Read only]
-  ROLE -->|doctor/admin| ED[Edit / add manual / remarks / urgent]
-  ED --> SV[PUT case auto-save]
+  SHOW --> ED[Edit / add manual / remarks / urgent]
+  ED --> SV[PUT case auto-save; append draft log]
   ED --> FIN{Finalise?}
   FIN -->|no| ED
   FIN -->|yes| LOCK{still generating?}
   LOCK -->|yes| REFUSE
-  LOCK -->|no| FOK[POST finalize]
-  FOK --> DONE[findings and report locked]
+  LOCK -->|no| FOK[POST finalize; strip source tags from issued report]
+  FOK --> DONE[findings and report locked; log retained internally]
 ```
 
 ### B.2.4 Authentication and authorisation
@@ -626,7 +660,7 @@ flowchart TD
 
 ## B.3 Initial User Interface Prototype
 
-Screens below match the **current prototype** (dark sidebar, cyan accents, worklist-first). For the printed report, replace the wireframes with **screenshots** of the running app (`http://localhost:5173`) using the seeded users.
+Screens below match the **intended prototype** after this role redesign (dark sidebar, cyan accents, worklist-first). For the printed report, replace the wireframes with **screenshots** of the running app (`http://localhost:5173`) using the seeded users.
 
 ### B.3.1 Site map / screen flow
 
@@ -638,17 +672,21 @@ flowchart TB
   W --> CA[Case archive]
   W --> P[Patients list]
   P --> PC[Patient chart]
-  PC --> NC[New case]
+  PC --> NC[New case — technician]
   W --> NC
   P --> NP[New patient]
   NP --> PC
-  R --> RP[Report popup]
+  R --> AI[One-click Use AI]
+  R --> RP[Report popup — clean after finalise]
   R --> DL[Word / PDF download]
   W --> AU[Audit log]
   CA --> R
 ```
 
-Nurses never see New case, New patient, or Audit. Review is read-only for them.
+- **Technician:** New case / New patient; no Audit; no Review edit; no Use AI.
+- **Radiologist:** Review, Use AI, edit, finalise, Audit; typically no New case (films arrive from technician).
+- **Doctor:** Worklist and Review **finalized only**; patient chart read-only; no New case / New patient / Audit.
+- **Admin:** full shell, including delete.
 
 ### B.3.2 Wireframe 1 — Login
 
@@ -656,14 +694,15 @@ Nurses never see New case, New patient, or Audit. Review is read-only for them.
 ┌─────────────────────────────┬──────────────────────────┐
 │  RadAssist AI               │   Sign in                │
 │  Faster X-Ray reporting,    │   Username / email       │
-│  with the clinician in      │   Password               │
+│  with the radiologist in    │   Password               │
 │  control.                   │   [ Sign in ]            │
-│                             │   Demo: Doctor / Nurse / │
-│  FYP demonstration.         │   Admin quick buttons    │
+│                             │   Demo: Technician /     │
+│  FYP demonstration.         │   Radiologist / Doctor / │
+│                             │   Admin quick buttons    │
 └─────────────────────────────┴──────────────────────────┘
 ```
 
-Purpose: role is chosen by account, not by a dropdown (prevents “login as doctor” spoofing on the client).
+Purpose: role is chosen by account, not by a dropdown (prevents “login as radiologist” spoofing on the client).
 
 ### B.3.3 Wireframe 2 — Shell + Worklist
 
@@ -673,19 +712,19 @@ Purpose: role is chosen by account, not by a dropdown (prevents “login as doct
 │------│  ┌────┐ ┌────┐ ┌────┐ ┌────┐                    │
 │Work- │  │Tot │ │Urg │ │Fin │ │Pend│                    │
 │list  │  └────┘ └────┘ └────┘ └────┘                    │
-│Pat.  │  chips: All | Generating | Pending | Finalized  │
+│Pat.  │  chips: All | Awaiting AI | Pending | Finalized │
 │Cases │  ┌───────────────────────────────────────────┐  │
-│Audit │  │ URGENT | PT-… | Name | Dx | Status | Dr   │  │
+│Audit │  │ URGENT | PT-… | Name | Dx | Status | Rad  │  │
 │------│  │        |      |      |    | Review | View │  │
 │+ Case│  └───────────────────────────────────────────┘  │
-│+ Pat.│  generating overlay centred when a job is live  │
+│+ Pat.│  generating overlay when radiologist started AI │
 │------│                                                 │
-│User  │                                                 │
-│Logout│                                                 │
+│User  │  Doctor: Finalized chip locked on; no + Case    │
+│Logout│  Technician: + Case only; no Review AI          │
 └──────┴─────────────────────────────────────────────────┘
 ```
 
-### B.3.4 Wireframe 3 — New patient
+### B.3.4 Wireframe 3 — New patient / chart extras
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -693,11 +732,16 @@ Purpose: role is chosen by account, not by a dropdown (prevents “login as doct
 │  Patient ID (optional)   First   Middle   Last         │
 │  Age    Sex: Female | Male | Other                     │
 │  Clinical history (chart; not copied into reports)     │
+│  Prior medicines  [e.g. metformin, amlodipine]         │
+│  Heart rate       [e.g. 78 bpm]                        │
+│  Lab test results [e.g. Hb 13.2; WBC 7.1; CRP 4]       │
 │                         [ Create patient ]             │
 └────────────────────────────────────────────────────────┘
 ```
 
-### B.3.5 Wireframe 4 — New case (upload)
+On the **patient page**, the same three blocks remain visible after create: medicines taken before, heart rate, lab results, plus the study table.
+
+### B.3.5 Wireframe 4 — New case (upload) — technician
 
 ```
 ┌──────────────────────────────┬─────────────────────────┐
@@ -706,12 +750,13 @@ Purpose: role is chosen by account, not by a dropdown (prevents “login as doct
 │ (locked if chart matched)    │     │  drop     │       │
 │                              │     │  X-ray    │       │
 │ [ Upload X-Ray ]             │     └───────────┘       │
+│ AI is not started here.      │                         │
 └──────────────────────────────┴─────────────────────────┘
 ```
 
-After submit: navigate to worklist; do not sit on a spinner page.
+After submit: navigate to worklist; do not sit on a spinner page. Radiologist will see the film waiting.
 
-### B.3.6 Wireframe 5 — Review (main clinical screen)
+### B.3.6 Wireframe 5 — Review (main clinical screen) — radiologist
 
 ```
 ┌────────────────────────────────────┬───────────────────┐
@@ -721,52 +766,61 @@ After submit: navigate to worklist; do not sit on a spinner page.
 │  ┌──────────────────────────────┐  │ Pattern ▼         │
 │  │                              │  │ Confidence  72%   │
 │  │     chest X-ray              │  │ Sentence          │
-│  │     + bbox overlay           │  │ ◀ ● ● ○ ▶        │
-│  │                              │  │ [+ Add manually]  │
-│  └──────────────────────────────┘  │ Remarks           │
-│                                    │ [Save draft]      │
+│  │     + bbox overlay           │  │ source: AI | Manual│
+│  │                              │  │ ◀ ● ● ○ ▶        │
+│  └──────────────────────────────┘  │ [+ Add manually]  │
+│                                    │ Remarks           │
+│ [ Use AI ]  (one click)            │ [Save draft]      │
 │ Report | Word | PDF                │ [Finalise]        │
 │                                    │ [Mark urgent]     │
+│ Draft log (while editing):         │                   │
+│  14:02 AI generated para 1         │                   │
+│  14:11 Radiologist replaced s2     │                   │
+│  (hidden after Finalise on issued  │                   │
+│   report; kept in audit)           │                   │
 └────────────────────────────────────┴───────────────────┘
 ```
 
-Nurse: same layout, controls disabled.
+**Doctor (finalized):** same film + report layout; **no** Use AI, no source badges, no draft log, no save/finalise. They read the eventual unmarked report.
+
+**Technician:** does not use this screen for reporting.
 
 This layout is the web version of the briefing slide: current image + numbered boxes on the left, grounded finding list (editable cards) on the right. In Word, put the briefing screenshot as Figure 1 and this running-app screenshot as Figure *n*.
 
 ### B.3.7 Wireframe 6 — Patient chart and Audit
 
-**Chart:** identity header, history, remarks (chart-level), table of studies with status/urgent, button New case.  
-**Audit:** filter box, action chips, table (time, user, action, target). Admin: bulk delete.
+**Chart:** identity header; **prior medicines**; **heart rate**; **lab test results**; history; remarks (chart-level); table of studies with status/urgent (doctor: finalized only); button New case for technician.  
+**Audit:** filter box, action chips, table (time, user, action, target). Admin: bulk delete. Includes AI_ANALYZED and CASE_UPDATED (manual edit) rows.
 
 ### B.3.8 Storyboard — “From film to signed report”
 
 | Frame | Actor | Screen | Action | System response |
 | --- | --- | --- | --- | --- |
-| 1 | Doctor | Login | Signs in as doctor | JWT; worklist |
-| 2 | Doctor | New patient | Enters name, age, sex | Chart with `PT-2026-00xx` |
-| 3 | Doctor | New case | Looks up ID, drops PNG | 201; row appears as **Generating** |
-| 4 | Doctor | Worklist | Waits; overlay visible | CURV fills report; status **Pending approve** |
-| 5 | Doctor | Review | Corrects a label, draws/edits box, adds remark | Auto-save to Cosmos |
-| 6 | Doctor | Review | Marks **Urgent**, **Finalise & approve** | Status **Finalized**; findings locked |
-| 7 | Nurse | Login → Review | Opens same case | Sees film, cards, urgent chip; **cannot** save |
-| 8 | Admin | Audit | Filters CASE_FINALIZED | Evidence for viva / integrity |
+| 1 | Technician | Login | Signs in as technician | JWT; worklist |
+| 2 | Technician | New patient / chart | Enters name, meds, HR, labs | Chart with `PT-2026-00xx` |
+| 3 | Technician | New case | Looks up ID, drops PNG | 201; row **Awaiting radiologist** (no AI yet) |
+| 4 | Radiologist | Login → Worklist | Opens the new film | Sees X-ray immediately |
+| 5 | Radiologist | Review | **One click Use AI** | Overlay **Generating**; CURV fills report; cards tagged **AI** |
+| 6 | Radiologist | Review | Corrects a label, adds a manual finding | Draft log: AI vs Manual; auto-save |
+| 7 | Radiologist | Review | Marks **Urgent**, **Finalise & approve** | Status **Finalized**; issued report **clean** (no source tags) |
+| 8 | Doctor | Login → Worklist | Opens same case | Sees film + unmarked report; **cannot** save or run AI |
+| 9 | Admin | Audit | Filters CASE_FINALIZED / CASE_UPDATED | Evidence for viva / integrity; draft provenance still in log |
 
 ### B.3.9 Storyboard — “AI unavailable”
 
 | Frame | Action | Result |
 | --- | --- | --- |
-| 1 | Doctor uploads while CURV is stopped | Case still created |
-| 2 | Worklist shows pending approve with placeholder | No lost film |
-| 3 | Doctor types report + manual findings | Same finalise path |
+| 1 | Technician uploads while CURV is stopped | Case still created; radiologist still sees the film |
+| 2 | Radiologist clicks Use AI | Timeout / placeholder; findings tagged **Manual** as they type |
+| 3 | Radiologist types report + manual findings | Same finalise path; issued report still unmarked |
 | Message | Prototype stays usable as an **online reporting** tool even when the model is down | |
 
 ### B.3.10 UI design notes (initial)
 
 - **Primary colour:** cyan on slate; dark nav so the film uses full width.
 - **Density:** hospital worklist, not a marketing landing page.
-- **Feedback:** toasts for errors; centred generating overlay; disabled buttons while `busy`.
-- **Safety copy:** login and README state this is an FYP demonstration / draft findings.
+- **Feedback:** toasts for errors; centred generating overlay after **Use AI**; disabled buttons while `busy`.
+- **Safety copy:** login and README state this is an FYP demonstration / draft findings. Draft screens show AI vs Manual; **finalized / exported reports do not**.
 - **Keyboard:** `/` focuses search on list pages.
 - **Responsive:** sidebar becomes a drawer on small screens (demo is still desktop-first).
 - **Statement UI (Phase 2):** finding cards = interactive diagnostic chips. Active card drives the bbox (one direction of bilateral binding). Confidence is shown per card; a **filter slider** and **hover-both-ways** highlighting are Sem 2 polish, not Sem 1 blockers.
@@ -778,10 +832,10 @@ This layout is the web version of the briefing slide: current image + numbered b
 | Login | `src/components/login.js` |
 | Worklist | `dashboard.js` |
 | New patient | `newPatient.js` |
-| Patients / chart | `patients.js` |
-| New case | `newCase.js` |
-| Review | `review.js` |
-| Report popup | `reportView.js` |
+| Patients / chart (meds, HR, labs) | `patients.js` |
+| New case (technician upload) | `newCase.js` |
+| Review (Use AI, AI/manual log, finalise) | `review.js` |
+| Report popup (clean issued text) | `reportView.js` |
 | Archive | `cases.js` |
 | Audit | `audit.js` |
 | Shell | `header.js` |
@@ -797,6 +851,9 @@ This layout is the web version of the briefing slide: current image + numbered b
 5. Evaluation follows the statement (Phase 4): black-box API tests, upload-to-UI latency, browser checks — not a clinical trial of CURV accuracy.
 6. React/Vue in the statement are **example** SPA stacks; vanilla JS + Vite is the implemented SPA.
 7. DICOM remains a stretch format; Sem 1 demo uses PNG/JPEG/WebP.
+8. **Role model (this revision):** Technician = upload only; Radiologist = former doctor reporting function + one-click AI; Doctor = finalized reports only; Admin unchanged. The current codebase may still use `doctor` / `nurse` until implementation catches up — this document is the target design.
+9. Patient **medicines**, **heart rate**, and **lab results** are demo chart fields, not a full EMR or HL7 feed.
+10. **AI vs Manual** attribution is for the radiologist on Review and for audit. The **eventual signed report** (on-screen for the doctor, Word, PDF) is unmarked.
 
 ---
 
@@ -805,14 +862,18 @@ This layout is the web version of the briefing slide: current image + numbered b
 | Term | Meaning in this project |
 | --- | --- |
 | Case / study | One visit, one film, one report |
-| Finding card | Structured row: label, bbox, location, size, pattern, confidence |
-| Pending | CURV still generating |
-| Pending approve | Draft ready for the clinician |
-| Finalized | Signed; report and findings locked |
+| Finding card | Structured row: label, bbox, location, size, pattern, confidence, draft `source` (`ai` \| `manual`) |
+| Pending | Film stored; AI not yet run, or CURV still generating |
+| Pending approve | Draft ready for the radiologist |
+| Finalized | Signed; report and findings locked; **issued text has no AI/manual tags** |
+| Draft attribution log | Review-time record of which fragments came from AI vs the radiologist; **not** part of the issued report |
+| Technician | Staff who only upload X-rays into the system |
+| Radiologist | Staff who open the film, run AI, edit, and finalise (replaces the old “doctor” reporting role) |
+| Doctor | Referring clinician who sees **finalized** reports only |
 | CURV | Local chest X-ray VLM used in this prototype; from Wang et al., NeurIPS 2025 [1] |
 | AHIVE | Anatomy-aware interactive report retrieval (related research, CVPR 2024) [2] |
 | Grounded finding | A finding tied to a region (bbox) on the film, as in the briefing UI |
-| HITL | Human-in-the-loop: AI drafts, clinician decides |
+| HITL | Human-in-the-loop: technician captures; AI drafts; radiologist decides; doctor reads the signed report |
 
 ---
 

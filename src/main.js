@@ -13,10 +13,12 @@ import { renderPatientsPage, renderPatientPage } from "./components/patients.js"
 import { renderNewPatientPage } from "./components/newPatient.js";
 import { renderCasesPage, renderCasePage } from "./components/cases.js";
 import { renderUsersPage } from "./components/users.js";
+import { renderBedsPage, renderMonitorPage, renderLabsPage, renderMedsPage, renderNotesPage } from "./components/clinical.js";
 import { renderSharePage } from "./components/shareView.js";
 import { isReportPopup, renderReportViewPage } from "./components/reportView.js";
 import { el, mount } from "./dom.js";
 import { stopAnalysisWatch } from "./lib/analysisJob.js";
+import { canUpload, canEditPatient, canSeeAudit, isAdmin } from "./lib/roles.js";
 import "./index.css";
 
 const app = document.getElementById("app");
@@ -110,12 +112,24 @@ function render() {
     return;
   }
 
-  if (state.user?.role === "nurse" && (state.page === "audit" || state.page === "users")) {
+  if (!canSeeAudit(state.user) && state.page === "audit") {
     setPage("dashboard");
     return;
   }
-  if (state.user?.role !== "admin" && state.page === "users") {
+  if (!isAdmin(state.user) && state.page === "users") {
     setPage("dashboard");
+    return;
+  }
+  if (!canUpload(state.user) && state.page === "new") {
+    setPage("dashboard");
+    return;
+  }
+  if (!canEditPatient(state.user) && state.page === "new-patient") {
+    setPage("patients");
+    return;
+  }
+  if (state.page === "beds") {
+    setPage("patients");
     return;
   }
 
@@ -132,6 +146,11 @@ function render() {
     case "cases":     pageNode = "cases";     break;
     case "case":      pageNode = "case";      break;
     case "users":     pageNode = "users";     break;
+    case "beds":      pageNode = "beds";      break;
+    case "monitor":   pageNode = "monitor";   break;
+    case "labs":      pageNode = "labs";      break;
+    case "meds":      pageNode = "meds";      break;
+    case "notes":     pageNode = "notes";     break;
     default:          pageNode = "dashboard";
   }
 
@@ -163,6 +182,16 @@ function render() {
     renderCasePage({ target });
   } else if (pageNode === "users") {
     renderUsersPage({ target });
+  } else if (pageNode === "beds") {
+    renderBedsPage({ target });
+  } else if (pageNode === "monitor") {
+    renderMonitorPage({ target });
+  } else if (pageNode === "labs") {
+    renderLabsPage({ target });
+  } else if (pageNode === "meds") {
+    renderMedsPage({ target });
+  } else if (pageNode === "notes") {
+    renderNotesPage({ target });
   }
 }
 

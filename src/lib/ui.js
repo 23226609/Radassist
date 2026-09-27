@@ -3,7 +3,7 @@
 import { el } from "../dom.js";
 import { svgIcon } from "../components/icons.js";
 
-export const PAGE = "page-enter mx-auto max-w-7xl px-5 py-6 lg:py-8";
+export const PAGE = "page-enter w-full px-1 py-1";
 
 export function debounce(fn, ms = 280) {
   let timer = null;
@@ -25,7 +25,7 @@ export function searchField({
     svgIcon("search", { size: 16, class: "pointer-events-none absolute left-3 top-3 text-slate-400" }),
     el("input", {
       id,
-      class: "w-full rounded-xl border border-slate-300 bg-white pl-10 pr-3 py-2.5 outline-none transition focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100",
+      class: "w-full rounded border border-gray-400 bg-white py-2 pl-10 pr-3 outline-none transition focus:border-ha-blue focus:ring-2 focus:ring-blue-200",
       placeholder,
       value,
       autocomplete: "off",
@@ -47,6 +47,7 @@ export function searchField({
 export function statusChips({ value, onChange, extra }) {
   const opts = [
     { id: "all", label: "All" },
+    { id: "pending", label: "Awaiting AI" },
     { id: "pending_approve", label: "Pending approve" },
     { id: "finalized", label: "Finalized" },
     ...(extra || []),
@@ -60,8 +61,8 @@ export function statusChips({ value, onChange, extra }) {
         role: "tab",
         "aria-selected": on ? "true" : "false",
         class: on
-          ? "rounded-full bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white"
-          : "rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:border-cyan-300 hover:bg-cyan-50 hover:text-cyan-800",
+          ? "rounded border border-ha-blue bg-ha-blue px-3 py-1.5 text-xs font-semibold text-white"
+          : "rounded border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-blue-50 hover:text-ha-blue",
         onClick: () => onChange?.(opt.id),
       }, opt.label);
     })
@@ -71,7 +72,7 @@ export function statusChips({ value, onChange, extra }) {
 export function metricCard({ n, label, tone, active, onClick }) {
   return el("button", {
     type: "button",
-    class: `card text-left transition hover:-translate-y-0.5 hover:shadow-md ${active ? "ring-2 ring-cyan-500" : ""}`,
+    class: `rounded border border-gray-400 bg-white p-4 text-left ${active ? "ring-2 ring-ha-blue" : ""}`,
     onClick,
   },
     el("p", { class: "text-slate-500 text-sm" }, label),
@@ -89,7 +90,7 @@ export function emptyState({ title, hint, actionLabel, onAction, icon = "search"
     hint ? el("p", { class: "mx-auto mt-1 max-w-sm text-sm text-slate-500" }, hint) : null,
     actionLabel
       ? el("button", {
-          class: "btn mt-4 bg-cyan-600 text-white hover:bg-cyan-700",
+          class: "btn mt-4 bg-ha-blue text-white hover:bg-[#074f85]",
           onClick: onAction,
         }, actionLabel)
       : null
@@ -99,7 +100,7 @@ export function emptyState({ title, hint, actionLabel, onAction, icon = "search"
 export function pageHeading({ title, subtitle, actions }) {
   return el("div", { class: "flex flex-wrap items-end justify-between gap-3" },
     el("div", {},
-      el("h1", { class: "text-3xl font-bold tracking-tight text-slate-900" }, title),
+      el("h1", { class: "text-xl font-bold text-ha-blue" }, title),
       subtitle ? el("p", { class: "mt-1 text-slate-500" }, subtitle) : null
     ),
     actions ? el("div", { class: "flex flex-wrap items-center gap-2" }, ...[].concat(actions).filter(Boolean)) : null

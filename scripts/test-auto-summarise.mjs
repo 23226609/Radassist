@@ -127,7 +127,7 @@ await testAsync("opening Review shows stored Azure cards and does not call Azure
   const testCase = makeCase({
     findings: [azureFinding("Clear lung fields"), azureFinding("Normal heart size")],
   });
-  const { root, azureCalls } = await runScenario({ role: "doctor", testCase });
+  const { root, azureCalls } = await runScenario({ role: "radiologist", testCase });
   assert.equal(azureCalls, 0, "Azure must already have run during generate");
   assert.ok(root.textContent.includes("Clear lung fields"), "stored Azure finding not shown");
   assert.ok(!root.textContent.includes("Summarising findings"), "must not start a summarise spinner on open");
@@ -135,21 +135,21 @@ await testAsync("opening Review shows stored Azure cards and does not call Azure
 
 await testAsync("a pending_approve case with no cards falls back to the local parser only", async () => {
   const testCase = makeCase();
-  const { root, azureCalls } = await runScenario({ role: "doctor", testCase });
+  const { root, azureCalls } = await runScenario({ role: "radiologist", testCase });
   assert.equal(azureCalls, 0, "empty cards must not trigger Azure on Review");
   assert.ok(root.querySelector("article"), `expected a local-parser card, got: ${root.textContent.slice(0, 200)}`);
 });
 
-await testAsync("nurses do not trigger Azure on Review", async () => {
+await testAsync("technicians do not trigger Azure on Review", async () => {
   const testCase = makeCase({ findings: [azureFinding("Clear lung fields")] });
-  const { azureCalls, root } = await runScenario({ role: "nurse", testCase });
+  const { azureCalls, root } = await runScenario({ role: "technician", testCase });
   assert.equal(azureCalls, 0);
   assert.ok(root.textContent.includes("Clear lung fields"));
 });
 
 await testAsync("the review page has no manual Summarise button", async () => {
   const testCase = makeCase({ findings: [azureFinding("Clear lung fields")] });
-  const { root, azureCalls } = await runScenario({ role: "doctor", testCase });
+  const { root, azureCalls } = await runScenario({ role: "radiologist", testCase });
   assert.equal(azureCalls, 0);
   const btn = [...root.querySelectorAll("button")].find((b) => /Summarise with Azure AI/.test(b.textContent));
   assert.equal(btn, undefined, "manual button should not be rendered");

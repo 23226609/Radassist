@@ -5,7 +5,7 @@ import { api } from "../api.js";
 import { composePatientName, nameFieldsFrom, tidyNamePart } from "../lib/patientName.js";
 import { patientDisplayName } from "../lib/tags.js";
 
-const CONTROL = "w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100";
+const CONTROL = "w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-ha-blue focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100";
 
 export function labeledField({ label, optional, required, forId }, control) {
   return el("label", { class: "block min-w-0", for: forId || "" },
@@ -30,7 +30,7 @@ export function sexPills({ f, disabled, onChange }) {
         disabled: Boolean(disabled),
         dataset: { sex: s },
         class: f.sex === s
-          ? "rounded-xl bg-cyan-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+          ? "rounded-xl bg-ha-blue px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
           : "rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
         onClick: () => {
           if (disabled) return;
@@ -38,7 +38,7 @@ export function sexPills({ f, disabled, onChange }) {
           for (const btn of document.querySelectorAll("[data-sex]")) {
             const on = btn.getAttribute("data-sex") === s;
             btn.className = on
-              ? "rounded-xl bg-cyan-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              ? "rounded-xl bg-ha-blue px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
               : "rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50";
           }
           onChange?.();

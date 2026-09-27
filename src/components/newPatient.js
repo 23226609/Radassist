@@ -7,6 +7,7 @@ import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { composePatientName, nameFieldsFrom } from "../lib/patientName.js";
 import { patientDisplayName } from "../lib/tags.js";
+import { canEditPatient } from "../lib/roles.js";
 import {
   labeledField,
   sexPills,
@@ -17,10 +18,10 @@ import {
   searchQueryFrom,
 } from "./patientFields.js";
 
-const CONTROL = "w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100";
+const CONTROL = "w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-ha-blue focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100";
 
 export async function renderNewPatientPage({ target }) {
-  const canAdd = state.user?.role !== "nurse";
+  const canAdd = canEditPatient(state.user);
   const f = {
     patientId: "",
     firstName: "",
@@ -28,7 +29,9 @@ export async function renderNewPatientPage({ target }) {
     lastName: "",
     age: "",
     sex: "",
-    history: "",
+    medicines: "",
+    heartRate: "",
+    labResults: "",
   };
   let busy = false;
   const search = createPatientSearch({
@@ -68,6 +71,9 @@ export async function renderNewPatientPage({ target }) {
         age: String(f.age).trim(),
         sex: f.sex,
         history: f.history.trim(),
+        medicines: f.medicines.trim(),
+        heartRate: f.heartRate.trim(),
+        labResults: f.labResults.trim(),
       });
       const created = data.patient || {};
       toast(`Added ${composePatientName(created) || names.name}.`);
@@ -94,7 +100,7 @@ export async function renderNewPatientPage({ target }) {
       ),
 
       !canAdd
-        ? el("p", { class: "card mt-6 text-slate-600" }, "Nurses cannot add patients.")
+        ? el("p", { class: "card mt-6 text-slate-600" }, "You cannot add patients with this account.")
         : el("div", { class: "mt-6 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_16rem]" },
             el("section", { class: "card" },
               el("h2", { class: "text-lg font-bold text-slate-900" }, "Patient details"),
@@ -135,6 +141,37 @@ export async function renderNewPatientPage({ target }) {
                 )
               ),
               el("div", { class: "mt-4" },
+                labeledField({ label: "Prior medicines", optional: true, forId: "patient-meds" },
+                  el("textarea", {
+                    id: "patient-meds",
+                    class: CONTROL,
+                    rows: 2,
+                    placeholder: "Medicines taken before (optional)",
+                    onInput: (e) => (f.medicines = e.target.value),
+                  }, f.medicines)
+                )
+              ),
+              el("div", { class: "mt-4 grid gap-4 sm:grid-cols-2" },
+                labeledField({ label: "Heart rate", optional: true, forId: "patient-hr" },
+                  el("input", {
+                    id: "patient-hr",
+                    class: CONTROL,
+                    placeholder: "e.g. 78 bpm",
+                    value: f.heartRate,
+                    onInput: (e) => (f.heartRate = e.target.value),
+                  })
+                ),
+                labeledField({ label: "Lab test results", optional: true, forId: "patient-labs" },
+                  el("input", {
+                    id: "patient-labs",
+                    class: CONTROL,
+                    placeholder: "e.g. Hb 13.2; WBC 7.1",
+                    value: f.labResults,
+                    onInput: (e) => (f.labResults = e.target.value),
+                  })
+                )
+              ),
+              el("div", { class: "mt-4" },
                 labeledField({ label: "Clinical history", optional: true, forId: "patient-history" },
                   el("textarea", {
                     id: "patient-history",
@@ -147,7 +184,7 @@ export async function renderNewPatientPage({ target }) {
               ),
               el("div", { id: "patient-matches", class: "mt-4" }),
               el("button", {
-                class: "mt-5 inline-flex items-center gap-2 rounded-xl bg-cyan-600 px-4 py-2.5 font-semibold text-white hover:bg-cyan-700 disabled:opacity-60",
+                class: "mt-5 inline-flex items-center gap-2 rounded-xl bg-ha-blue px-4 py-2.5 font-semibold text-white hover:bg-[#074f85] disabled:opacity-60",
                 disabled: busy,
                 onClick: save,
               }, svgIcon("user-plus", { size: 16 }), busy ? "Saving…" : "Add patient")
@@ -156,7 +193,7 @@ export async function renderNewPatientPage({ target }) {
               el("div", { class: "flex items-center gap-3" },
                 el("span", {
                   id: "summary-initials",
-                  class: "inline-flex h-11 w-11 items-center justify-center rounded-full bg-cyan-600 text-sm font-bold text-white",
+                  class: "inline-flex h-11 w-11 items-center justify-center rounded-full bg-ha-blue text-sm font-bold text-white",
                 }, "?"),
                 el("div", { class: "min-w-0" },
                   el("div", { id: "summary-full-name", class: "truncate font-semibold text-slate-900" }, "Name pending"),

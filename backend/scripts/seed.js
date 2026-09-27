@@ -12,6 +12,7 @@ const mongoose = require('mongoose');
 const connectDB = require('../config/db');
 const User = require('../models/User');
 const Case = require('../models/Case');
+const Patient = require('../models/Patient');
 const AuditLog = require('../models/AuditLog');
 const { nameFieldsFrom } = require('../utils/patientName');
 const { upsertPatientFromCase } = require('../utils/recordSync');
@@ -27,12 +28,12 @@ const DEMO_USERS = [
     department: 'IT',
   },
   {
-    userId: 'USR-DOCTOR-0001',
-    username: 'doctor',
-    password: 'doctor123',
-    name: 'Dr. Alex Wong',
-    email: 'alex.wong@radassist.demo',
-    role: 'doctor',
+    userId: 'USR-NURSE-0001',
+    username: 'tech',
+    password: 'tech123',
+    name: 'Jamie Lee',
+    email: 'jamie.lee@radassist.demo',
+    role: 'technician',
     department: 'Radiology',
   },
   {
@@ -41,7 +42,7 @@ const DEMO_USERS = [
     password: 'priya123',
     name: 'Dr. Priya Nair',
     email: 'priya.nair@radassist.demo',
-    role: 'doctor',
+    role: 'radiologist',
     department: 'Radiology',
   },
   {
@@ -50,17 +51,17 @@ const DEMO_USERS = [
     password: 'marcus123',
     name: 'Dr. Marcus Chen',
     email: 'marcus.chen@radassist.demo',
-    role: 'doctor',
+    role: 'radiologist',
     department: 'Radiology',
   },
   {
-    userId: 'USR-NURSE-0001',
-    username: 'nurse',
-    password: 'nurse123',
-    name: 'Nurse Jamie Lee',
-    email: 'jamie.lee@radassist.demo',
-    role: 'nurse',
-    department: 'Radiology',
+    userId: 'USR-DOCTOR-0001',
+    username: 'doctor',
+    password: 'doctor123',
+    name: 'Dr. Alex Wong',
+    email: 'alex.wong@radassist.demo',
+    role: 'doctor',
+    department: 'Medicine',
   },
 ];
 
@@ -106,8 +107,8 @@ const SAMPLE_CASES = [
     reportText:
       'Calcified aortic atheromatosis is noted. Bilateral apical pleural thickening is observed. No other significant radiological findings.',
     status: 'pending_approve',
-    createdBy: 'USR-DOCTOR-0001',
-    createdByName: 'Dr. Alex Wong',
+    createdBy: 'USR-NURSE-0001',
+    createdByName: 'Jamie Lee',
     findingsSeed: [
       { label: 'Calcified aortic atheromatosis', confidence: 0.92, bbox: [29, 17, 22, 18], location: 'Aortic arch', size: '2.3 cm', pattern: 'Nodular', sentence: 'Calcified aortic atheromatosis is noted.', status: 'accepted' },
       { label: 'Bilateral apical pleural thickening', confidence: 0.78, bbox: [23, 9, 52, 17], location: 'Pleural, apical', size: 'N/A', pattern: 'Diffuse', sentence: 'Bilateral apical pleural thickening is observed.', status: 'accepted' },
@@ -127,8 +128,8 @@ const SAMPLE_CASES = [
     reportText:
       'A faint opacity is seen in the right lower zone. The remainder of the lungs are clear. Clinical correlation is advised.',
     status: 'pending_approve',
-    createdBy: 'USR-DOCTOR-0002',
-    createdByName: 'Dr. Priya Nair',
+    createdBy: 'USR-NURSE-0001',
+    createdByName: 'Jamie Lee',
     findingsSeed: [],
   },
   {
@@ -144,10 +145,10 @@ const SAMPLE_CASES = [
     reportText:
       'A focal opacity is present in the right lower zone. The cardiac silhouette is mildly enlarged. No other significant radiological findings.',
     status: 'finalized',
-    createdBy: 'USR-DOCTOR-0001',
-    createdByName: 'Dr. Alex Wong',
-    finalizedBy: 'USR-DOCTOR-0001',
-    finalizedByName: 'Dr. Alex Wong',
+    createdBy: 'USR-NURSE-0001',
+    createdByName: 'Jamie Lee',
+    finalizedBy: 'USR-DOCTOR-0002',
+    finalizedByName: 'Dr. Priya Nair',
     findingsSeed: [
       { label: 'Right lower-zone opacity', confidence: 0.86, bbox: [54, 58, 23, 20], location: 'Right lower lobe', size: '3.1 cm', pattern: 'Consolidation', sentence: 'A focal opacity is present in the right lower zone.', status: 'accepted' },
       { label: 'Mild cardiomegaly', confidence: 0.83, bbox: [36, 53, 34, 28], location: 'Cardiac silhouette', size: 'CTR 0.56', pattern: 'Other', sentence: 'The cardiac silhouette is mildly enlarged.', status: 'accepted' },
@@ -166,8 +167,8 @@ const SAMPLE_CASES = [
     reportText:
       'Lungs appear hyperinflated with flattened diaphragms consistent with COPD. No focal consolidation.',
     status: 'pending_approve',
-    createdBy: 'USR-DOCTOR-0003',
-    createdByName: 'Dr. Marcus Chen',
+    createdBy: 'USR-NURSE-0001',
+    createdByName: 'Jamie Lee',
     findingsSeed: [
       { label: 'Hyperinflated lungs', confidence: 0.81, bbox: [10, 5, 80, 90], location: 'Bilateral', size: 'N/A', pattern: 'Diffuse', sentence: 'Lungs appear hyperinflated.', status: 'pending' },
     ],
@@ -184,8 +185,8 @@ const SAMPLE_CASES = [
     diagnosis: 'No acute cardiopulmonary findings',
     reportText: 'Heart size is normal. Lungs are clear. No pleural effusion or pneumothorax.',
     status: 'pending_approve',
-    createdBy: 'USR-DOCTOR-0002',
-    createdByName: 'Dr. Priya Nair',
+    createdBy: 'USR-NURSE-0001',
+    createdByName: 'Jamie Lee',
     findingsSeed: [],
   },
   {
@@ -201,22 +202,56 @@ const SAMPLE_CASES = [
     reportText: 'Nondisplaced fracture of the left 8th lateral rib. No pneumothorax.',
     status: 'finalized',
     urgent: true,
-    createdBy: 'USR-DOCTOR-0003',
-    createdByName: 'Dr. Marcus Chen',
+    createdBy: 'USR-NURSE-0001',
+    createdByName: 'Jamie Lee',
     finalizedBy: 'USR-DOCTOR-0003',
     finalizedByName: 'Dr. Marcus Chen',
     findingsSeed: [
       { label: 'Left 8th rib fracture', confidence: 0.95, bbox: [22, 50, 12, 6], location: 'Left lateral chest wall', size: 'N/A', pattern: 'Linear', sentence: 'Nondisplaced fracture of the left 8th lateral rib.', status: 'accepted' },
     ],
   },
+  {
+    caseId: 'CASE-DEMO-0007',
+    patientId: 'PT-2026-0061',
+    firstName: 'Siu',
+    lastName: 'Lam',
+    patientName: 'Siu Lam',
+    age: '51',
+    sex: 'Female',
+    history: 'Chest pain after travel',
+    diagnosis: 'Awaiting AI',
+    reportText: '',
+    status: 'pending',
+    analysisState: 'none',
+    createdBy: 'USR-NURSE-0001',
+    createdByName: 'Jamie Lee',
+    findingsSeed: [],
+  },
 ];
 
 async function seedUsers() {
   let created = 0;
+  const nurse = await User.findOne({ username: 'nurse' });
+  const techTaken = await User.findOne({ username: 'tech' });
+  if (nurse && !techTaken) {
+    nurse.username = 'tech';
+    nurse.role = 'technician';
+    nurse.name = 'Jamie Lee';
+    await nurse.save();
+    console.log('  · migrated nurse → technician (tech)');
+  }
+
   for (const u of DEMO_USERS) {
-    const exists = await User.findOne({ username: u.username });
+    const exists = await User.findOne({ $or: [{ username: u.username }, { userId: u.userId }] });
     if (exists) {
-      console.log(`  · user ${u.username} already exists, skipping`);
+      exists.role = u.role;
+      exists.name = u.name;
+      exists.email = u.email;
+      exists.department = u.department;
+      exists.password = u.password;
+      if (exists.username !== u.username && u.username === 'tech') exists.username = u.username;
+      await exists.save();
+      console.log(`  · user ${exists.username} updated (${u.role})`);
       continue;
     }
     await User.create(u);
@@ -265,6 +300,8 @@ async function seedCases() {
       if (Boolean(c.urgent) && !exists.urgent) patch.urgent = true;
       if (c.createdBy && exists.createdBy !== c.createdBy) patch.createdBy = c.createdBy;
       if (c.createdByName && exists.createdByName !== c.createdByName) patch.createdByName = c.createdByName;
+      if (c.analysisState && exists.analysisState !== c.analysisState) patch.analysisState = c.analysisState;
+      if (!c.analysisState && c.status !== 'pending' && exists.analysisState !== 'done') patch.analysisState = 'done';
       if (c.finalizedBy && exists.finalizedBy !== c.finalizedBy) patch.finalizedBy = c.finalizedBy;
       if (c.finalizedByName && exists.finalizedByName !== c.finalizedByName) patch.finalizedByName = c.finalizedByName;
       if (Object.keys(patch).length) {
@@ -290,6 +327,7 @@ async function seedCases() {
       reportText: c.reportText,
       findings: c.findingsSeed,
       status: c.status,
+      analysisState: c.analysisState || (c.status === 'pending' ? 'none' : 'done'),
       urgent: Boolean(c.urgent),
       createdBy: c.createdBy || 'USR-DOCTOR-0001',
       createdByName: c.createdByName || 'Dr. Alex Wong',
@@ -323,6 +361,33 @@ async function seedCases() {
   return created;
 }
 
+const DEMO_CHARTS = {
+  'PT-2026-0018': { medicines: 'Amlodipine 5 mg daily; salbutamol inhaler', heartRate: '76 bpm', labResults: 'Hb 12.8 g/dL; WBC 8.1; CRP 6' },
+  'PT-2026-0021': { medicines: 'Paracetamol as needed', heartRate: '92 bpm', labResults: 'WBC 11.4; CRP 28' },
+  'PT-2026-0011': { medicines: 'Metformin 500 mg twice daily', heartRate: '68 bpm', labResults: 'HbA1c 6.9%; creatinine 88' },
+  'PT-2026-0033': { medicines: 'Tiotropium; salbutamol', heartRate: '88 bpm', labResults: 'SpO2 93% on air' },
+  'PT-2026-0044': { medicines: 'None recorded', heartRate: '72 bpm', labResults: 'FBC within normal limits' },
+  'PT-2026-0050': { medicines: 'Alendronate weekly', heartRate: '80 bpm', labResults: 'Calcium 2.3; vitamin D 42' },
+  'PT-2026-0051': { medicines: 'Ibuprofen as needed', heartRate: '74 bpm', labResults: 'Hb 14.1 g/dL; WBC 6.8' },
+  'PT-2025-1107': { medicines: 'None recorded', heartRate: '70 bpm', labResults: 'FBC within normal limits' },
+  'PT-2026-0061': { medicines: 'Combined oral contraceptive', heartRate: '78 bpm', labResults: 'D-dimer pending' },
+};
+
+async function seedCharts() {
+  let updated = 0;
+  for (const [patientId, extra] of Object.entries(DEMO_CHARTS)) {
+    const p = await Patient.findOne({ patientId });
+    if (!p) continue;
+    p.medicines = extra.medicines;
+    p.heartRate = extra.heartRate;
+    p.labResults = extra.labResults;
+    await p.save();
+    updated++;
+  }
+  console.log(`  · updated ${updated} patient charts with medicines / heart rate / labs`);
+  return updated;
+}
+
 async function seedAuditLogs() {
   const exists = await AuditLog.findOne({});
   if (exists) {
@@ -353,6 +418,9 @@ async function seedAuditLogs() {
     console.log('\n— Seeding cases (uploads X-ray image to GridFS) —');
     const c = await seedCases();
     console.log(`  total new cases: ${c}`);
+
+    console.log('\n— Seeding patient chart extras —');
+    await seedCharts();
 
     console.log('\n— Seeding audit logs —');
     const a = await seedAuditLogs();

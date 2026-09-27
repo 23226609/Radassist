@@ -12,9 +12,26 @@ const azureFindings = require('../utils/azureFindings');
 const { mergeFindingsFromReport, dedupeFindings } = require('../utils/findingsMerge');
 const { bucket, downloadImage } = require('./_gridfs');
 const { nameFieldsFrom } = require('../utils/patientName');
-const { toPublicCase, statusFilter } = require('../utils/caseStatus');
+const { toPublicCase, statusFilter, publicStatus } = require('../utils/caseStatus');
 const { upsertPatientFromCase, removeCaseRecord } = require('../utils/recordSync');
+const { normalizeRole, isReferringDoctor, isTechnician } = require('../utils/roles');
 const { OWNED } = Case;
+
+function publicCaseOpts(req, doc) {
+  const role = normalizeRole(req.user?.role);
+  const finalized = publicStatus(doc?.status) === 'finalized';
+  return {
+    includeShareToken: role === 'radiologist' || role === 'admin',
+    includeEditLog: (role === 'radiologist' || role === 'admin') && !finalized,
+    stripProvenance: role === 'doctor' || finalized,
+  };
+}
+
+function pushEditLog(doc, entry) {
+  const rows = Array.isArray(doc.editLog) ? doc.editLog : [];
+  rows.push({ at: new Date(), ...entry });
+  doc.editLog = rows.slice(-80);
+}
 
 function sanitizeFindings(findings) {
   return (findings || []).map((raw) => {
@@ -52,6 +69,11 @@ exports.listCases = catchAsync(async (req, res) => {
     if (statusMatch) filter.status = statusMatch;
   }
   if (patientId) filter.patientId = new RegExp(escapeRegex(patientId), 'i');
+  if (isReferringDoctor(req.user)) {
+    filter.status = 'finalized';
+  } else if (isTechnician(req.user)) {
+    filter.createdBy = req.user.userId;
+  }
   if (q) {
     const re = new RegExp(escapeRegex(q), 'i');
     filter.$or = [
@@ -67,9 +89,6 @@ exports.listCases = catchAsync(async (req, res) => {
       { history: re },
     ];
   }
-
-  // Nurses see every case; doctors see every case (the design is intentionally permissive).
-  // Admins see every case.
 
   // Cosmos DB can't sort by indexed fields the index doesn't cover reliably;
   // do an in-memory sort to be safe across all fields.
@@ -87,8 +106,7 @@ exports.listCases = catchAsync(async (req, res) => {
     return String(av).localeCompare(String(bv)) * dir;
   });
 
-  // Add resolved image URLs and map the old `completed` status.
-  const items = docs.map((c) => toPublicCase(c));
+  const items = docs.map((c) => toPublicCase(c, publicCaseOpts(req, c)));
 
   res.json({ success: true, total: items.length, cases: items });
 });
@@ -97,7 +115,13 @@ exports.getCase = catchAsync(async (req, res, next) => {
   const c = await findCaseByAnyId(req.params.id);
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
   const raw = typeof c.toObject === 'function' ? c.toObject() : c;
-  res.json({ success: true, case: toPublicCase(raw, { includeShareToken: true }) });
+  if (isReferringDoctor(req.user) && publicStatus(raw.status) !== 'finalized') {
+    return next(ApiError.forbidden('Doctors can only open finalized reports.'));
+  }
+  if (isTechnician(req.user) && raw.createdBy && raw.createdBy !== req.user.userId) {
+    return next(ApiError.forbidden('Technicians can only open films they uploaded.'));
+  }
+  res.json({ success: true, case: toPublicCase(raw, publicCaseOpts(req, raw)) });
 });
 
 // ---------------------------------------------------------------------------
@@ -122,13 +146,8 @@ exports.createCase = catchAsync(async (req, res, next) => {
   });
   const imageId = up.id;
 
-  const tmpName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${path.extname(req.file.originalname) || '.jpg'}`;
-  const tmpPath = path.join(UPLOAD_DIR, tmpName);
-  fs.writeFileSync(tmpPath, req.file.buffer);
-
   const caseId = newCaseId();
   const sexValue = ['Female', 'Male', 'Other'].includes(sex) ? sex : '';
-  const aiModel = process.env.AI_MODEL_PATH || '/Users/PHY/CURV-mlx';
   const userId = req.user.userId;
   const userName = req.user.name;
 
@@ -153,11 +172,13 @@ exports.createCase = catchAsync(async (req, res, next) => {
     age: age || '',
     sex: sexValue,
     history: history || '',
-    diagnosis: 'Generating report…',
+    diagnosis: 'Awaiting AI',
     diagnosisSource: '',
     reportText: '',
     findings: [],
     status: 'pending',
+    analysisState: 'none',
+    editLog: [],
     createdBy: userId,
     createdByName: userName,
     imageId,
@@ -179,21 +200,56 @@ exports.createCase = catchAsync(async (req, res, next) => {
 
   res.status(201).json({
     success: true,
+    analysing: false,
+    case: toPublicCase(doc, publicCaseOpts(req, doc)),
+  });
+});
+
+exports.analyzeCase = catchAsync(async (req, res, next) => {
+  const c = await findCaseByAnyId(req.params.id);
+  if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
+  if (c.status === 'finalized') {
+    return next(ApiError.badRequest('This case is finalized and cannot be analysed again.'));
+  }
+  if (c.analysisState === 'running') {
+    return res.json({ success: true, analysing: true, case: toPublicCase(c, publicCaseOpts(req, c)) });
+  }
+  if (!c.imageId) return next(ApiError.badRequest('This case has no X-ray image.'));
+
+  const image = await downloadImage(c.imageId);
+  if (!image?.buffer) return next(ApiError.badRequest('Could not load the stored X-ray.'));
+
+  const ext = path.extname(c.imageFilename || '') || '.jpg';
+  const tmpName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+  const tmpPath = path.join(UPLOAD_DIR, tmpName);
+  fs.writeFileSync(tmpPath, image.buffer);
+
+  c.status = 'pending';
+  c.analysisState = 'running';
+  c.diagnosis = 'Generating report…';
+  await c.save();
+
+  const caseId = c.caseId;
+  const userId = req.user.userId;
+  const aiModel = process.env.AI_MODEL_PATH || '/Users/PHY/CURV-mlx';
+
+  res.json({
+    success: true,
     analysing: true,
-    case: toPublicCase(doc),
+    case: toPublicCase(c, publicCaseOpts(req, c)),
   });
 
   setImmediate(() => {
     finishAnalysis({
       caseId,
       tmpPath,
-      patientId,
-      age,
-      sex: sexValue,
-      history,
+      patientId: c.patientId,
+      age: c.age,
+      sex: c.sex,
+      history: c.history,
       userId,
       aiModel,
-    }).catch((err) => console.error('[createCase] background analysis failed:', err));
+    }).catch((err) => console.error('[analyzeCase] background analysis failed:', err));
   });
 });
 
@@ -277,8 +333,17 @@ async function finishAnalysis({ caseId, tmpPath, patientId, age, sex, history, u
   c.diagnosis = diagnosis;
   c.diagnosisSource = diagnosisSource;
   c.status = 'pending_approve';
+  c.analysisState = 'done';
   c.aiProvider = aiError ? '' : 'mlx_vlm';
   c.aiModel = aiError ? '' : aiModel;
+  pushEditLog(c, {
+    userId: userId || 'system',
+    userName: 'CURV',
+    kind: 'ai',
+    summary: aiError
+      ? `AI unavailable (${aiError}). Radiologist can complete the report by hand.`
+      : `AI generated draft report (${(c.findings || []).length} findings).`,
+  });
   await c.save();
 }
 
@@ -316,14 +381,11 @@ exports.updateCase = catchAsync(async (req, res, next) => {
   const c = await findCaseByAnyId(req.params.id);
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
 
-  // Only doctors (and admins) can edit case content.
-  if (req.user.role === 'nurse') {
-    return next(ApiError.forbidden('Nurses cannot edit case content.'));
-  }
-
   const oldStatus = c.status;
+  const prevReport = c.reportText;
+  const prevFindings = JSON.stringify(c.findings || []);
   const { diagnosis, reportText, findings, remarks, urgent } = req.body || {};
-  if (c.status === 'pending' && (diagnosis !== undefined || reportText !== undefined || Array.isArray(findings))) {
+  if (c.analysisState === 'running' && (diagnosis !== undefined || reportText !== undefined || Array.isArray(findings))) {
     return next(ApiError.badRequest('The report is still generating.'));
   }
   // A finalized report is locked. Clinicians can still leave remarks and
@@ -336,6 +398,20 @@ exports.updateCase = catchAsync(async (req, res, next) => {
     if (reportText !== undefined) c.reportText = reportText;
     if (remarks !== undefined) c.remarks = remarks;
     if (Array.isArray(findings)) c.findings = sanitizeFindings(findings);
+    const reportChanged = reportText !== undefined && reportText !== prevReport;
+    const findingsChanged = Array.isArray(findings) && JSON.stringify(c.findings || []) !== prevFindings;
+    if (reportChanged || findingsChanged) {
+      pushEditLog(c, {
+        userId: req.user.userId,
+        userName: req.user.name,
+        kind: 'manual',
+        summary: reportChanged && findingsChanged
+          ? 'Radiologist edited the report text and findings.'
+          : reportChanged
+            ? 'Radiologist edited the report text.'
+            : 'Radiologist edited findings.',
+      });
+    }
   }
 
   await c.save();
@@ -346,14 +422,13 @@ exports.updateCase = catchAsync(async (req, res, next) => {
     await addAuditLog(req.user.userId, 'CASE_UPDATED', `Edited case ${c.caseId || c._id}`, c.caseId || String(c._id));
   }
 
-  res.json({ success: true, case: toPublicCase(c) });
+  res.json({ success: true, case: toPublicCase(c, publicCaseOpts(req, c)) });
 });
 
 exports.finalizeCase = catchAsync(async (req, res, next) => {
-  if (req.user.role === 'nurse') return next(ApiError.forbidden('Only doctors or admins can finalize.'));
   const c = await findCaseByAnyId(req.params.id);
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
-  if (c.status === 'pending') {
+  if (c.analysisState === 'running') {
     return next(ApiError.badRequest('The report is still generating.'));
   }
 
@@ -363,7 +438,7 @@ exports.finalizeCase = catchAsync(async (req, res, next) => {
   await c.save();
   await addAuditLog(req.user.userId, 'CASE_FINALIZED', `Finalized case ${c.caseId || c._id}`, c.caseId || String(c._id), null, 'finalized');
 
-  res.json({ success: true, case: toPublicCase(c, { includeShareToken: true }) });
+  res.json({ success: true, case: toPublicCase(c, publicCaseOpts(req, c)) });
 });
 
 exports.createShareLink = catchAsync(async (req, res, next) => {
@@ -554,8 +629,6 @@ exports.summariseFindings = catchAsync(async (req, res, next) => {
 
   res.json({
     success: true,
-    added: findings.length,
-    kept: kept.length,
     case: toPublicCase(c),
   });
 });

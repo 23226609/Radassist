@@ -67,7 +67,7 @@ function test(name, fn) {
   }
 }
 
-state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+state.user = { role: "technician", userId: "u1", name: "Jamie Lee" };
 state.selectedFile = null;
 
 const root = document.getElementById("root");
@@ -170,7 +170,7 @@ test("submit button is Upload X-Ray", () => {
 
 {
   api.createCase = async () => ({
-    analysing: true,
+    analysing: false,
     case: {
       caseId: "CASE-NEW-1",
       patientId: "PT-1",
@@ -178,7 +178,8 @@ test("submit button is Upload X-Ray", () => {
       firstName: "Ada",
       lastName: "Wong",
       status: "pending",
-      diagnosis: "Generating report…",
+      analysisState: "none",
+      diagnosis: "Awaiting AI",
     },
   });
   api.getCase = async () => ({
@@ -199,12 +200,10 @@ test("submit button is Upload X-Ray", () => {
   await new Promise((r) => setTimeout(r, 0));
 }
 
-test("upload returns to the worklist with a generating overlay", () => {
+test("upload returns to the worklist without starting AI", () => {
   assert.equal(state.page, "dashboard");
   const overlay = document.getElementById("radassist-analysis");
-  assert.ok(overlay, "overlay missing");
-  assert.equal(overlay.hidden, false);
-  assert.ok(overlay.textContent.includes("Generating the report"));
+  assert.ok(!overlay || overlay.hidden !== false);
 });
 
 const { stopAnalysisWatch } = await import("../src/lib/analysisJob.js");

@@ -105,7 +105,7 @@ const testCase = {
   ],
 };
 
-state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+state.user = { role: "radiologist", userId: "u1", name: "Dr Test" };
 state.cases = [testCase];
 state.selectedCaseId = testCase.caseId;
 api.getCase = async () => ({ case: structuredClone(testCase) });
@@ -187,6 +187,54 @@ test("Show boxes brings the overlays back", () => {
   assert.ok(root.textContent.includes("F1"));
 });
 
+{
+  const proto = window.HTMLElement.prototype;
+  proto.getBoundingClientRect = () => ({
+    left: 0, top: 0, width: 100, height: 100, right: 100, bottom: 100, x: 0, y: 0, toJSON() {},
+  });
+  const stage = root.querySelector("#xray-stage");
+  function point(type, x, y) {
+    const ev = new window.Event(type, { bubbles: true, cancelable: true });
+    ev.clientX = x;
+    ev.clientY = y;
+    ev.button = 0;
+    stage.dispatchEvent(ev);
+  }
+  test("doctors can move the selected finding's box", () => {
+    assert.ok(text().includes("Drag the yellow box to move it"), "move hint missing on the finding card");
+    // First finding bbox is [10,10,20,20]. Drag from inside (15,15) by +10,+10.
+    point("pointerdown", 15, 15);
+    point("pointermove", 25, 25);
+    point("pointerup", 25, 25);
+    const box = root.querySelector("[data-bbox]");
+    assert.equal(box.style.left, "20%");
+    assert.equal(box.style.top, "20%");
+    assert.equal(box.style.width, "20%");
+    assert.equal(box.style.height, "20%");
+  });
+  test("doctors can resize the box from a corner", () => {
+    // Box is now [20,20,20,20]. SE corner is (40,40); drag to (55,50).
+    point("pointerdown", 40, 40);
+    point("pointermove", 55, 50);
+    point("pointerup", 55, 50);
+    const box = root.querySelector("[data-bbox]");
+    assert.equal(box.style.left, "20%");
+    assert.equal(box.style.top, "20%");
+    assert.equal(box.style.width, "35%");
+    assert.equal(box.style.height, "30%");
+  });
+  test("dragging on empty film redraws the selected box", () => {
+    point("pointerdown", 5, 60);
+    point("pointermove", 25, 85);
+    point("pointerup", 25, 85);
+    const box = root.querySelector("[data-bbox]");
+    assert.equal(box.style.left, "5%");
+    assert.equal(box.style.top, "60%");
+    assert.equal(box.style.width, "20%");
+    assert.equal(box.style.height, "25%");
+  });
+}
+
 test("clicking a list row selects that finding", () => {
   points()[1].dispatchEvent(new window.Event("click"));
   assert.equal(points()[1].getAttribute("aria-current"), "true");
@@ -214,6 +262,9 @@ test("clicking the first row returns to the first finding", () => {
   assert.equal(points()[0].getAttribute("aria-current"), "true");
   assert.equal(selectedLabel(), "Heart size normal");
 });
+
+await new Promise((r) => setTimeout(r, 500));
+savedPayload = null;
 
 test("Add manually opens a new card at the end of the list", () => {
   const add = [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === "+ Add manually");
@@ -395,7 +446,7 @@ test("the remarks box sits under the findings in the right column", () => {
 
 {
   const typeFirst = structuredClone(testCase);
-  state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+  state.user = { role: "radiologist", userId: "u1", name: "Dr Test" };
   state.cases = [typeFirst];
   state.selectedCaseId = typeFirst.caseId;
   api.getCase = async () => ({ case: structuredClone(typeFirst) });
@@ -526,7 +577,7 @@ test("the remarks box sits under the findings in the right column", () => {
       },
     ],
   };
-  state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+  state.user = { role: "radiologist", userId: "u1", name: "Dr Test" };
   state.cases = [rejectCase];
   state.selectedCaseId = rejectCase.caseId;
   api.getCase = async () => ({ case: structuredClone(rejectCase) });
@@ -572,7 +623,7 @@ test("the remarks box sits under the findings in the right column", () => {
       },
     ],
   };
-  state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+  state.user = { role: "radiologist", userId: "u1", name: "Dr Test" };
   state.cases = [editCase];
   state.selectedCaseId = editCase.caseId;
   api.getCase = async () => ({ case: structuredClone(editCase) });
@@ -598,14 +649,15 @@ test("the remarks box sits under the findings in the right column", () => {
 }
 
 {
-  state.user = { role: "nurse", userId: "n1", name: "Nurse" };
+  state.user = { role: "technician", userId: "n1", name: "Tech" };
   const nurseRoot = document.createElement("div");
   document.body.appendChild(nurseRoot);
   await renderReviewPage({ target: nurseRoot });
 
-  test("nurses see the name but cannot mark a case urgent", () => {
+  test("technicians see the name but cannot mark a case urgent", () => {
     assert.ok(nurseRoot.textContent.includes("Alex Wong"));
     assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => /urgent/i.test(b.textContent)));
+    assert.ok(!nurseRoot.textContent.includes("Drag the yellow box"), "technicians must not edit boxes");
   });
 }
 

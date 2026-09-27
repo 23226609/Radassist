@@ -7,15 +7,16 @@ const upload = require('../middleware/upload');
 router.use(authenticate);
 
 router.get('/', c.listCases);
-router.post('/', authorize('doctor', 'admin'), upload.single('file'), c.createCase);
+router.post('/', authorize('technician', 'admin'), upload.single('file'), c.createCase);
 router.post('/bulk-delete', authorize('admin'), c.deleteCases);
 router.get('/:id', c.getCase);
-router.put('/:id', authorize('doctor', 'admin'), c.updateCase);
-router.post('/:id/finalize', authorize('doctor', 'admin'), c.finalizeCase);
-router.post('/:id/share', authorize('doctor', 'admin'), c.createShareLink);
-router.delete('/:id/share', authorize('doctor', 'admin'), c.revokeShareLink);
-router.post('/:id/summarise-findings', authorize('doctor', 'admin'), c.summariseFindings);
-router.post('/:id/summarise-diagnosis', authorize('doctor', 'admin'), c.summariseDiagnosis);
+router.put('/:id', authorize('radiologist', 'admin'), c.updateCase);
+router.post('/:id/analyze', authorize('radiologist', 'admin'), c.analyzeCase);
+router.post('/:id/finalize', authorize('radiologist', 'admin'), c.finalizeCase);
+router.post('/:id/share', authorize('radiologist', 'admin'), c.createShareLink);
+router.delete('/:id/share', authorize('radiologist', 'admin'), c.revokeShareLink);
+router.post('/:id/summarise-findings', authorize('radiologist', 'admin'), c.summariseFindings);
+router.post('/:id/summarise-diagnosis', authorize('radiologist', 'admin'), c.summariseDiagnosis);
 router.delete('/:id', authorize('admin'), c.deleteCase);
 
 module.exports = router;

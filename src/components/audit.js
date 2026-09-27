@@ -10,15 +10,15 @@ import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButt
 import { PAGE, searchField, emptyState, pageHeading } from "../lib/ui.js";
 
 const ACTION_TONE = {
-  LOGIN: "bg-cyan-50 text-cyan-700",
+  LOGIN: "bg-blue-50 text-ha-blue",
   LOGOUT: "bg-slate-100 text-slate-700",
-  REGISTER: "bg-cyan-50 text-cyan-700",
+  REGISTER: "bg-blue-50 text-ha-blue",
   AI_ANALYZED: "bg-purple-50 text-purple-700",
-  CASE_CREATED: "bg-cyan-50 text-cyan-700",
+  CASE_CREATED: "bg-blue-50 text-ha-blue",
   CASE_UPDATED: "bg-amber-50 text-amber-700",
   CASE_FINALIZED: "bg-green-50 text-green-700",
   CASE_DELETED: "bg-red-50 text-red-700",
-  PATIENT_CREATED: "bg-cyan-50 text-cyan-700",
+  PATIENT_CREATED: "bg-blue-50 text-ha-blue",
   PATIENT_UPDATED: "bg-slate-100 text-slate-700",
   PATIENT_DELETED: "bg-red-50 text-red-700",
 };
@@ -108,7 +108,7 @@ export async function renderAuditPage({ target }) {
             onSearch: () => { page = 1; selected.clear(); refresh(); },
           }),
           el("select", {
-            class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600",
+            class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-ha-blue",
             value: action,
             onChange: (e) => { action = e.target.value; page = 1; selected.clear(); refresh(); },
           },

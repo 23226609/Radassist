@@ -67,7 +67,7 @@ let deleted = null;
 api.deleteAuditLogs = async (ids) => { deleted = ids; return { success: true, deleted: ids.length }; };
 
 const root = document.getElementById("root");
-state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+state.user = { role: "radiologist", userId: "u1", name: "Dr Test" };
 await renderAuditPage({ target: root });
 
 test("doctors can read the audit log but cannot delete entries", () => {

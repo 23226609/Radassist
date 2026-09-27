@@ -9,6 +9,7 @@ import { state, toast } from "../state.js";
 import { unwrapLegacyReport, resyncMachineFindings } from "./review.js";
 import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, applyRemarksToReport } from "../lib/reportExport.js";
 import { svgIcon } from "./icons.js";
+import { canEditReport } from "../lib/roles.js";
 import { reportPopupUrl, isReportPopup, reportPopupCaseId } from "../lib/reportPopup.js";
 
 export { reportPopupUrl, isReportPopup, reportPopupCaseId };
@@ -23,10 +24,10 @@ export async function renderReportViewPage({ target }) {
 
   const canEdit = () =>
     stored &&
-    state.user?.role !== "nurse" &&
+    canEditReport(state.user) &&
     stored.status !== "finalized";
 
-  const canRemark = () => stored && state.user?.role !== "nurse";
+  const canRemark = () => stored && canEditReport(state.user);
 
   async function load() {
     if (!caseId) {
@@ -214,7 +215,7 @@ export async function renderReportViewPage({ target }) {
                 ? "The report is locked. Remarks are saved as notes only and are not written into the report, Word, or PDF."
                 : "Typing saves the draft. Click Save report to add, update, or remove finding cards from what you changed."
             ),
-            canRemark() && el("p", { id: "mongo-report-status", class: "mt-1 text-xs font-medium text-cyan-700" })
+            canRemark() && el("p", { id: "mongo-report-status", class: "mt-1 text-xs font-medium text-ha-blue" })
           )
     );
     mount(target, root);

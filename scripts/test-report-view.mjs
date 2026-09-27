@@ -60,7 +60,7 @@ const testCase = {
   remarks: "Check old films.",
 };
 
-state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+state.user = { role: "radiologist", userId: "u1", name: "Dr Test" };
 api.getCase = async () => ({ case: structuredClone(testCase) });
 let summarised = 0;
 api.summariseFindings = async () => {
@@ -117,7 +117,7 @@ test("Save report rebuilds finding cards from the draft", () => {
     `expected a heart-size card, got ${JSON.stringify(saved.findings)}`);
 });
 
-state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+state.user = { role: "radiologist", userId: "u1", name: "Dr Test" };
 const finalizedCase = { ...testCase, status: "finalized" };
 api.getCase = async () => ({ case: structuredClone(finalizedCase) });
 saved = null;
@@ -150,13 +150,13 @@ test("finalized popup remarks do not rewrite the report", () => {
   assert.equal(saved.reportText, undefined, "finalized report text must stay locked");
 });
 
-state.user = { role: "nurse", userId: "n1", name: "Nurse Test" };
+state.user = { role: "doctor", userId: "n1", name: "Doctor Test" };
 saved = null;
 api.getCase = async () => ({ case: structuredClone(testCase) });
 await renderReportViewPage({ target: root });
 
-test("nurses see a read-only report", () => {
-  assert.equal(root.querySelectorAll("textarea").length, 0, "nurses should not edit the report");
+test("referring doctors see a read-only report", () => {
+  assert.equal(root.querySelectorAll("textarea").length, 0, "doctors should not edit the report");
   assert.ok(text().includes("The lungs are clear."));
   assert.ok(text().includes("Check old films."));
   assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Save report"));

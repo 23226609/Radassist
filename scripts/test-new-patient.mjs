@@ -67,7 +67,7 @@ function byPlaceholder(root, text) {
 
 console.log("\n=== new patient ===");
 
-state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+state.user = { role: "technician", userId: "u1", name: "Jamie Lee" };
 const root = document.getElementById("root");
 await renderNewPatientPage({ target: root });
 
@@ -132,10 +132,10 @@ test("asks for first, middle and last name", () => {
 }
 
 {
-  state.user = { role: "nurse", userId: "n1", name: "Nurse" };
+  state.user = { role: "doctor", userId: "n1", name: "Doctor" };
   await renderNewPatientPage({ target: root });
-  test("nurses cannot add a patient", () => {
-    assert.ok(root.textContent.includes("Nurses cannot add patients."));
+  test("doctors cannot add a patient", () => {
+    assert.ok(root.textContent.includes("You cannot add patients with this account."));
     assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Add patient"));
   });
 }

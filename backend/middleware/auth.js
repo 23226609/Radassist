@@ -4,6 +4,7 @@
 const jwt = require('jsonwebtoken');
 const ApiError = require('../utils/ApiError');
 const User = require('../models/User');
+const { normalizeRole } = require('../utils/roles');
 
 const authenticate = async (req, res, next) => {
   try {
@@ -38,7 +39,8 @@ const authenticate = async (req, res, next) => {
 
 const authorize = (...roles) => (req, res, next) => {
   if (!req.user) return next(ApiError.unauthorized('Not authenticated'));
-  if (!roles.includes(req.user.role)) {
+  const role = normalizeRole(req.user.role);
+  if (!roles.includes(role)) {
     return next(ApiError.forbidden('You do not have permission to perform this action.'));
   }
   next();

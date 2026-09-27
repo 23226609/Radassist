@@ -101,7 +101,7 @@ export async function renderUsersPage({ target }) {
                         ? el("span", { class: "text-xs text-slate-400" }, "You")
                         : el("button", {
                             class: u.isActive === false
-                              ? "rounded-xl bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-cyan-700 disabled:opacity-50"
+                              ? "rounded-xl bg-ha-blue px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#074f85] disabled:opacity-50"
                               : "rounded-xl border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50",
                             disabled: busyId === u.userId,
                             onClick: () => toggle(u),

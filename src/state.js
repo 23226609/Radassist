@@ -62,6 +62,12 @@ export function parseHash(hash = currentHash()) {
   if (head === "review" && parts[1]) return { page: "review", selectedCaseId: parts[1] };
   if (head === "share" && parts[1]) return { page: "share", shareToken: parts.slice(1).join("/") };
   if (head === "users") return { page: "users" };
+  if (head === "audit") return { page: "audit" };
+  if (head === "beds") return { page: "beds" };
+  if (head === "monitor") return { page: "monitor" };
+  if (head === "labs") return { page: "labs" };
+  if (head === "meds") return { page: "meds" };
+  if (head === "notes") return { page: "notes" };
   if (head === "new") return { page: "new" };
   return { page: "dashboard" };
 }
@@ -92,6 +98,11 @@ export function hashFor(s = state) {
         : "#/dashboard";
     case "users": return "#/users";
     case "audit": return "#/audit";
+    case "beds": return "#/beds";
+    case "monitor": return "#/monitor";
+    case "labs": return "#/labs";
+    case "meds": return "#/meds";
+    case "notes": return "#/notes";
     default: return "#/dashboard";
   }
 }

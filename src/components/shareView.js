@@ -117,7 +117,7 @@ export async function renderSharePage({ target }) {
     const body = splitReportAndRemarks(stored?.reportText || "").body;
     const findings = (stored?.findings || []).filter((f) => f.status !== "rejected");
     const root = el("main", { class: "mx-auto max-w-5xl px-5 py-8" },
-      el("p", { class: "text-xs font-semibold uppercase tracking-wider text-cyan-700" }, "Shared report"),
+      el("p", { class: "text-xs font-semibold uppercase tracking-wider text-ha-blue" }, "Shared report"),
       el("h1", { class: "mt-1 text-3xl font-bold text-slate-900" }, "Chest X-ray report"),
       stored && el("p", { class: "mt-2 text-slate-600" },
         patientDisplayName(stored) || stored.patientId || "",

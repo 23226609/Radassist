@@ -67,7 +67,7 @@ const chart = {
   ],
 };
 
-state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+state.user = { role: "technician", userId: "u1", name: "Jamie Lee" };
 state.selectedPatientId = "PT-2026-0018";
 api.listPatients = async () => ({
   patients: [{
@@ -100,7 +100,7 @@ test("patients list shows the chart", () => {
   assert.ok(listRoot.textContent.includes("Mei Chen"));
   assert.ok(listRoot.textContent.includes("Mild cardiomegaly"));
   assert.ok(listRoot.textContent.includes("Urgent"), "urgent tag missing on a patient with an urgent case");
-  assert.ok([...listRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "New patient"));
+  assert.ok([...listRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Add Patient"));
   assert.ok(![...listRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Delete"),
     "doctors should not delete patients from the list");
 });
@@ -133,10 +133,10 @@ test("saving patient remarks does not send a report", () => {
   assert.equal(saved.reportText, undefined);
 });
 
-state.user = { role: "nurse", userId: "n1", name: "Nurse" };
+state.user = { role: "doctor", userId: "n1", name: "Doctor" };
 await renderPatientPage({ target: root });
 
-test("nurses cannot edit patient remarks", () => {
+test("doctors cannot edit patient remarks", () => {
   assert.equal(root.querySelector("textarea#patient-remarks"), null);
   assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Save notes"));
   assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "New case"));
@@ -144,7 +144,7 @@ test("nurses cannot edit patient remarks", () => {
 });
 
 await renderPatientsPage({ target: listRoot });
-test("nurses cannot add patients from the list", () => {
+test("doctors cannot add patients from the list", () => {
   assert.ok(![...listRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "New patient"));
 });
 

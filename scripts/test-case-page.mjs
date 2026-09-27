@@ -61,7 +61,7 @@ const stored = {
   ],
 };
 
-state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+state.user = { role: "radiologist", userId: "u1", name: "Dr Test" };
 state.selectedCaseId = "CASE-1";
 api.listCases = async () => ({ cases: [structuredClone(stored)] });
 api.getCase = async () => ({ case: structuredClone(stored) });
@@ -104,7 +104,7 @@ test("cases list shows the study", () => {
     createdByName: "System Admin",
   };
   api.listCases = async () => ({ cases: [structuredClone(stored), alexCase, adminCase] });
-  state.user = { role: "doctor", userId: "USR-DOCTOR-0002", name: "Dr. Priya Nair" };
+  state.user = { role: "radiologist", userId: "USR-DOCTOR-0002", name: "Dr. Priya Nair" };
   await renderCasesPage({ target: listRoot });
   assert.ok(listRoot.textContent.includes("CASE-1"));
   assert.ok(listRoot.textContent.includes("CASE-ALEX"));
@@ -147,16 +147,16 @@ test("cases list shows the study", () => {
     assert.equal(listRoot.querySelector("#filter-doctor")?.value, "");
   });
 
-  state.user = { role: "nurse", userId: "u-nurse", name: "Nurse" };
+  state.user = { role: "technician", userId: "u-nurse", name: "Tech" };
   await renderCasesPage({ target: listRoot });
-  test("nurses do not see My cases on the archive", () => {
+  test("technicians do not see My cases on the archive", () => {
     assert.ok(!listRoot.querySelector("#filter-my-cases"));
-    assert.ok(listRoot.querySelector("#filter-doctor"), "nurses can still filter by doctor in charge");
+    assert.ok(listRoot.querySelector("#filter-doctor"), "technicians can still filter by radiologist in charge");
     assert.ok(listRoot.textContent.includes("CASE-1"));
     assert.ok(listRoot.textContent.includes("CASE-ALEX"));
   });
 
-  state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+  state.user = { role: "radiologist", userId: "u1", name: "Dr Test" };
 }
 
 const root = document.getElementById("root");

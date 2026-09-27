@@ -25,9 +25,10 @@ import { reportPopupUrl } from "../lib/reportPopup.js";
 import { downloadReportDocx, downloadReportPdf, composeReportText, splitReportAndRemarks, splitManualFindings, removeFindingFromReport, applyFindingChangeToReport } from "../lib/reportExport.js";
 import { mergeFindingsFromReport, overlayAzureOnParsed, dedupeFindings } from "../lib/findingsSync.js";
 import { urgentBadge, patientDisplayName, doctorInCharge } from "../lib/tags.js";
-import { isGenerating, isAwaitingApprove, statusLabel } from "../lib/caseStatus.js";
+import { isGenerating, isAwaitingApprove, isAwaitingAi, statusLabel } from "../lib/caseStatus.js";
 import { forgetCases } from "../lib/records.js";
-import { CASES_CHANGED } from "../lib/analysisJob.js";
+import { CASES_CHANGED, startAnalysisWatch } from "../lib/analysisJob.js";
+import { canEditReport, canRunAi, canExport, isReferringDoctor } from "../lib/roles.js";
 
 let reviewLive = null;
 let reviewWatchId = "";
@@ -115,6 +116,62 @@ function boxFromCorners(a, b) {
     Number(Math.max(1, Math.abs(a.x - b.x)).toFixed(2)),
     Number(Math.max(1, Math.abs(a.y - b.y)).toFixed(2)),
   ];
+}
+
+function clampBox(left, top, width, height) {
+  let w = Math.max(3, Number(width) || 3);
+  let h = Math.max(3, Number(height) || 3);
+  let l = Number(left) || 0;
+  let t = Number(top) || 0;
+  l = Math.min(97, Math.max(0, l));
+  t = Math.min(97, Math.max(0, t));
+  w = Math.min(100 - l, w);
+  h = Math.min(100 - t, h);
+  return [Number(l.toFixed(2)), Number(t.toFixed(2)), Number(w.toFixed(2)), Number(h.toFixed(2))];
+}
+
+function movedBox(origin, start, pct) {
+  const [l, t, w, h] = (origin || []).map(Number);
+  return clampBox(l + (pct.x - start.x), t + (pct.y - start.y), w, h);
+}
+
+function resizedBox(origin, handle, pct) {
+  const [l0, t0, w0, h0] = (origin || []).map(Number);
+  let l = l0;
+  let t = t0;
+  let r = l0 + w0;
+  let b = t0 + h0;
+  if (handle.includes("e")) r = pct.x;
+  if (handle.includes("w")) l = pct.x;
+  if (handle.includes("s")) b = pct.y;
+  if (handle.includes("n")) t = pct.y;
+  return clampBox(Math.min(l, r), Math.min(t, b), Math.abs(r - l), Math.abs(b - t));
+}
+
+function hitBoxHandle(pct, bbox) {
+  if (!hasBbox({ bbox })) return null;
+  const [l, t, w, h] = bbox.map(Number);
+  const r = l + w;
+  const b = t + h;
+  const pad = 4;
+  const corners = [
+    ["nw", l, t],
+    ["ne", r, t],
+    ["sw", l, b],
+    ["se", r, b],
+  ];
+  for (const [name, x, y] of corners) {
+    if (Math.abs(pct.x - x) <= pad && Math.abs(pct.y - y) <= pad) return name;
+  }
+  if (pct.x >= l && pct.x <= r && pct.y >= t && pct.y <= b) return "move";
+  return null;
+}
+
+function cursorForHandle(hit) {
+  if (hit === "move") return "move";
+  if (hit === "nw" || hit === "se") return "nwse-resize";
+  if (hit === "ne" || hit === "sw") return "nesw-resize";
+  return "crosshair";
 }
 
 // ---------------------------------------------------------------------------
@@ -408,7 +465,7 @@ export async function renderReviewPage({ target }) {
   let imageSrc = null; // resolved object URL once the blob is fetched
   let selectedIndex = 0; // which finding is selected in the list / editor
   let showBoxes = true;
-  let drawStart = null;
+  let boxDrag = null;
   let remarksDraft = "";
   let remarksDirty = false;
 
@@ -456,7 +513,7 @@ export async function renderReviewPage({ target }) {
       const tidy = dedupeFindings(localCase.findings || []);
       if (tidy.length !== (localCase.findings || []).length) {
         localCase = { ...localCase, findings: tidy };
-        if (state.user?.role !== "nurse" && localCase.status !== "finalized") {
+        if (canEditReport(state.user) && localCase.status !== "finalized") {
           persistClinicianEdits().catch(() => {});
         }
       }
@@ -529,6 +586,11 @@ export async function renderReviewPage({ target }) {
   // came from the local cache rather than a fresh /cases/:id fetch).
   localCase = unwrapLegacyReport(localCase);
   syncRemarksFromCase();
+  if (isReferringDoctor(state.user) && localCase.status !== "finalized") {
+    toast("Doctors can only open finalized reports.");
+    setPage("dashboard");
+    return;
+  }
 
   function hintMongo(text) {
     const n = document.getElementById("mongo-report-status");
@@ -543,7 +605,7 @@ export async function renderReviewPage({ target }) {
   }
 
   function queueReportSync() {
-    if (state.user?.role === "nurse" || !getEffectiveCaseId()) return;
+    if (!canEditReport(state.user) || !getEffectiveCaseId()) return;
     hintMongo("Saving to MongoDB…");
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
@@ -666,10 +728,10 @@ export async function renderReviewPage({ target }) {
     }
   }
 
-  function canDrawOnFilm() {
+  function canEditBox() {
     if (!localCase || isGenerating(localCase)) return false;
-    if (state.user?.role === "nurse" || localCase.status === "finalized") return false;
-    return isManualFinding((localCase.findings || [])[selectedIndex]);
+    if (!canEditReport(state.user) || localCase.status === "finalized") return false;
+    return Boolean((localCase.findings || [])[selectedIndex]);
   }
 
   function paintLiveBox(stage, bbox) {
@@ -687,23 +749,45 @@ export async function renderReviewPage({ target }) {
     node.style.height = bbox[3] + "%";
   }
 
+  function liveBboxFromDrag(pct) {
+    if (!boxDrag) return null;
+    if (boxDrag.mode === "move") return movedBox(boxDrag.origin, boxDrag.start, pct);
+    if (boxDrag.mode === "resize") return resizedBox(boxDrag.origin, boxDrag.handle, pct);
+    return boxFromCorners(boxDrag.start, pct);
+  }
+
   function onFilmPointerDown(e) {
-    if (!canDrawOnFilm()) return;
+    if (!canEditBox()) return;
     if (e.button != null && e.button !== 0) return;
     const stage = e.currentTarget || document.getElementById("xray-stage");
     if (!stage) return;
-    drawStart = eventToPct(e, stage);
+    const pct = eventToPct(e, stage);
+    const f = (localCase.findings || [])[selectedIndex];
+    const hit = hasBbox(f) ? hitBoxHandle(pct, f.bbox) : null;
     showBoxes = true;
+    if (hit === "move") {
+      boxDrag = { mode: "move", start: pct, origin: f.bbox.slice() };
+    } else if (hit) {
+      boxDrag = { mode: "resize", handle: hit, start: pct, origin: f.bbox.slice() };
+    } else {
+      boxDrag = { mode: "draw", start: pct };
+    }
     try { stage.setPointerCapture?.(e.pointerId); } catch { /* tests */ }
-    paintLiveBox(stage, boxFromCorners(drawStart, drawStart));
+    paintLiveBox(stage, liveBboxFromDrag(pct));
     e.preventDefault();
   }
 
   function onFilmPointerMove(e) {
-    if (!drawStart) return;
     const stage = e.currentTarget || document.getElementById("xray-stage");
     if (!stage) return;
-    paintLiveBox(stage, boxFromCorners(drawStart, eventToPct(e, stage)));
+    const pct = eventToPct(e, stage);
+    if (!boxDrag) {
+      if (!canEditBox()) return;
+      const f = (localCase.findings || [])[selectedIndex];
+      stage.style.cursor = cursorForHandle(hasBbox(f) ? hitBoxHandle(pct, f.bbox) : null);
+      return;
+    }
+    paintLiveBox(stage, liveBboxFromDrag(pct));
   }
 
   function commitDrawnBox(stage, bbox) {
@@ -729,16 +813,25 @@ export async function renderReviewPage({ target }) {
     }
     tag.textContent = `F${selectedIndex + 1}`;
     const hint = document.querySelector("[data-bbox-hint]");
-    if (hint) hint.textContent = "Drag on the X-ray to redraw this box.";
+    if (hint) {
+      hint.textContent = "Drag the yellow box to move it, a corner to resize, or elsewhere on the film to redraw.";
+    }
   }
 
   function onFilmPointerUp(e) {
-    if (!drawStart) return;
+    if (!boxDrag) return;
     const stage = e.currentTarget || document.getElementById("xray-stage");
     if (!stage) return;
-    const bbox = boxFromCorners(drawStart, eventToPct(e, stage));
-    drawStart = null;
+    const pct = eventToPct(e, stage);
+    const bbox = liveBboxFromDrag(pct);
+    const wasDraw = boxDrag.mode === "draw";
+    boxDrag = null;
     e.preventDefault?.();
+    // A click without a drag should not replace an existing box with a 1% stub.
+    if (wasDraw && bbox[2] < 3 && bbox[3] < 3) {
+      stage.querySelector("[data-draw-box]")?.remove();
+      return;
+    }
     const f = (localCase.findings || [])[selectedIndex];
     if (f) {
       // Do not remount the page here. Replacing the DOM on pointerup makes the
@@ -808,8 +901,8 @@ export async function renderReviewPage({ target }) {
       }
       const stored = unwrapLegacyReport(data.case || data);
       const note = String(remarksDraft || "").trim();
-      if (stored.status === "finalized" || state.user?.role === "nurse") {
-        if (state.user?.role !== "nurse") {
+      if (stored.status === "finalized" || !canEditReport(state.user)) {
+        if (canEditReport(state.user)) {
           const updated = await api.updateCase(getEffectiveCaseId(), { remarks: note });
           const next = unwrapLegacyReport(updated.case || { ...stored, remarks: note });
           syncFromPersisted(next, { remarks: note });
@@ -850,6 +943,26 @@ export async function renderReviewPage({ target }) {
     } finally { busy = false; render(); }
   }
 
+  async function runAi() {
+    if (!canRunAi(state.user) || isGenerating(localCase)) return;
+    busy = true;
+    render();
+    try {
+      const data = await api.analyzeCase(getEffectiveCaseId());
+      const next = data.case || data;
+      localCase = next;
+      startAnalysisWatch({
+        caseId: next.caseId || getEffectiveCaseId(),
+        patientName: patientDisplayName(next),
+        patientId: next.patientId,
+      });
+    } catch (err) {
+      toast(err.message || "Could not start AI.");
+      busy = false;
+      render();
+    }
+  }
+
   async function finalize() {
     if (isGenerating(localCase)) {
       toast("The report is still generating.");
@@ -875,7 +988,7 @@ export async function renderReviewPage({ target }) {
       toast("This case has no id yet.");
       return;
     }
-    if (state.user?.role !== "nurse") {
+    if (canEditReport(state.user)) {
       try {
         await persistClinicianEdits({ includeDraft: true });
       } catch (err) {
@@ -935,7 +1048,7 @@ export async function renderReviewPage({ target }) {
   }
 
   async function toggleUrgent() {
-    if (state.user?.role === "nurse") return;
+    if (!canEditReport(state.user)) return;
     const next = !localCase.urgent;
     busy = true;
     render();
@@ -962,7 +1075,7 @@ export async function renderReviewPage({ target }) {
       // Persist unsaved remarks and hand-added findings, then download the
       // stored report so Word/PDF match what the clinician just typed.
       let stored;
-      if (state.user?.role === "nurse") {
+      if (!canEditReport(state.user)) {
         const data = await api.getCase(getEffectiveCaseId());
         stored = unwrapLegacyReport(data.case || data);
       } else {
@@ -984,9 +1097,11 @@ export async function renderReviewPage({ target }) {
 
   function render() {
     const generating = isGenerating(localCase);
-    const edit = !generating && state.user?.role !== "nurse" && localCase.status !== "finalized";
-    const canRemark = !generating && state.user?.role !== "nurse";
-    const canFlag = state.user?.role !== "nurse";
+    const awaitingAi = isAwaitingAi(localCase);
+    const showProvenance = canEditReport(state.user) && localCase.status !== "finalized";
+    const edit = !generating && canEditReport(state.user) && localCase.status !== "finalized";
+    const canRemark = !generating && canEditReport(state.user);
+    const canFlag = canEditReport(state.user);
     const findings = localCase.findings || [];
     const visible = findings;
     const patientName = patientDisplayName(localCase);
@@ -1000,8 +1115,8 @@ export async function renderReviewPage({ target }) {
         el("div", { class: "flex justify-between items-start gap-2" },
           el("div", { class: "flex-1" },
             el("div", { class: "flex items-center gap-2" },
-              el("small", { class: "font-bold text-cyan-700 text-xs" },
-                isManualFinding(f)
+              el("small", { class: "font-bold text-ha-blue text-xs" },
+                showProvenance && isManualFinding(f)
                   ? (isNew ? "NEW FINDING (unsaved)" : "MANUAL FINDING")
                   : `FINDING ${index + 1}`
               ),
@@ -1009,17 +1124,17 @@ export async function renderReviewPage({ target }) {
             edit
               ? el("input", {
                   id: `finding-label-${f._id || f.id}`,
-                  class: "mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1 outline-none focus:border-cyan-600 font-bold text-slate-900",
+                  class: "mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1 outline-none focus:border-ha-blue font-bold text-slate-900",
                   value: f.label || "",
                   onInput: (e) => patchFinding(f._id || f.id, { label: e.target.value }),
                 })
               : el("h3", { class: "font-bold text-slate-900" }, f.label)
           ),
           el("div", { class: "flex flex-col items-end gap-2" },
-            isManualFinding(f)
+            showProvenance && isManualFinding(f)
               ? el("b", { class: "rounded-full bg-slate-100 px-3 py-0.5 text-sm text-slate-600" }, "Manual")
               : el("b", {
-                  class: "rounded-full bg-cyan-50 px-3 py-0.5 text-cyan-700 text-sm",
+                  class: "rounded-full bg-blue-50 px-3 py-0.5 text-ha-blue text-sm",
                   title: confidenceTitle(f),
                 }, `${Math.round((f.confidence ?? 0) * 100)}%`),
             f.status === "accepted" && el("b", { class: "rounded-full bg-green-50 px-3 py-0.5 text-sm text-green-700" }, "Accepted"),
@@ -1030,8 +1145,10 @@ export async function renderReviewPage({ target }) {
             }, "Delete")
           )
         ),
-        edit && isManualFinding(f) && el("p", { class: "mt-2 text-xs text-slate-500", dataset: { bboxHint: "1" } },
-          hasBbox(f) ? "Drag on the X-ray to redraw this box." : "Drag on the X-ray to draw a box for this finding."
+        edit && el("p", { class: "mt-2 text-xs text-slate-500", dataset: { bboxHint: "1" } },
+          hasBbox(f)
+            ? "Drag the yellow box to move it, a corner to resize, or elsewhere on the film to redraw."
+            : "Drag on the X-ray to draw a box for this finding."
         ),
         edit && isNew && el("p", { class: "mt-2 text-xs text-slate-400" },
           "Add the details and/or draw the box, in either order, then finish this finding."
@@ -1042,7 +1159,7 @@ export async function renderReviewPage({ target }) {
               el("span", { class: "text-xs font-semibold text-slate-500 capitalize" }, k),
               el("input", {
                 id: `finding-${k}-${f._id || f.id}`,
-                class: "mt-1 w-full rounded-xl border border-slate-300 bg-white px-2 py-1.5 outline-none focus:border-cyan-600",
+                class: "mt-1 w-full rounded-xl border border-slate-300 bg-white px-2 py-1.5 outline-none focus:border-ha-blue",
                 value: f[k] || "",
                 onInput: (e) => patchFinding(f._id || f.id, { [k]: e.target.value }),
               })
@@ -1053,7 +1170,7 @@ export async function renderReviewPage({ target }) {
           el("span", { class: "text-xs font-semibold text-slate-500 capitalize" }, "Pattern"),
           el("select", {
             disabled: !edit,
-            class: "mt-1 w-full rounded-xl border border-slate-300 bg-white px-2 py-1.5 outline-none focus:border-cyan-600 disabled:bg-slate-100",
+            class: "mt-1 w-full rounded-xl border border-slate-300 bg-white px-2 py-1.5 outline-none focus:border-ha-blue disabled:bg-slate-100",
             value: f.pattern || "Other",
             onChange: (e) => patchFinding(f._id || f.id, { pattern: e.target.value }, { refresh: true }),
           },
@@ -1065,7 +1182,7 @@ export async function renderReviewPage({ target }) {
         ),
         edit && isNew && el("button", {
           id: "finish-manual-finding",
-          class: "mt-3 w-full rounded-xl bg-cyan-600 px-3 py-2 text-sm font-semibold text-white hover:bg-cyan-700 disabled:opacity-50",
+          class: "mt-3 w-full rounded-xl bg-ha-blue px-3 py-2 text-sm font-semibold text-white hover:bg-[#074f85] disabled:opacity-50",
           disabled: busy,
           onClick: finishManualFinding,
         }, "Finish this finding"),
@@ -1117,23 +1234,25 @@ export async function renderReviewPage({ target }) {
               el("button", {
                 type: "button",
                 class: `flex w-full items-start gap-2 px-3 py-2.5 text-left transition-colors ${
-                  selected ? "bg-cyan-50" : "bg-white hover:bg-slate-50"
+                  selected ? "bg-blue-50" : "bg-white hover:bg-slate-50"
                 }`,
                 title: `${i + 1}. ${f.label || "Finding"}`,
                 "aria-current": selected ? "true" : "false",
                 onClick: () => select(i),
               },
                 el("span", {
-                  class: `mt-0.5 w-5 shrink-0 text-sm font-bold ${selected ? "text-cyan-700" : "text-slate-400"}`,
+                  class: `mt-0.5 w-5 shrink-0 text-sm font-bold ${selected ? "text-ha-blue" : "text-slate-400"}`,
                 }, `${i + 1}.`),
                 el("span", { class: "min-w-0 flex-1" },
                   el("span", { class: "flex items-start justify-between gap-2" },
                     el("span", { class: "font-semibold text-slate-900" }, f.label || "Finding"),
                     el("span", { class: "flex shrink-0 flex-wrap justify-end gap-1" },
-                      isManualFinding(f)
+                      showProvenance && isManualFinding(f)
                         ? el("b", { class: "rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600" },
                             isNew ? "New" : "Manual")
-                        : el("b", { class: "rounded-full bg-cyan-50 px-2 py-0.5 text-[11px] font-semibold text-cyan-700" },
+                        : !showProvenance
+                        ? null
+                        : el("b", { class: "rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-ha-blue" },
                             `${Math.round((f.confidence ?? 0) * 100)}%`),
                       f.status === "accepted" && el("b", {
                         class: "rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-semibold text-green-700",
@@ -1166,7 +1285,7 @@ export async function renderReviewPage({ target }) {
           el("h1", { class: "text-3xl font-bold text-slate-900" }, "Report review"),
           el("p", { class: "text-slate-600 mt-1 flex flex-wrap items-center gap-2" },
             el("button", {
-              class: "font-semibold hover:text-cyan-700 hover:underline",
+              class: "font-semibold hover:text-ha-blue hover:underline",
               onClick: () => {
                 state.selectedPatientId = localCase.patientId;
                 setPage("patient");
@@ -1190,19 +1309,24 @@ export async function renderReviewPage({ target }) {
           )
         ),
         el("div", { class: "flex gap-2 flex-wrap" },
-          el("button", {
-            class: "inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50",
+          canRunAi(state.user) && localCase.status !== "finalized" && el("button", {
+            class: "inline-flex items-center gap-1 rounded-xl bg-ha-blue px-3 py-2 text-sm font-semibold text-white hover:bg-[#074f85] disabled:opacity-50",
             disabled: busy || generating,
+            onClick: runAi,
+          }, generating ? "Generating…" : awaitingAi ? "Use AI" : "Re-run AI"),
+          canExport(state.user) && el("button", {
+            class: "inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50",
+            disabled: busy || generating || awaitingAi,
             onClick: openReport,
           }, svgIcon("file-text", { size: 16 }), "Report"),
-          el("button", {
+          canExport(state.user) && el("button", {
             class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
-            disabled: busy || generating,
+            disabled: busy || generating || awaitingAi,
             onClick: () => download("docx"),
           }, svgIcon("download", { size: 16 }), "Word"),
-          el("button", {
+          canExport(state.user) && el("button", {
             class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
-            disabled: busy || generating,
+            disabled: busy || generating || awaitingAi,
             onClick: () => download("pdf"),
           }, svgIcon("download", { size: 16 }), "PDF"),
           canFlag && localCase.status === "finalized" && el("button", {
@@ -1229,8 +1353,10 @@ export async function renderReviewPage({ target }) {
           }, localCase.urgent ? "Remove urgent" : "Mark urgent"),
           generating
             ? el("span", { class: "rounded-full bg-amber-50 text-amber-700 px-3 py-1 text-xs font-bold" }, "GENERATING")
+            : awaitingAi
+            ? el("span", { class: "rounded-full bg-violet-50 text-violet-700 px-3 py-1 text-xs font-bold" }, "AWAITING AI")
             : isAwaitingApprove(localCase)
-            ? el("span", { class: "rounded-full bg-cyan-50 text-cyan-700 px-3 py-1 text-xs font-bold" }, "PENDING APPROVE")
+            ? el("span", { class: "rounded-full bg-blue-50 text-ha-blue px-3 py-1 text-xs font-bold" }, "PENDING APPROVE")
             : localCase.status === "finalized"
             ? el("span", { class: "rounded-full bg-green-50 text-green-700 px-3 py-1 text-xs font-bold" }, "FINALIZED")
             : null
@@ -1238,6 +1364,9 @@ export async function renderReviewPage({ target }) {
       ),
 
       msg && el("p", { class: "mt-4 rounded-lg bg-green-50 text-green-700 p-3" }, msg),
+      awaitingAi && el("p", { class: "mt-4 rounded-lg bg-violet-50 text-violet-900 p-3" },
+        "Film is stored. Click ", el("b", {}, "Use AI"), " once to generate the draft report."
+      ),
       generating && el("p", { class: "mt-4 rounded-lg bg-amber-50 text-amber-800 p-3" },
         "The report is still generating. Return to the worklist — Review is ready once the status is ",
         el("b", {}, statusLabel("pending_approve")),
@@ -1264,7 +1393,7 @@ export async function renderReviewPage({ target }) {
           el("div", { class: "mt-3 flex justify-center rounded-xl bg-gradient-to-b from-slate-500 to-slate-900" },
             el("div", {
               id: "xray-stage",
-              class: `relative inline-block max-w-full touch-none ${canDrawOnFilm() ? "cursor-crosshair" : ""}`,
+              class: `relative inline-block max-w-full touch-none ${canEditBox() ? "cursor-crosshair" : ""}`,
               onPointerdown: onFilmPointerDown,
               onPointermove: onFilmPointerMove,
               onPointerup: onFilmPointerUp,
@@ -1287,13 +1416,29 @@ export async function renderReviewPage({ target }) {
                   },
                   title: active.label,
                 },
-                  el("span", { class: "absolute -top-5 left-0 bg-black px-1 text-xs text-white" }, `F${selectedIndex + 1}`)
+                  el("span", {
+                    class: "absolute -top-5 left-0 bg-black px-1 text-xs text-white",
+                    dataset: { bboxLabel: "1" },
+                  }, `F${selectedIndex + 1}`),
+                  canEditBox() && ["nw", "ne", "sw", "se"].map((h) =>
+                    el("span", {
+                      class: "absolute h-2.5 w-2.5 rounded-sm border border-yellow-200 bg-yellow-300",
+                      style: {
+                        left: h.includes("w") ? "-5px" : "auto",
+                        right: h.includes("e") ? "-5px" : "auto",
+                        top: h.includes("n") ? "-5px" : "auto",
+                        bottom: h.includes("s") ? "-5px" : "auto",
+                      },
+                    })
+                  )
                 );
               })()
             )
           ),
-          canDrawOnFilm() && el("p", { class: "mt-2 text-center text-xs text-slate-400" },
-            "Drag on the film to draw this finding's box."
+          canEditBox() && el("p", { class: "mt-2 text-center text-xs text-slate-400" },
+            hasBbox((localCase.findings || [])[selectedIndex])
+              ? "Drag the box to move it, a corner to resize, or elsewhere to redraw."
+              : "Drag on the film to draw this finding's box."
           )
         ),
 
@@ -1303,7 +1448,7 @@ export async function renderReviewPage({ target }) {
                 el("p", {}, "No findings yet — add one by hand."),
                 edit && !busy && el("div", { class: "mt-3 flex flex-wrap items-center justify-center gap-2" },
                   el("button", {
-                    class: "inline-flex items-center gap-1 rounded-xl border border-cyan-600 px-4 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50",
+                    class: "inline-flex items-center gap-1 rounded-xl border border-ha-blue px-4 py-2 text-sm font-semibold text-ha-blue hover:bg-blue-50",
                     onClick: addFinding,
                   }, "+ Add manually"),
                 )
@@ -1311,7 +1456,7 @@ export async function renderReviewPage({ target }) {
             : el("div", { class: "card" },
                 findingsPanel(visible),
                 edit && el("button", {
-                  class: "mt-2 w-full rounded-xl border border-cyan-600 px-3 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50",
+                  class: "mt-2 w-full rounded-xl border border-ha-blue px-3 py-2 text-sm font-semibold text-ha-blue hover:bg-blue-50",
                   onClick: addFinding,
                 }, "+ Add manually")
               ),
@@ -1339,7 +1484,30 @@ export async function renderReviewPage({ target }) {
                 ? "This case is finalized. Remarks are saved as notes only and are not written into the report, Word, or PDF."
                 : "Edits are written back to MongoDB (reportText on this case). Word and PDF always use that saved copy."
             ),
-            canRemark && el("p", { id: "mongo-report-status", class: "mt-1 text-xs font-medium text-cyan-700" })
+            canRemark && el("p", { id: "mongo-report-status", class: "mt-1 text-xs font-medium text-ha-blue" })
+          ),
+          showProvenance && (localCase.editLog || []).length > 0 && el("div", { class: "card" },
+            el("h2", { class: "text-lg font-bold text-slate-900" }, "Draft log (AI vs manual)"),
+            el("p", { class: "mt-1 text-xs text-slate-500" },
+              "Shown while editing. The signed report the doctor sees has no source tags."
+            ),
+            el("ul", { class: "mt-3 space-y-2 text-sm" },
+              ...(localCase.editLog || []).slice(-12).reverse().map((row) =>
+                el("li", { class: "flex gap-2 border-b border-slate-100 pb-2 last:border-0" },
+                  el("b", {
+                    class: row.kind === "ai"
+                      ? "rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-semibold uppercase text-ha-blue"
+                      : "rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-semibold uppercase text-slate-700",
+                  }, row.kind === "ai" ? "AI" : "Manual"),
+                  el("span", { class: "min-w-0 text-slate-700" },
+                    row.summary || "",
+                    el("span", { class: "mt-0.5 block text-xs text-slate-400" },
+                      [row.userName, row.at && new Date(row.at).toLocaleString()].filter(Boolean).join(" · ")
+                    )
+                  )
+                )
+              )
+            )
           )
         )
       )

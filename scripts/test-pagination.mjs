@@ -89,7 +89,7 @@ test("dashboard table shows one page of rows", () => {
   assert.equal(rows.length, PAGE_SIZE);
   assert.ok(root.textContent.includes("PT-01"));
   assert.ok(root.textContent.includes("Finding 1"));
-  assert.ok(root.textContent.includes("Doctor"));
+  assert.ok(root.textContent.includes("Uploaded by"));
   assert.ok(root.textContent.includes("Dr. Alex Wong"));
   assert.ok(!root.textContent.includes("PT-11"));
   assert.ok(root.textContent.includes(`1–${PAGE_SIZE} of ${cases.length}`));

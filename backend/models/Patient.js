@@ -13,7 +13,17 @@ const patientSchema = new mongoose.Schema(
     age: { type: String, default: '' },
     sex: { type: String, enum: ['Female', 'Male', 'Other', ''], default: '' },
     history: { type: String, default: '' },
-    // Doctor notes about the person. Never copied into a case report.
+    medicines: { type: String, default: '' },
+    heartRate: { type: String, default: '' },
+    labResults: { type: String, default: '' },
+    ward: { type: String, default: '' },
+    bed: { type: String, default: '' },
+    admissionStatus: { type: String, enum: ['', 'reserved', 'admitted', 'discharged'], default: '' },
+    observations: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    labOrders: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    medOrders: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    careNotes: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    // Clinician notes about the person. Never copied into a case report.
     remarks: { type: String, default: '' },
   },
   { timestamps: true }

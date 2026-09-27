@@ -34,7 +34,7 @@ function test(name, fn) {
 const USERS = [
   { userId: "USR-ADMIN-0001", username: "admin", name: "System Admin", role: "admin", isActive: true },
   { userId: "USR-DOCTOR-0001", username: "doctor", name: "Dr. Alex Wong", role: "doctor", isActive: true },
-  { userId: "USR-NURSE-0001", username: "nurse", name: "Jamie Lee", role: "nurse", isActive: false },
+  { userId: "USR-NURSE-0001", username: "tech", name: "Jamie Lee", role: "technician", isActive: false },
 ];
 
 state.user = { role: "admin", userId: "USR-ADMIN-0001", name: "System Admin" };

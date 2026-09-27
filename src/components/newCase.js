@@ -6,7 +6,6 @@ import { state, setPage, toast } from "../state.js";
 import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { nameFieldsFrom } from "../lib/patientName.js";
-import { startAnalysisWatch } from "../lib/analysisJob.js";
 import {
   labeledField,
   sexPills,
@@ -17,7 +16,7 @@ import {
   searchQueryFrom,
 } from "./patientFields.js";
 
-const CONTROL = "w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100";
+const CONTROL = "w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-ha-blue focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100";
 
 export async function renderNewCasePage({ target }) {
   const f = {
@@ -90,8 +89,8 @@ export async function renderNewCasePage({ target }) {
 
   function paintDropZone(node, active) {
     if (!node) return;
-    node.classList.toggle("border-cyan-600", active);
-    node.classList.toggle("bg-cyan-50", active);
+    node.classList.toggle("border-ha-blue", active);
+    node.classList.toggle("bg-blue-50", active);
     node.classList.toggle("border-slate-300", !active);
   }
 
@@ -168,11 +167,7 @@ export async function renderNewCasePage({ target }) {
       if (!created?.caseId) throw new Error("Case was saved without an id.");
       state.cases = [created, ...state.cases.filter((x) => x.caseId !== created.caseId)];
       state.selectedFile = null;
-      startAnalysisWatch({
-        caseId: created.caseId,
-        patientName: created.patientName || names.name,
-        patientId: created.patientId,
-      });
+      toast("X-ray uploaded. A radiologist can open Review and run AI.");
       setPage("dashboard");
     } catch (err) {
       busy = false; progress = 0; statusMsg = "";
@@ -192,14 +187,14 @@ export async function renderNewCasePage({ target }) {
       }, svgIcon("arrow-left", { size: 16 }), "Worklist"),
       el("h1", { class: "text-3xl font-bold text-slate-900" }, "New X-Ray case"),
       el("p", { class: "mt-2 text-slate-500" },
-        "Look up an existing chart, attach the film, then return to the worklist while the draft generates."
+        "Look up an existing chart, attach the film, then return to the worklist. The radiologist starts AI from Review."
       ),
 
       el("section", { class: "card mt-6" },
         el("h2", { class: "text-lg font-bold text-slate-900" }, "1. Patient"),
         el("div", { class: "mt-4 flex flex-wrap gap-3" },
           el("input", {
-            class: "min-w-[12rem] flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-cyan-600 focus:ring-4 focus:ring-cyan-100",
+            class: "min-w-[12rem] flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-ha-blue focus:ring-4 focus:ring-blue-100",
             value: f.patientId,
             placeholder: "Patient ID (e.g. PT-2026-0001)",
             onInput: (e) => {
@@ -274,12 +269,12 @@ export async function renderNewCasePage({ target }) {
           onDragLeave,
           onDrop,
         },
-          svgIcon("image", { size: 32, class: "text-cyan-600" }),
+          svgIcon("image", { size: 32, class: "text-ha-blue" }),
           el("b", { class: "mt-2" }, state.selectedFile ? state.selectedFile.name : "Drag an X-ray here, or choose PNG, JPG, JPEG, or WebP"),
           el("span", { class: "text-xs text-slate-500 mt-1" },
             state.selectedFile
               ? "Remove the film below if you want a different image, or drop another file to replace it."
-              : "PNG, JPG, JPEG, or WebP · stored with the case · analysed for a draft report"
+              : "PNG, JPG, JPEG, or WebP · stored with the case · AI is started by the radiologist"
           ),
           el("input", { type: "file", accept: ".png,.jpg,.jpeg,.webp,image/*", class: "hidden", onChange: onPickFile })
         ),
@@ -307,14 +302,14 @@ export async function renderNewCasePage({ target }) {
       el("section", { class: "card mt-4" },
         el("h2", { class: "font-bold text-slate-900" }, "3. Upload"),
         el("p", { class: "mt-2 text-sm text-slate-500" },
-          "The film is stored first. You return to the worklist while the draft report generates."
+          "The film is stored first. AI is not started here — a radiologist opens the case and clicks Use AI."
         ),
         busy && el("div", { class: "my-3 h-2 overflow-hidden rounded bg-slate-200" },
-          el("div", { class: "h-2 bg-cyan-600 transition-all", style: { width: `${progress}%` } })
+          el("div", { class: "h-2 bg-ha-blue transition-all", style: { width: `${progress}%` } })
         ),
         statusMsg && el("p", { class: "mb-2 text-xs text-slate-500" }, statusMsg),
         el("button", {
-          class: "mt-3 inline-flex items-center gap-2 rounded-xl bg-cyan-600 px-4 py-2.5 font-semibold text-white hover:bg-cyan-700 disabled:opacity-60",
+          class: "mt-3 inline-flex items-center gap-2 rounded-xl bg-ha-blue px-4 py-2.5 font-semibold text-white hover:bg-[#074f85] disabled:opacity-60",
           disabled: busy,
           onClick: analyze,
         }, busy ? "Uploading…" : "Upload X-Ray")

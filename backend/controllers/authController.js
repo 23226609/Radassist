@@ -40,7 +40,14 @@ exports.login = catchAsync(async (req, res, next) => {
     return next(ApiError.badRequest('Please provide username and password.'));
   }
 
-  const user = await User.findOne({ username: String(username).toLowerCase() });
+  const login = String(username).toLowerCase();
+  const user = await User.findOne({
+    $or: [
+      { username: login },
+      { username: login === 'nurse' ? 'tech' : login },
+      { email: login.includes('@') ? login : `${login}@radassist.demo` },
+    ],
+  });
   if (!user) return next(ApiError.unauthorized('Invalid credentials.'));
 
   const ok = await user.comparePassword(password);
@@ -61,8 +68,9 @@ exports.register = catchAsync(async (req, res, next) => {
   if (!username || !password || !name || !email) {
     return next(ApiError.badRequest('username, password, name and email are required.'));
   }
-  // Self-signup is restricted to doctor / nurse. Admins must be created via seed.
-  const finalRole = role === 'doctor' || role === 'nurse' ? role : 'doctor';
+  // Self-signup is restricted to clinical roles. Admins must be created via seed.
+  const allowed = ['technician', 'radiologist', 'doctor'];
+  const finalRole = allowed.includes(role) ? role : 'technician';
   const userId = `${finalRole.toUpperCase()}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 
   try {

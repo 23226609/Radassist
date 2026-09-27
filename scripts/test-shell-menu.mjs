@@ -1,5 +1,5 @@
 // scripts/test-shell-menu.mjs
-// Desktop and mobile share the hamburger so the film can use the full width.
+// Permanent MODULES column, matching the COMP4126 CMS simulator shell.
 
 import assert from "node:assert";
 import { parseHTML } from "linkedom";
@@ -35,7 +35,7 @@ function test(name, fn) {
   }
 }
 
-state.user = { role: "doctor", userId: "u1", name: "Dr Test" };
+state.user = { role: "radiologist", userId: "u1", name: "Dr Test" };
 state.page = "review";
 
 const { root } = Shell({ onLogout() {} });
@@ -43,38 +43,27 @@ document.body.appendChild(root);
 
 console.log("\n=== shell menu ===");
 
-test("website chrome shows the hamburger menu", () => {
-  const btn = root.querySelector("#app-menu-button");
-  assert.ok(btn, "Open menu button missing");
-  assert.equal(btn.getAttribute("aria-label"), "Open menu");
-  assert.ok(!btn.className.includes("lg:hidden"), "hamburger must stay visible on desktop");
+test("the CMS shell shows a permanent modules column", () => {
+  const nav = root.querySelector("#app-modules");
+  assert.ok(nav, "modules column missing");
+  assert.ok(!nav.classList.contains("hidden"), "modules column should stay visible");
+  assert.ok(root.textContent.includes("MODULES"));
+  assert.ok(root.textContent.includes("INPATIENT"));
+  assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.includes("Sign out")));
+  assert.equal(root.querySelector("#app-menu-button"), null);
 });
 
-test("the sidebar is a drawer, not a permanent desktop column", () => {
-  const drawer = root.querySelector("#app-drawer");
-  assert.ok(drawer, "menu drawer missing");
-  assert.ok(drawer.classList.contains("hidden"), "drawer should start closed");
-  assert.ok(!drawer.className.includes("lg:hidden"), "drawer must be openable on desktop");
-  assert.equal(root.querySelectorAll("aside").length, 1, "no second always-on sidebar");
-});
-
-test("hamburger opens the menu for a larger content area when closed", () => {
-  root.querySelector("#app-menu-button").click();
-  assert.ok(!root.querySelector("#app-drawer").classList.contains("hidden"));
-  assert.equal(root.querySelector("#app-menu-button").getAttribute("aria-expanded"), "true");
-});
-
-test("doctors see Audit log in the menu", () => {
+test("radiologists see Audit log in the menu", () => {
   assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Audit log"));
   assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Users"));
 });
 
 {
-  state.user = { role: "nurse", userId: "n1", name: "Jamie Lee" };
+  state.user = { role: "technician", userId: "n1", name: "Jamie Lee" };
   const { root: nurseRoot } = Shell({ onLogout() {} });
   document.body.appendChild(nurseRoot);
-  test("nurses do not see Audit log in the menu", () => {
-    assert.ok([...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Worklist"));
+  test("technicians do not see Audit log in the menu", () => {
+    assert.ok([...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.includes("X-ray Worklist")));
     assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Audit log"));
     assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Users"));
   });
