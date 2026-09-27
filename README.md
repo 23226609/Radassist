@@ -1,10 +1,12 @@
 # RadAssist AI
 
-Clinician-in-the-loop chest X-ray reporting for a final-year project.
+Clinician-in-the-loop chest X-ray reporting for a final-year project, presented in a hospital CMS-style shell.
 
-A doctor (or admin) registers a patient, uploads a film, and gets a draft report plus structured findings. They edit findings, add remarks, mark urgency, and finalize. After finalize they can copy a **public share link**. Nurses can read charts and reports but cannot change clinical content. Admins can also bulk-delete records, manage the audit log, and enable or disable accounts.
+A **technician** uploads the film. A **radiologist** opens the case, clicks **Use AI**, reviews and edits finding cards, then finalizes. A referring **doctor** can only read finalized reports. An **admin** can do radiologist work plus user, audit, and bulk-delete administration.
 
 This is a **demonstration system**, not a clinical product. Findings and reports are decision support. A human must always review them.
+
+The browser chrome follows the COMP4126 CMS mock (navy title bar, permanent **MODULES** column, gray Windows-style inner windows). Bed management is not included. The X-ray workflow is unchanged: upload does **not** start AI.
 
 ---
 
@@ -31,13 +33,13 @@ The UI is **not React**. Pages are plain modules that build DOM with `src/dom.js
  Express API (:5002)
         │
         ├─ JWT auth / role checks
-        ├─ Patients, cases, remarks, urgent flags
+        ├─ Patients, clinical chart, cases, remarks, urgent flags
         ├─ Audit log
         ├─ GridFS images
         │
         ├──────────────► Cosmos DB (Mongo API)
         │
-        ├──────────────► FastAPI middleware (:8001)
+        ├──────────────► FastAPI middleware (:8001)   [only after Use AI]
         │                      │
         │                      ▼
         │                 mlx_vlm CURV server (:8080)
@@ -46,26 +48,58 @@ The UI is **not React**. Pages are plain modules that build DOM with `src/dom.js
                          diagnosis + finding boxes
 ```
 
-**On upload**, the backend stores the image in GridFS, asks the CURV middleware for a free-text report and structured findings, then optionally asks Azure for a short worklist diagnosis and finding cards with boxes. If CURV is down, the case is still saved with a placeholder report.
+**On upload** (`POST /api/cases`), the backend stores the image in GridFS and saves the case with `analysisState: none`. AI is **not** started.
 
-**On review**, the page shows those stored findings as a **point-form list**, with the selected row opened as an editable card bound to the box on the film. If a case has no cards, a local markdown parser fills them. Opening Review does not call Azure again.
+**On Use AI** (`POST /api/cases/:id/analyze`), a radiologist (or admin) starts CURV in the background. The API returns immediately; the worklist/review overlay polls until `analysisState: done`. If CURV is down, the case stays stored so the radiologist can write the report by hand.
+
+**On review**, the page shows stored findings as a **point-form list**, with the selected row opened as an editable card bound to the box on the film. While the report is still a draft, an **AI vs manual attribution log** is visible. After finalize, that log is kept in the system but **stripped from the report body** the referring doctor and share/export views see.
 
 ---
 
 ## Roles
 
-| Action | Nurse | Doctor | Admin |
-| --- | --- | --- | --- |
-| Sign in, browse worklist / patients / cases | yes | yes | yes |
-| Browse audit log | no | yes | yes |
-| Add patient, new case, edit findings / remarks | no | yes | yes |
-| Mark or remove **Urgent** | no (can see the tag) | yes | yes |
-| Finalize a report | no | yes | yes |
-| Share a finalized report (public link) | no | yes | yes |
-| Enable / disable user accounts | no | no | yes |
-| Delete cases, patients, audit rows | no | no | yes |
+| Action | Technician | Radiologist | Doctor (referring) | Admin |
+| --- | --- | --- | --- | --- |
+| Sign in, browse patients / finalized cases | yes | yes | yes | yes |
+| See draft / pending-approve cases | own uploads | yes | no | yes |
+| Upload X-ray (`POST /api/cases`) | yes | no | no | yes |
+| Add / edit patient chart (vitals, labs, meds, notes) | yes | yes | read-only | yes |
+| Click **Use AI**, edit findings / remarks, finalize | no | yes | no | yes |
+| Mark or remove **Urgent** | no (can see the tag) | yes | no | yes |
+| Share a finalized report (public link) | no | yes | no | yes |
+| Read finalized report / export Word or PDF | no | yes | yes | yes |
+| Browse audit log | no | yes | no | yes |
+| Enable / disable user accounts | no | no | no | yes |
+| Delete cases, patients, audit rows | no | no | no | yes |
 
-Public `POST /api/auth/register` exists and defaults new accounts to **doctor**. Treat that as demo-only.
+Legacy `nurse` accounts are treated as **technician**.
+
+Public `POST /api/auth/register` exists for demo signup. Treat that as demo-only.
+
+---
+
+## CMS layout
+
+Modelled on [COMP4126 CMS mock](https://ug-cs-hkbu.github.io/COMP4126_CMS_mock/):
+
+- Navy title bar (`#003366`) — “Clinical Management System · RadAssist”, user, role, department, Sign out
+- Permanent **MODULES** sidebar (gray `#d4d0c8` / `#ece9d8` inner windows)
+- Status footer with “demonstration data only”
+
+| Sidebar group | Module | Page |
+| --- | --- | --- |
+| Index | Patient Master | `patients` |
+| Ward | Sepsis Monitor | `monitor` |
+| Ward | Lab Orders & Results | `labs` |
+| Ward | Medication Chart (eMAR) | `meds` |
+| Ward | Nursing / Care Notes | `notes` |
+| Imaging | X-ray Worklist | `dashboard` |
+| Imaging | Upload X-ray | `new` (technician / admin) |
+| Imaging | Case archive | `cases` |
+| Admin | Audit log | `audit` (radiologist / admin) |
+| Admin | Users | `users` (admin) |
+
+Bed management is intentionally omitted.
 
 ---
 
@@ -75,12 +109,13 @@ Public `POST /api/auth/register` exists and defaults new accounts to **doctor**.
 
 Stored in `patients`. A patient can exist **before** any X-ray.
 
-- `patientId` — e.g. `PT-2026-0018` (typed, or assigned as `PT-{year}-{nnnn}`)
-- `firstName`, `middleName` (optional), `lastName`
-- `name` — composed full name, kept for search and older records
-- `age`, `sex`, `history`, `remarks` (chart notes, never copied into a case report)
+- Identity: `patientId` (e.g. `PT-2026-0018`), `firstName`, `middleName`, `lastName`, `name`
+- Demographics: `age`, `sex`, `history`, `remarks` (chart notes, never copied into a case report)
+- Chart extras: `medicines`, `heartRate`, `labResults`
+- Ward context (display only; no bed-management UI): `ward`, `bed`, `admissionStatus`
+- Clinical sub-records: `observations[]`, `labOrders[]`, `medOrders[]`, `careNotes[]`
 
-Deleting a **patient** removes the chart, every study for that ID, and GridFS images. Deleting a **case** removes that study and its image; the patient chart stays (it can exist with no X-rays). Adding a case always upserts the patient chart first.
+Deleting a **patient** removes the chart, every study for that ID, and GridFS images. Deleting a **case** removes that study and its image; the patient chart stays.
 
 ### Case
 
@@ -89,19 +124,20 @@ Stored in `cases`. One study / one film.
 - Identity: `caseId`, `patientId`, name parts + `patientName`
 - Clinical: `age`, `sex`, `history`, `diagnosis`, `diagnosisSource` (`azure` or `local`)
 - Report: `reportText`, `remarks`, `findings[]`
-- Workflow: `status` (`pending` generating \| `pending_approve` draft ready \| `finalized`) and `urgent`. Old documents may still say `completed` — the UI treats that as pending approve.
+- AI: `analysisState` (`none` \| `running` \| `done`)
+- Draft provenance: `editLog[]` (`kind`: `ai` \| `manual`). Shown on Review while drafting; **not** included in finalized / shared / exported report text
+- Workflow: `status` (`pending` awaiting or generating \| `pending_approve` draft ready \| `finalized`) and `urgent`. Old documents may still say `completed` — the UI treats that as pending approve
 - Image: `imageId` (GridFS), filename / type / size
-- People: `createdBy`, `createdByName` (doctor in charge), `finalizedBy`, `finalizedByName`
+- People: `createdBy`, `createdByName` (uploader), `finalizedBy`, `finalizedByName`
 - Share: `shareToken` (set when someone shares a finalized report)
-- Audit: timestamps
 
-A **finding** has `label`, `confidence`, `bbox` `[left, top, width, height]` in percent, `location`, `size`, `pattern`, `sentence`, `status`, `source` (`AI` / `Azure` / `manual`), plus optional calibration fields (`bboxSource`, `languageScore`, `imageSupport`).
+A **finding** has `label`, `confidence`, `bbox` `[left, top, width, height]` in percent, `location`, `size`, `pattern`, `sentence`, `status`, `source` (`AI` / `Azure` / `manual`), plus optional calibration fields.
 
-**Locking:** after `finalized`, diagnosis, report text, and findings cannot change. Remarks and the urgent flag still can.
+**Locking:** after `finalized`, diagnosis, report text, and findings cannot change. Remarks and the urgent flag still can. Referring doctors never receive `editLog` or source tags on the report body.
 
 ### Other collections
 
-- `users` — bcrypt passwords, roles `doctor` \| `nurse` \| `admin`, `isActive`
+- `users` — bcrypt passwords, roles `technician` \| `radiologist` \| `doctor` \| `admin`, `isActive`
 - `auditlogs` — login, create/update/finalize/delete, AI analyse
 - GridFS bucket `images`
 
@@ -115,107 +151,107 @@ Open http://localhost:5173. JWT is stored in `localStorage` as `radassist.auth`.
 
 Demo users (seeded):
 
-| Role | Username | Password |
-| --- | --- | --- |
-| Admin | `admin` | `admin123` |
-| Doctor | `doctor` | `doctor123` |
-| Nurse | `nurse` | `nurse123` |
+| Role | Username | Password | Name |
+| --- | --- | --- | --- |
+| Technician | `tech` | `tech123` | Jamie Lee |
+| Radiologist | `priya` | `priya123` | Dr. Priya Nair |
+| Radiologist | `marcus` | `marcus123` | Dr. Marcus Chen |
+| Referring doctor | `doctor` | `doctor123` | Dr. Alex Wong |
+| Admin | `admin` | `admin123` | System Admin |
 
-After login, a **hamburger** opens a slide-out drawer on every screen size (so the worklist and film can use the full width): Worklist, Patients, Case archive, Audit log (doctors and admins), Users (admins only), plus New case / New patient for doctors and admins. Press `/` on list pages to focus search.
+If a live Cosmos account still has old hashes, run `npm run reset-demo-passwords` in `backend/`.
+
+Press `/` on list pages to focus search.
 
 ### 2. Add a patient (optional but recommended)
 
-**Patients → New patient**
+**Patient Master → New patient** (technician, radiologist, admin)
 
 Required: first name, last name, age, sex. Middle name and patient ID are optional. Empty ID → next `PT-{year}-{nnnn}`.
 
-Submit creates a Patient with no studies. The chart opens. **New case** on that chart starts an upload with the person already filled in.
+The chart shows prior medicines, heart rate, and lab results, plus the ward modules (Sepsis Monitor, labs, eMAR, care notes).
 
-Lookup on New Case uses the same records, so you can also type an existing ID there.
+### 3. Technician: upload only
 
-### 3. New case (upload + AI)
+**Upload X-ray** (or from the patient chart)
 
-**New case** (or from the patient chart)
-
-1. Patient ID + Lookup, or fill first / middle / last name, age, sex, history.
+1. Patient ID + Lookup, or fill name / age / sex / history.
 2. Drop or pick a PNG / JPG / JPEG / WebP.
-3. **Upload X-Ray** posts `FormData` to `POST /api/cases`. As soon as the film is stored you go back to the **worklist**; a centered overlay stays up while CURV writes the draft.
+3. Submit posts `FormData` to `POST /api/cases`. The film is stored; you return to the worklist. **AI is not started.**
 
 Backend:
 
 1. Require image, `patientId`, first name, last name.
 2. Stream the file into GridFS.
-3. Save the case as `status: pending` (`diagnosis: Generating report…`) and return **201 immediately**.
-4. In the background, write a temp file and `POST` it to `AI_BASE_URL/analyze` (CURV middleware, 180s timeout).
-5. Map middleware `{ report, findings }` onto the case and set `status: pending_approve`.
-6. If Azure is configured, write a short worklist diagnosis and finding cards with boxes.
-7. Upsert the Patient document from the case.
-8. Write `CASE_CREATED` (+ `AI_ANALYZED` when CURV succeeded).
+3. Save the case as `analysisState: none`, `status: pending` (awaiting AI).
+4. Upsert the Patient document from the case.
+5. Write `CASE_CREATED`.
 
-If CURV fails, the case is still stored with a placeholder report and **pending approve**. The clinician can complete it by hand.
+Technicians see their own uploads. They cannot open Review to edit or run AI.
 
-### 4. Worklist (Dashboard)
+### 4. Radiologist: one-click AI
 
-Shows stats (total, urgent, finalized, pending approve). Tiles and chips filter the table. Urgent rows sort to the top. Search is live (debounced); `/` focuses it. The table columns are Patient ID, Date, Status, **Doctor** (in charge), Diagnosis, Actions.
+Open **X-ray Worklist** or **Review**. Status is **Awaiting AI** until someone clicks **Use AI**.
 
-While a new film is generating, the worklist sits under a centered **Generating the report** overlay. The row status is **Generating** until the draft lands, then **Pending approve**. After sign-off it is **Finalized**.
+`POST /api/cases/:id/analyze` sets `analysisState: running` and returns immediately. In the background:
 
-- **View** → case chart (history, diagnosis, findings list, remarks, doctor in charge)
-- **Review** → X-ray + point-form findings list with an editable selected card. Blocked while the draft is still generating.
+1. Write a temp file and `POST` it to `AI_BASE_URL/analyze` (CURV middleware, 180s timeout).
+2. Map `{ report, findings }` onto the case and set `analysisState: done`, `status: pending_approve`.
+3. If Azure is configured, write a short worklist diagnosis and finding cards with boxes.
+4. Append an `editLog` row with `kind: ai`.
+5. Write `AI_ANALYZED` when CURV succeeded.
+
+If CURV fails, the radiologist can complete the report by hand. Manual edits append `kind: manual` rows to `editLog`.
+
+### 5. Worklist (X-ray Worklist)
+
+Shows stats (total, urgent, finalized, pending approve). Tiles and chips filter the table. Urgent rows sort to the top.
+
+Referring **doctors** only see **finalized** rows.
+
+- **View** → case chart
+- **Review** → film + findings (blocked for technicians; read-only for doctors on finalized cases)
 
 Admins can tick rows and bulk-delete.
 
-### 5. Report review (the main clinical screen)
+### 6. Report review
 
-Left: film from GridFS with bbox overlays. Right: a point-form list of every finding, then the selected finding as an editable card, then remarks.
+Left: film from GridFS with bbox overlays. Right: findings list, selected editable card, remarks.
 
-On open:
+While drafting, the page shows an **attribution log** (AI vs manual). **Finalize** issues a clean report: no source badges in the body the doctor, share page, Word, or PDF see.
 
-1. Load the case and unwrap any legacy `{"report":"..."}` `reportText`.
-2. Show stored findings (Azure cards written during generate, when configured).
-3. If there are no cards, parse the markdown report locally into up to six findings. Opening Review does **not** call Azure again.
-
-Every edit of findings, remarks, or the report body is written to MongoDB (`cases.reportText` + `remarks` + `findings`). Typing auto-saves after a short pause; Save draft / Save remarks / Report / Word / PDF still flush immediately.
-
-Clinician can:
+Radiologist / admin can:
 
 - Edit label / location / size / pattern on non-finalized cases
-- **+ Add manually** — selects a new card (`source: "manual"`)
+- **+ Add manually** — new card (`source: "manual"`)
+- **Use AI** / **Re-run AI**
 - **Save draft** / **Finalize & approve**
-- **Share** / **Copy share link** — after finalize; anyone with the link can open the report without signing in
+- **Share** / **Copy share link** — after finalize
 - **Mark urgent** / **Remove urgent** (allowed after finalize)
 - Save remarks (allowed after finalize; does **not** rewrite a finalized report)
-- **Report** — popup editor of stored `reportText` (also auto-saves to MongoDB)
-- **Word** / **PDF** — persist unsaved edits first, then download (includes the uploaded X-ray)
+- **Report** / **Word** / **PDF**
 
-Export composition (`src/lib/reportExport.js`) is the CURV report only. Azure finding cards stay on the review page and are not copied into Word/PDF.
+Export composition (`src/lib/reportExport.js`) is the clean CURV/clinician report only.
 
-1. Uploaded chest X-ray (`imageId` from GridFS)
-2. Body of `reportText` (CURV, plus clinician remarks / hand-added findings if saved)
+### 7. Finalize
 
-Nurses see the film, the findings list, and the selected card read-only. They cannot save, finalize, share, or toggle urgent.
+`POST /api/cases/:id/finalize` sets `status: finalized` and records who signed. Finalize is refused while AI is still `running`. After finalize, findings and the stored report stay locked.
 
-### 6. Finalize
+### 8. Share (public link)
 
-`POST /api/cases/:id/finalize` sets `status: finalized` and records who signed. Finalize is refused while the report is still `pending` (generating). After finalize, findings and the stored report stay locked. Remarks and urgent remain editable so follow-up notes and triage tags are still possible.
+After finalize, Review shows **Share**. That creates a token (`POST /api/cases/:id/share`) and copies `#/share/<token>`. Anyone with the link can open the film and the **clean** report without signing in. Shared images come from `GET /api/share/:token/image` (no JWT). `DELETE /api/cases/:id/share` revokes it.
 
-### 7. Share (public link)
+### 9. Referring doctor
 
-After finalize, Review shows **Share**. That creates a token (`POST /api/cases/:id/share`) and copies `#/share/<token>`. Anyone with the link can open the film, findings, report, and **doctor in charge** without signing in. Word and PDF still work. Shared images come from `GET /api/share/:token/image` (no JWT). **Copy share link** if a token already exists. `DELETE /api/cases/:id/share` revokes it.
+Sees only finalized cases. Review / share / export are read-only. No Use AI, no draft log, no save, no finalize.
 
-### 8. Patients and cases lists
+### 10. Users (admin)
 
-Same search / pagination / admin bulk-delete pattern. Patient rows show full name and an **Urgent** chip if any study is urgent. Opening a patient shows history, latest diagnosis, findings from studies, doctor in charge per study, and chart remarks (`PUT /api/patients/:id` — these remarks are **not** copied into reports).
+Search accounts; enable or disable them. You cannot disable your own account or the last active administrator.
 
-The case archive can filter by **doctor in charge**. Doctors and admins also get **My cases**.
+### 11. Audit
 
-### 9. Users (admin)
-
-Admins open **Users** in the menu. Search accounts; enable or disable them. You cannot disable your own account or the last active administrator.
-
-### 10. Audit
-
-Filterable log of logins, case and patient mutations, AI runs, finalizations, deletions, share links, and user enable/disable. Doctors may read; nurses do not see this page; only admins delete.
+Filterable log of logins, case and patient mutations, AI runs, finalizations, deletions, share links, and user enable/disable. Radiologists may read; technicians and referring doctors do not see this page; only admins delete.
 
 ---
 
@@ -224,11 +260,12 @@ Filterable log of logins, case and patient mutations, AI runs, finalizations, de
 | Page (`state.page`) | Module | Purpose |
 | --- | --- | --- |
 | `login` / `register` | `src/components/login.js` | Auth |
-| `dashboard` | `dashboard.js` | Worklist |
-| `patients` / `patient` / `new-patient` | `patients.js`, `newPatient.js` | Charts |
+| `dashboard` | `dashboard.js` | X-ray worklist |
+| `patients` / `patient` / `new-patient` | `patients.js`, `newPatient.js` | Patient Master |
+| `monitor` / `labs` / `meds` / `notes` | `clinical.js` | Sepsis, labs, eMAR, care notes |
 | `cases` / `case` | `cases.js` | Study records |
-| `new` | `newCase.js` | Upload |
-| `review` | `review.js` | Film + findings list + selected card |
+| `new` | `newCase.js` | Technician upload (no AI) |
+| `review` | `review.js` | Film + Use AI + findings + draft log |
 | `share` | `shareView.js` | Public finalized report (`#/share/<token>`) |
 | `audit` | `audit.js` | Trail |
 | `users` | `users.js` | Admin enable / disable |
@@ -237,14 +274,15 @@ Filterable log of logins, case and patient mutations, AI runs, finalizations, de
 Shared pieces:
 
 - `src/api.js` — `fetch` wrapper, Bearer token
+- `src/lib/roles.js` — technician / radiologist / doctor / admin
 - `src/lib/patientName.js` — first / middle / last
-- `src/lib/tags.js` — urgent chip, patient name, doctor in charge
+- `src/lib/tags.js` — urgent chip, patient name
 - `src/lib/findingsSync.js` — merge Azure / parsed / manual cards
 - `src/lib/ui.js` — search, chips, empty states, urgent sort
-- `src/lib/caseStatus.js` — generating / pending approve / finalized labels
-- `src/lib/analysisJob.js` — worklist overlay + poll after upload
-- `src/components/header.js` — hamburger + drawer shell
-- `src/components/patientFields.js` — labeled name controls, sex pills, name preview
+- `src/lib/caseStatus.js` — awaiting AI / generating / pending approve / finalized
+- `src/lib/analysisJob.js` — overlay + poll after **Use AI**
+- `src/components/header.js` — CMS shell (title bar + MODULES + footer)
+- `src/components/patientFields.js` — labeled name controls, sex pills
 
 `setPage()` remounts the current page. Toasts and in-page drafts bypass `setState` so typing is not wiped.
 
@@ -259,25 +297,26 @@ Shared pieces:
 | `POST` | `/api/auth/register` | public | Demo signup |
 | `GET` | `/api/auth/me` | any | Session user |
 | `POST` | `/api/auth/logout` | any | Audit only |
-| `GET` | `/api/cases` | any | `status`, `q`, `patientId` |
-| `POST` | `/api/cases` | doctor, admin | multipart upload; 201 while AI still runs |
-| `GET` | `/api/cases/:id` | any | `caseId` or Mongo `_id` |
-| `PUT` | `/api/cases/:id` | doctor, admin | findings / report / remarks / urgent |
-| `POST` | `/api/cases/:id/finalize` | doctor, admin | |
-| `POST` | `/api/cases/:id/share` | doctor, admin | public token for a finalized report |
-| `DELETE` | `/api/cases/:id/share` | doctor, admin | revoke the share link |
-| `POST` | `/api/cases/:id/summarise-findings` | doctor, admin | Azure cards (used during generate / report rebuild) |
-| `POST` | `/api/cases/:id/summarise-diagnosis` | doctor, admin | Worklist label |
+| `GET` | `/api/cases` | any | Doctors only receive `status=finalized` |
+| `POST` | `/api/cases` | technician, admin | multipart upload; **no AI** |
+| `GET` | `/api/cases/:id` | any | Doctors get a clean public view |
+| `PUT` | `/api/cases/:id` | radiologist, admin | findings / report / remarks / urgent |
+| `POST` | `/api/cases/:id/analyze` | radiologist, admin | one-click AI |
+| `POST` | `/api/cases/:id/finalize` | radiologist, admin | |
+| `POST` | `/api/cases/:id/share` | radiologist, admin | public token for a finalized report |
+| `DELETE` | `/api/cases/:id/share` | radiologist, admin | revoke the share link |
+| `POST` | `/api/cases/:id/summarise-findings` | radiologist, admin | Azure cards |
+| `POST` | `/api/cases/:id/summarise-diagnosis` | radiologist, admin | Worklist label |
 | `POST` | `/api/cases/bulk-delete` | admin | |
 | `DELETE` | `/api/cases/:id` | admin | |
 | `GET` | `/api/share/:token` | public | finalized case for a share link |
 | `GET` | `/api/share/:token/image` | public | film for that share link |
 | `GET` | `/api/patients` | any | includes patients with no studies |
-| `POST` | `/api/patients` | doctor, admin | |
-| `GET`/`PUT` | `/api/patients/:id` | GET any; PUT doctor/admin | |
+| `POST` | `/api/patients` | technician, radiologist, admin | |
+| `GET`/`PUT` | `/api/patients/:id` | GET any; PUT technician/radiologist/admin | chart + clinical arrays |
 | `POST`/`DELETE` | `/api/patients/bulk-delete`, `.../:id` | admin | also deletes studies + images |
 | `GET` | `/api/images/:id` | any | GridFS stream (JWT) |
-| `GET` | `/api/audit-logs` | doctor, admin | |
+| `GET` | `/api/audit-logs` | radiologist, admin | |
 | `POST`/`DELETE` | `/api/audit-logs/bulk-delete`, `.../:id` | admin | |
 | `GET` | `/api/stats` | any | dashboard counters |
 | `GET` | `/api/users` | admin | |
@@ -309,8 +348,8 @@ Set in `backend/.env`:
 
 Used for:
 
-- A short **diagnosis** on create (and dashboard backfill for leftover first-sentence labels)
-- **Finding cards** during generate: groups the report, scores wording vs image support, clamps boxes. If vision boxes are missing, anatomical **zones** are used. Review shows those stored cards; it does not summarise again on page open.
+- A short **diagnosis** after **Use AI**
+- **Finding cards** during generate: groups the report, scores wording vs image support, clamps boxes. If vision boxes are missing, anatomical **zones** are used.
 
 If those env vars are absent, the app runs on CURV + the local parser only.
 
@@ -330,12 +369,17 @@ Three processes. Seed once if the database is empty.
 cd backend
 npm install
 cp .env.example .env   # if you have an example; otherwise edit .env
-npm run seed           # users + demo cases (idempotent; also backfills names / urgent)
+npm run seed           # users + demo cases (idempotent)
 node server.js         # :5002
 # or: npm run dev      # nodemon
 ```
 
 `backend/.env` needs at least `PORT`, `MONGODB_URI`, `MONGODB_DB`, `JWT_SECRET`, `FRONTEND_URL`, `AI_BASE_URL` (usually `http://localhost:8001`). Never commit it.
+
+Useful scripts:
+
+- `npm run migrate-workflow` — backfill roles (`nurse` → technician), `analysisState`, chart fields
+- `npm run reset-demo-passwords` — re-hash `tech123` / `priya123` / `doctor123` / `admin123` on a live Cosmos DB
 
 ### 2. Frontend
 
@@ -344,7 +388,7 @@ npm install
 npm run dev            # :5173, proxies /api → :5002
 ```
 
-### 3. AI (only required for new uploads)
+### 3. AI (only required when a radiologist clicks Use AI)
 
 ```sh
 ./start_server.sh
@@ -354,9 +398,9 @@ Needs Python 3.12 with `mlx_vlm`, the CURV weights at `~/CURV-mlx`, and `middlew
 
 ### Demo data
 
-Seeded cases include names (first / last; James **Wei** Tan has a middle name). Henry Wong’s rib-fracture case is **urgent** so the tag is visible on Patients.
+Seeded cases include structured names. Henry Wong’s rib-fracture case is **urgent** so the tag is visible on Patient Master.
 
-Re-running seed skips existing users/cases but will patch missing `firstName` / `lastName` / `urgent` on the demo cases.
+Re-running seed skips existing users/cases but will patch missing name / urgent / chart fields on the demo records.
 
 ---
 
@@ -368,7 +412,7 @@ Frontend (jsdom via linkedom, no browser):
 npm test
 ```
 
-That runs the suite in `scripts/test-*.mjs`: report unwrap/parse, findings list, Azure bbox, confidence, export, review popup, diagnosis, patients, new patient, cases, pagination, new-case drop zone, audit bulk-delete, users page, share page.
+That runs the suite in `scripts/test-*.mjs`: report unwrap/parse, findings list, Azure bbox, confidence, export, review popup, diagnosis, patients, new patient, cases, pagination, new-case drop zone, audit bulk-delete, users page, share page, analysis job, shell menu.
 
 Against a **running** backend:
 
@@ -385,6 +429,9 @@ Dry-run by default; pass `--apply` to write.
 - `node scripts/fix-legacy-reports.js` — unwrap `{"report":"..."}` `reportText`
 - `node scripts/fix-data-issues.js` — empty findings arrays; drop missing GridFS `imageId`s
 - `node scripts/dump-cases.js` — print case health
+- `node scripts/migrate-workflow.js` — roles + `analysisState` + patient chart
+- `node scripts/reset-demo-passwords.js` — demo account hashes
+- `node scripts/inspect-roles.js` — print stored user roles
 
 ---
 
@@ -394,15 +441,16 @@ Dry-run by default; pass `--apply` to write.
 
 1. Start backend, Vite, and `start_server.sh` before the session. Confirm `/api/health` says `mongo: "up"` and `:8001/health` is OK.
 2. Restart Express after any backend edit (`node server.js` does not hot-reload).
-3. Walk: New patient → New case → Review (findings list, add manual finding, remarks, urgent) → Patients list shows the name and Urgent chip → Finalize → Share copies a public link (doctor in charge on that page) → remarks still save.
-4. Show nurse login: read-only review, no Mark urgent / Save / Share.
+3. Walk: Technician upload → radiologist **Use AI** → edit a card (draft log shows AI vs manual) → Finalize → doctor login sees only the clean report → Share copies a public link.
+4. Show Patient Master + Sepsis / labs / eMAR / notes on a demo chart.
 5. Show admin bulk-delete on a throwaway row, not on the last demo case. Show **Users**: disable a throwaway account, not `admin`.
 
 ### Product / clinical
 
-- Keep the human in the loop. Do not auto-finalize. Keep Azure/CURV copy labeled as draft.
-- Urgent should mean **triage**, not a legal priority. Agree a definition with the supervisor (e.g. suspected pneumothorax).
-- Patient names are now structured; do not collect extra identifiers (HKID, address) in this FYP unless you have an ethics plan.
+- Keep the human in the loop. Do not auto-finalize. Do not start AI on upload.
+- Urgent should mean **triage**, not a legal priority.
+- Patient names are structured; do not collect extra identifiers (HKID, address) in this FYP unless you have an ethics plan.
+- Chart medicines, heart rate, and labs are **synthetic demo data**.
 - Reports should stay in the system of record you present (Mongo), not only in a downloaded Word file.
 
 ### Engineering (highest value next)
@@ -411,21 +459,13 @@ Dry-run by default; pass `--apply` to write.
 | --- | --- |
 | Use `npm run dev` (nodemon) in `backend/` | Avoids “route not found” after adding APIs |
 | Tighten CORS | `server.js` currently allows every origin “for FYP demo” |
-| Disable or lock down `/api/auth/register` | Anyone can mint a doctor account |
+| Disable or lock down `/api/auth/register` | Anyone can mint an account |
 | Rotate seed passwords for any shared Cosmos account | `admin123` is public in this repo |
 | Backend tests | UI tests do not cover Express or Mongo |
-| Idempotent Azure summarise | Avoid double-write if two tabs open the same case |
 | Patient ID allocation | `PT-2026-0007` is max+1; two concurrent creates can collide |
 | Do not store JWT in `localStorage` for a real hospital deploy | XSS can steal it; httpOnly cookies are safer |
 | DICOM | Today only raster images; real PACS would need a DICOM store and viewer |
 | Structured logs / request IDs | Helps debug CURV timeouts (180s) |
-
-### UX follow-ups
-
-- The whole page remounts on `setPage`. Fine at this size; painful if you add complex forms.
-- Sidebar is gone; the hamburger drawer is the current IA. Next polish is keyboard focus order and visible focus rings.
-- Dashboard diagnosis backfill hits Azure per leftover row (capped at 6). Cache or batch if the worklist grows.
-- Consider a dedicated “urgent worklist” saved filter in the URL.
 
 ### Deployment sketch (if asked)
 
@@ -452,8 +492,9 @@ It is not a PACS, not a CE/FDA device, and not a substitute for a radiologist. B
 ## Repo layout
 
 ```
-src/                  UI (Vite)
+src/                  UI (Vite) — CMS shell + X-ray + clinical modules
 backend/              Express API, models, seed, Azure/CURV helpers
 middleware.py         FastAPI wrapper around mlx_vlm (started by start_server.sh)
 scripts/              Frontend tests + e2e
+docs/                 FYP plan and initial analysis
 ```
