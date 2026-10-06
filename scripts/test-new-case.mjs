@@ -164,8 +164,8 @@ test("a new film can be dropped after Remove", () => {
   dropZone().dispatchEvent(ev);
 }
 
-test("submit button is Upload X-Ray", () => {
-  assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Upload X-Ray"));
+test("submit button is Save with film", () => {
+  assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Save with film"));
 });
 
 {
@@ -195,8 +195,9 @@ test("submit button is Upload X-Ray", () => {
   fill(root.querySelector("#patient-last-name"), "Wong");
   fill(root.querySelector("#case-age"), "40");
   root.querySelector('[data-sex="Female"]').dispatchEvent(new window.Event("click", { bubbles: true }));
-  [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === "Upload X-Ray")
-    .dispatchEvent(new window.Event("click"));
+  const save = [...root.querySelectorAll("button")].find((b) => /Save with film/.test(b.textContent || ""));
+  if (!save) throw new Error("buttons: " + [...root.querySelectorAll("button")].map((b) => JSON.stringify(b.textContent)).join(" | "));
+  save.dispatchEvent(new window.Event("click"));
   await new Promise((r) => setTimeout(r, 0));
 }
 

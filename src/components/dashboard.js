@@ -4,12 +4,11 @@
 import { el, mount } from "../dom.js";
 import { state, setPage, toast } from "../state.js";
 import { api } from "../api.js";
-import { svgIcon } from "./icons.js";
 import { needsAzureDiagnosis } from "../lib/diagnosis.js";
 import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
 import { urgentBadge, patientDisplayName, doctorInCharge } from "../lib/tags.js";
-import { PAGE, searchField, statusChips, metricCard, emptyState, pageHeading, sortWorklist } from "../lib/ui.js";
+import { searchField, sortWorklist } from "../lib/ui.js";
 import { statusLabel, statusBadgeClass, isGenerating, isAwaitingAi, caseStatus } from "../lib/caseStatus.js";
 import { CASES_CHANGED } from "../lib/analysisJob.js";
 import { forgetCases } from "../lib/records.js";
@@ -66,13 +65,9 @@ export async function renderDashboardPage({ target }) {
     if (signal.aborted) return;
     loading = true; error = ""; render();
     try {
-      const data = await api.listCases(
-        { status: status === "all" || status === "urgent" ? "" : status, q },
-        { signal }
-      );
+      const data = await api.listCases({ q }, { signal });
       if (signal.aborted) return;
       cases = sortWorklist(data.cases || []);
-      if (urgentOnly) cases = cases.filter((c) => c.urgent);
       state.cases = cases;
       startQueuedReports(cases);
       for (const id of [...selected]) {
@@ -162,11 +157,23 @@ export async function renderDashboardPage({ target }) {
   }
 
   function render() {
-    const totalFinalized = stats?.finalizedCases ?? cases.filter((c) => caseStatus(c.status) === "finalized").length;
-    const totalPending = stats?.pendingCases ?? cases.filter((c) => caseStatus(c.status) === "pending_approve").length;
-    const totalCases = stats?.totalCases ?? cases.length;
-    const totalUrgent = stats?.urgentCases ?? cases.filter((c) => c.urgent).length;
-    const chipValue = urgentOnly ? "urgent" : status;
+    const counts = {
+      all: cases.length,
+      requested: cases.filter((c) => caseStatus(c.status) === "requested").length,
+      pending: cases.filter((c) => caseStatus(c.status) === "pending" || isGenerating(c)).length,
+      pending_approve: cases.filter((c) => caseStatus(c.status) === "pending_approve").length,
+      finalized: cases.filter((c) => caseStatus(c.status) === "finalized").length,
+      urgent: cases.filter((c) => c.urgent).length,
+    };
+    const queueId = urgentOnly ? "urgent" : status;
+    const visible = cases.filter((c) => {
+      if (urgentOnly) return Boolean(c.urgent);
+      if (status === "pending") return caseStatus(c.status) === "pending" || isGenerating(c);
+      if (status === "pending_approve") return caseStatus(c.status) === "pending_approve";
+      if (status === "finalized") return caseStatus(c.status) === "finalized";
+      if (status === "requested") return caseStatus(c.status) === "requested";
+      return true;
+    });
 
     function diagnosisCell(c) {
       const id = c.caseId || c._id;
@@ -185,11 +192,11 @@ export async function renderDashboardPage({ target }) {
       return el(
         "tr",
         {
-          class: "border-t cursor-pointer hover:bg-blue-50/60",
+          class: "cursor-pointer hover:bg-[#c5e0f5]",
           onClick: () => { state.selectedCaseId = id; setPage("case"); },
         },
         isAdmin() ? rowCheckbox(id, selected, (rowId, on) => { toggleSelected(selected, rowId, on); render(); }) : null,
-        el("td", { class: "p-4 font-bold text-slate-900" },
+        el("td", { class: "border border-[#b7d3ea] px-2 py-1 font-bold" },
           el("button", {
             class: "hover:text-ha-blue hover:underline",
             onClick: (e) => {
@@ -202,20 +209,25 @@ export async function renderDashboardPage({ target }) {
             ? el("div", { class: "text-xs font-normal text-slate-500 font-mono" }, c.patientId)
             : null
         ),
-        el("td", { class: "text-slate-600" }, c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : ""),
-        el("td", { class: "space-x-1" },
+        el("td", { class: "border border-[#b7d3ea] px-2 py-1" }, "XRAY"),
+        el("td", { class: "border border-[#b7d3ea] px-2 py-1 whitespace-nowrap" }, c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : ""),
+        el("td", { class: "border border-[#b7d3ea] px-2 py-1" },
+          el("div", {}, "Chest"),
+          el("div", { class: "max-w-md text-[11px] opacity-80" }, diagnosisCell(c))
+        ),
+        el("td", { class: "border border-[#b7d3ea] px-2 py-1 font-semibold" }, c.urgent ? "U" : "R"),
+        el("td", { class: "border border-[#b7d3ea] px-2 py-1 space-x-1" },
           statusBadge(c),
           c.urgent ? urgentBadge({ class: "ml-1" }) : null
         ),
-        el("td", { class: "text-slate-700" }, doctorInCharge(c)),
-        el("td", { class: "max-w-md" }, diagnosisCell(c)),
-        el("td", { class: "space-x-1 whitespace-nowrap" },
+        el("td", { class: "border border-[#b7d3ea] px-2 py-1" }, doctorInCharge(c)),
+        el("td", { class: "border border-[#b7d3ea] px-2 py-1 space-x-1 whitespace-nowrap" },
           el("button", {
-            class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-ha-blue hover:bg-blue-50 text-sm",
+            class: "border border-gray-500 bg-[#ece9d8] px-2 py-0.5 text-[11px] hover:bg-white",
             onClick: (e) => { e.stopPropagation(); state.selectedCaseId = id; setPage("case"); },
-          }, svgIcon("eye", { size: 16 }), "View"),
+          }, "View"),
           el("button", {
-            class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-slate-600 hover:bg-slate-100 text-sm",
+            class: "border border-gray-500 bg-[#ece9d8] px-2 py-0.5 text-[11px] hover:bg-white",
             onClick: (e) => {
               e.stopPropagation();
               if (caseStatus(c.status) === "requested") {
@@ -239,121 +251,100 @@ export async function renderDashboardPage({ target }) {
               state.selectedCaseId = id;
               setPage("review");
             },
-          }, svgIcon("image", { size: 16 }), caseStatus(c.status) === "requested" && canUpload(state.user) ? "Register" : "Review")
+          },
+            caseStatus(c.status) === "requested" && canUpload(state.user)
+              ? "Register"
+              : isReferringDoctor(state.user)
+                ? "Enquiry"
+                : "Edit report")
         )
       );
     }
 
-    const filtered = paginate(cases, page);
+    const filtered = paginate(visible, page);
     page = filtered.page;
     const pageIds = filtered.items.map(caseIdOf);
 
+    const queues = [
+      ["all", "All work", counts.all],
+      ["pending", "Outstanding", counts.pending],
+      ["pending_approve", "Partially endorsed", counts.pending_approve],
+      ["finalized", "Fully endorsed", counts.finalized],
+      ["requested", "Requested", counts.requested],
+      ["urgent", "Urgent attention", counts.urgent],
+    ];
+    const queueTitle = queues.find(([id]) => id === queueId)?.[1] || "All work";
     const root = el(
       "main",
-      { class: PAGE },
-
-      pageHeading({
-        title: "Worklist",
-        subtitle: isReferringDoctor(state.user)
-          ? "Ward enquiry. Endorsed reports are ready to read. Requested exams are waiting for a film."
-          : "Radiologist work list. A registered film generates its draft automatically. Pending approve is ready to report. Endorsed is what the ward can read.",
-        actions: canUpload(state.user)
-          ? el("button", {
-              class: "inline-flex items-center gap-2 rounded-xl bg-ha-blue px-4 py-2 font-semibold text-white hover:bg-[#074f85]",
-              onClick: () => setPage("new"),
-            }, svgIcon("plus", { size: 16 }), "New case")
-          : null,
-      }),
-
-      online === false && el("div", { class: "mt-4" },
-        el("span", { class: "inline-block rounded-full bg-amber-50 text-amber-700 px-3 py-1 text-xs font-bold" },
-          "Backend offline — showing cached data")
-      ),
-
-      el("div", { class: "mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4" },
-        metricCard({
-          n: totalCases, label: "Total cases", tone: "bg-ha-blue",
-          active: status === "all" && !urgentOnly,
-          onClick: () => setFilter("all"),
-        }),
-        metricCard({
-          n: totalUrgent, label: "Urgent", tone: "bg-red-500",
-          active: urgentOnly,
-          onClick: () => setFilter("all", { urgent: true }),
-        }),
-        metricCard({
-          n: totalFinalized, label: "Endorsed", tone: "bg-green-600",
-          active: status === "finalized" && !urgentOnly,
-          onClick: () => setFilter("finalized"),
-        }),
-        metricCard({
-          n: totalPending, label: "Pending approve", tone: "bg-amber-500",
-          active: status === "pending_approve" && !urgentOnly,
-          onClick: () => setFilter("pending_approve"),
-        }),
-      ),
-
-      el("section", { class: "card mt-6 p-0 overflow-hidden" },
-        el("div", { class: "flex flex-col gap-3 border-b p-4" },
-          el("div", { class: "flex flex-wrap items-center gap-3" },
-            searchField({
-              value: q,
-              placeholder: "Search Patient ID, case, doctor, diagnosis…",
-              onQuery: (value) => { q = value; state.pendingFilter.q = value; },
-              onSearch: () => { page = 1; selected.clear(); refresh(); },
-            }),
-            el("select", {
-              class: "rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-ha-blue",
-              value: status === "urgent" ? "all" : status,
-              onChange: (e) => setFilter(e.target.value),
-            },
-              el("option", { value: "all" }, "All statuses"),
-              el("option", { value: "requested" }, "Requested"),
-              el("option", { value: "pending" }, "Outstanding"),
-              el("option", { value: "pending_approve" }, "Pending approve"),
-              el("option", { value: "finalized" }, "Endorsed")
-            ),
-            isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })
-          ),
-          statusChips({
-            value: chipValue,
-            extra: [{ id: "urgent", label: "Urgent" }],
-            onChange: (id) => setFilter(id === "urgent" ? "all" : id, { urgent: id === "urgent" }),
-          })
+      { class: "flex h-full min-h-[70vh] flex-col bg-[#d4d0c8] p-2" },
+      el("div", { class: "flex h-full min-h-[70vh] flex-col border border-gray-500 bg-[#ece9d8] shadow-sm" },
+        el("div", { class: "border-b border-gray-400 bg-[#d4d0c8] px-2 py-1 text-xs font-bold text-slate-900" },
+          isReferringDoctor(state.user) ? "Examination enquiry" : "Radiologist Work List"
         ),
-
-        // Table
-        error
-          ? el("div", { class: "p-6 text-red-700" },
-              el("p", { class: "font-bold" }, "Failed to load cases"),
-              el("p", { class: "text-sm mt-1" }, error),
-            )
-          : loading
-          ? el("div", { class: "p-10 text-center text-slate-400" }, "Loading cases…")
-          : filtered.total === 0
-          ? emptyState({
-              icon: "file-text",
-              title: "No cases match this filter",
-              hint: "Try another status, or add a new X-ray case.",
-              actionLabel: canUpload(state.user) ? "New case" : null,
-              onAction: () => setPage("new"),
-            })
-          : el("div", {},
-              el("div", { class: "overflow-x-auto" },
-                el("table", { class: "w-full min-w-[900px] text-left text-sm" },
-                  el("thead", { class: "bg-slate-50 text-slate-600" },
-                    el("tr", {},
-                      isAdmin() ? headerCheckbox(pageIds, selected, (on) => { togglePage(selected, pageIds, on); render(); }) : null,
-                      ["Patient ID", "Date", "Status", "Uploaded by", "Diagnosis", "Actions"].map((h) =>
-                        el("th", { class: "p-4" }, h)
-                      )
-                    )
-                  ),
-                  el("tbody", {}, ...filtered.items.map(row))
+        online === false && el("p", { class: "bg-amber-100 px-2 py-1 text-xs text-amber-900" }, "Backend offline — showing cached data"),
+        el("div", { class: "flex min-h-0 flex-1" },
+          el("aside", { class: "w-44 shrink-0 border-r border-gray-400 bg-[#ece9d8] p-2 text-xs" },
+            el("p", { class: "mb-2 font-bold text-slate-800" }, "My work"),
+            ...queues.map(([id, label, n]) => el("button", {
+              type: "button",
+              class: `mb-1 w-full border px-2 py-1.5 text-left ${
+                queueId === id
+                  ? "border-gray-500 bg-[#d4d0c8] font-bold shadow-inner"
+                  : "border-transparent bg-[#f4f1e4] hover:bg-white"
+              }`,
+              onClick: () => setFilter(id === "urgent" ? "all" : id, { urgent: id === "urgent" }),
+            }, `${label}(${n})`))
+          ),
+          el("div", { class: "flex min-w-0 flex-1 flex-col border border-gray-400 bg-white m-1" },
+            el("div", { class: "flex flex-wrap items-center justify-between gap-2 border-b border-gray-300 bg-[#f4f7fb] px-2 py-1" },
+              el("div", {},
+                el("h2", { class: "text-sm font-bold text-slate-900" }, `My work — ${queueTitle}`),
+                el("p", { class: "text-[11px] text-slate-600" },
+                  "Examination with report required",
+                  el("span", { class: "ml-3 font-semibold text-red-700" }, "U = Urgent"),
+                  el("span", { class: "ml-3" }, "Partially endorsed = draft report")
                 )
               ),
-              paginationBar({ ...filtered, onPage: (n) => { page = n; render(); } })
-            )
+              el("div", { class: "flex w-56 shrink-0 items-center gap-2" },
+                searchField({
+                  value: q,
+                  placeholder: "Patient or diagnosis",
+                  onQuery: (value) => { q = value; state.pendingFilter.q = value; },
+                  onSearch: () => { page = 1; selected.clear(); refresh(); },
+                }),
+                isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })
+              )
+            ),
+            error
+              ? el("div", { class: "p-4 text-sm text-red-700" }, error)
+              : loading
+              ? el("div", { class: "p-8 text-center text-sm text-slate-500" }, "Loading work list…")
+              : filtered.total === 0
+              ? el("p", { class: "p-6 text-sm text-slate-500" }, "No examinations in this list.")
+              : el("div", { class: "flex min-h-0 flex-1 flex-col" },
+                  el("div", { class: "overflow-auto" },
+                    el("table", { class: "w-full min-w-[860px] border-collapse text-left text-xs" },
+                      el("thead", { class: "bg-[#5b92c9] text-white" },
+                        el("tr", {},
+                          isAdmin() ? headerCheckbox(pageIds, selected, (on) => { togglePage(selected, pageIds, on); render(); }) : null,
+                          ["Patient Name", "Mod.", "Reg. Date", "Procedure", "Ex. Pri.", "Status", "Uploaded by", ""].map((h) =>
+                            el("th", { class: "border border-[#3d74ad] px-2 py-1 font-semibold" }, h)
+                          )
+                        )
+                      ),
+                      el("tbody", {}, ...filtered.items.map((c, i) => {
+                        const node = row(c);
+                        node.className = `${node.className || ""} ${i % 2 ? "bg-[#e7f3fb]" : "bg-white"} ${c.urgent ? "text-red-700" : "text-slate-900"}`;
+                        return node;
+                      }))
+                    )
+                  ),
+                  el("div", { class: "mt-auto border-t border-gray-300 bg-[#f7f7f7] px-2 py-1 text-xs" },
+                    paginationBar({ ...filtered, onPage: (n) => { page = n; render(); } })
+                  )
+                )
+          )
+        )
       )
     );
 

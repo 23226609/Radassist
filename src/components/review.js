@@ -1279,11 +1279,11 @@ export async function renderReviewPage({ target }) {
       el("button", {
         class: "inline-flex items-center gap-1 text-slate-700 hover:text-slate-900",
         onClick: () => setPage("dashboard"),
-      }, svgIcon("arrow-left", { size: 16 }), "Dashboard"),
+      }, svgIcon("arrow-left", { size: 16 }), isReferringDoctor(state.user) ? "Ward enquiry" : "Work list"),
 
       el("div", { class: "mt-3 flex flex-wrap items-center justify-between gap-3" },
         el("div", {},
-          el("h1", { class: "text-3xl font-bold text-slate-900" }, "Report review"),
+          el("h1", { class: "text-3xl font-bold text-slate-900" }, isReferringDoctor(state.user) ? "Exam enquiry" : "Reporting"),
           el("p", { class: "text-slate-600 mt-1 flex flex-wrap items-center gap-2" },
             el("button", {
               class: "font-semibold hover:text-ha-blue hover:underline",
@@ -1299,6 +1299,13 @@ export async function renderReviewPage({ target }) {
             localCase.age || "?", " years · ",
             localCase.sex || "?",
             localCase.urgent ? urgentBadge() : null
+          ),
+          el("p", { class: "mt-1 text-sm text-slate-700" },
+            "Modality: ", el("b", {}, "XRAY"),
+            " · Procedure: ", el("b", {}, "Chest"),
+            localCase.createdAt
+              ? el("span", {}, " · Registered: ", new Date(localCase.createdAt).toLocaleString())
+              : null
           ),
           el("p", { class: "mt-1 text-sm text-slate-500" },
             "Doctor in charge: ",

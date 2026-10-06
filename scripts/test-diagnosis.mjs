@@ -191,17 +191,13 @@ test("dashboard asks Azure to replace a leftover first-sentence diagnosis", () =
 });
 
 {
-  let select = root.querySelector("select");
-  select.value = "finalized";
-  select.dispatchEvent(new window.Event("change"));
+  const queue = (label) => [...root.querySelectorAll("button")].find((b) => b.textContent.includes(label));
+  queue("Fully endorsed").dispatchEvent(new window.Event("click"));
   await new Promise((r) => setTimeout(r, 0));
-  select = root.querySelector("select");
-  select.value = "all";
-  select.dispatchEvent(new window.Event("change"));
+  queue("All work").dispatchEvent(new window.Event("click"));
   await new Promise((r) => setTimeout(r, 0));
-  select = root.querySelector("select");
   test("status filter can return to All statuses", () => {
-    assert.equal(select.value, "all");
+    assert.ok(queue("All work").className.includes("font-bold"));
   });
 }
 

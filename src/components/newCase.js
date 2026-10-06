@@ -198,10 +198,10 @@ export async function renderNewCasePage({ target }) {
       el("button", {
         class: "mb-4 inline-flex items-center gap-1 text-slate-700 hover:text-slate-900",
         onClick: () => setPage("dashboard"),
-      }, svgIcon("arrow-left", { size: 16 }), "Worklist"),
-      el("h1", { class: "text-3xl font-bold text-slate-900" }, "Register X-ray"),
+      }, svgIcon("arrow-left", { size: 16 }), isTechnician(state.user) ? "Requested case" : "Work list"),
+      el("h1", { class: "text-3xl font-bold text-slate-900" }, "Registration"),
       el("p", { class: "mt-2 text-slate-500" },
-        "Register a ward request, or upload a film for a patient already on the chart. The report starts as soon as the film is stored."
+        "Register the patient for a chest X-ray and save the film. The draft report starts as soon as the film is stored, then the radiologist reports it."
       ),
       requests.length ? el("label", { class: "mt-4 block text-sm font-semibold text-slate-800" },
         "Open request",
@@ -344,7 +344,7 @@ export async function renderNewCasePage({ target }) {
           class: "mt-3 inline-flex items-center gap-2 rounded-xl bg-ha-blue px-4 py-2.5 font-semibold text-white hover:bg-[#074f85] disabled:opacity-60",
           disabled: busy,
           onClick: analyze,
-        }, busy ? "Uploading…" : "Upload X-Ray")
+        }, busy ? "Saving…" : "Save with film")
       )
     );
 
