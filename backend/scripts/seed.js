@@ -14,8 +14,9 @@ const User = require('../models/User');
 const Case = require('../models/Case');
 const Patient = require('../models/Patient');
 const AuditLog = require('../models/AuditLog');
-const { nameFieldsFrom } = require('../utils/patientName');
+const { nameFieldsFrom, composePatientName } = require('../utils/patientName');
 const { upsertPatientFromCase } = require('../utils/recordSync');
+const { CHARTS, fallbackChart, applyBuilt } = require('./demoCharts');
 
 const DEMO_USERS = [
   {
@@ -227,6 +228,178 @@ const SAMPLE_CASES = [
     createdByName: 'Jamie Lee',
     findingsSeed: [],
   },
+  {
+    caseId: 'CASE-DEMO-0008',
+    patientId: 'PT-2026-0072',
+    firstName: 'Wai Man',
+    lastName: 'Chan',
+    patientName: 'Wai Man Chan',
+    age: '63',
+    sex: 'Male',
+    history: 'Fever and productive cough for four days',
+    diagnosis: 'Chest X-ray requested',
+    reportText: '',
+    status: 'requested',
+    analysisState: 'none',
+    noImage: true,
+    requestedBy: 'USR-DOCTOR-0001',
+    requestedByName: 'Dr. Alex Wong',
+    createdBy: 'USR-DOCTOR-0001',
+    createdByName: 'Dr. Alex Wong',
+    findingsSeed: [],
+  },
+  {
+    caseId: 'CASE-DEMO-0009',
+    patientId: 'PT-2026-0073',
+    firstName: 'Ka Yan',
+    lastName: 'Lee',
+    patientName: 'Ka Yan Lee',
+    age: '29',
+    sex: 'Female',
+    history: 'Pre-operative chest X-ray before elective surgery',
+    diagnosis: 'Chest X-ray requested',
+    reportText: '',
+    status: 'requested',
+    analysisState: 'none',
+    noImage: true,
+    requestedBy: 'USR-DOCTOR-0001',
+    requestedByName: 'Dr. Alex Wong',
+    createdBy: 'USR-DOCTOR-0001',
+    createdByName: 'Dr. Alex Wong',
+    findingsSeed: [],
+  },
+  {
+    caseId: 'CASE-DEMO-0010',
+    patientId: 'PT-2026-0074',
+    firstName: 'Ho Yin',
+    lastName: 'Cheung',
+    patientName: 'Ho Yin Cheung',
+    age: '81',
+    sex: 'Male',
+    history: 'Acute dyspnoea, suspected pneumonia',
+    diagnosis: 'Generating report…',
+    reportText: 'Patchy airspace opacity in the right lower zone. Clinical correlation is advised.',
+    status: 'pending_approve',
+    urgent: true,
+    createdBy: 'USR-NURSE-0001',
+    createdByName: 'Jamie Lee',
+    findingsSeed: [
+      { label: 'Right lower-zone opacity', confidence: 0.84, bbox: [52, 55, 24, 22], location: 'Right lower lobe', size: '4 cm', pattern: 'Consolidation', sentence: 'Patchy airspace opacity in the right lower zone.', status: 'pending' },
+    ],
+  },
+  {
+    caseId: 'CASE-DEMO-0011',
+    patientId: 'PT-2026-0075',
+    firstName: 'Mei Ling',
+    lastName: 'Wong',
+    patientName: 'Mei Ling Wong',
+    age: '54',
+    sex: 'Female',
+    history: 'Follow-up after a treated chest infection',
+    diagnosis: 'No acute cardiopulmonary findings',
+    reportText: 'The lungs are clear. Heart size is normal. No pleural effusion.',
+    status: 'finalized',
+    createdBy: 'USR-NURSE-0001',
+    createdByName: 'Jamie Lee',
+    finalizedBy: 'USR-DOCTOR-0002',
+    finalizedByName: 'Dr. Priya Nair',
+    findingsSeed: [],
+  },
+  {
+    caseId: 'CASE-DEMO-0012',
+    patientId: 'PT-2026-0076',
+    firstName: 'Anika',
+    lastName: 'Patel',
+    patientName: 'Anika Patel',
+    age: '41',
+    sex: 'Female',
+    history: 'Pleuritic pain and low-grade fever',
+    diagnosis: 'Small left pleural effusion',
+    reportText: 'Blunting of the left costophrenic angle suggests a small pleural effusion. The lungs are otherwise clear.',
+    status: 'pending_approve',
+    createdBy: 'USR-NURSE-0001',
+    createdByName: 'Jamie Lee',
+    findingsSeed: [
+      { label: 'Small left pleural effusion', confidence: 0.8, bbox: [18, 68, 20, 14], location: 'Left costophrenic angle', size: 'Small', pattern: 'Effusion', sentence: 'Blunting of the left costophrenic angle suggests a small pleural effusion.', status: 'pending' },
+    ],
+  },
+  {
+    caseId: 'CASE-DEMO-0013',
+    patientId: 'PT-2026-0077',
+    firstName: 'Luis',
+    lastName: 'Garcia',
+    patientName: 'Luis Garcia',
+    age: '36',
+    sex: 'Male',
+    history: 'Cough after a viral illness',
+    diagnosis: 'Chest X-ray requested',
+    reportText: '',
+    status: 'requested',
+    analysisState: 'none',
+    noImage: true,
+    requestedBy: 'USR-DOCTOR-0001',
+    requestedByName: 'Dr. Alex Wong',
+    createdBy: 'USR-DOCTOR-0001',
+    createdByName: 'Dr. Alex Wong',
+    findingsSeed: [],
+  },
+  {
+    caseId: 'CASE-DEMO-0014',
+    patientId: 'PT-2026-0078',
+    firstName: 'Siu Fong',
+    lastName: 'Yip',
+    patientName: 'Siu Fong Yip',
+    age: '77',
+    sex: 'Female',
+    history: 'Known heart failure, increased shortness of breath',
+    diagnosis: 'Pulmonary oedema',
+    reportText: 'Bilateral perihilar haze and upper-lobe diversion, in keeping with pulmonary oedema.',
+    status: 'finalized',
+    urgent: true,
+    createdBy: 'USR-NURSE-0001',
+    createdByName: 'Jamie Lee',
+    finalizedBy: 'USR-DOCTOR-0003',
+    finalizedByName: 'Dr. Marcus Chen',
+    findingsSeed: [
+      { label: 'Pulmonary oedema', confidence: 0.9, bbox: [20, 30, 60, 40], location: 'Perihilar, bilateral', size: 'N/A', pattern: 'Diffuse', sentence: 'Bilateral perihilar haze and upper-lobe diversion.', status: 'accepted' },
+    ],
+  },
+  {
+    caseId: 'CASE-DEMO-0015',
+    patientId: 'PT-2026-0080',
+    firstName: 'Tsz Hin',
+    lastName: 'Lam',
+    patientName: 'Tsz Hin Lam',
+    age: '22',
+    sex: 'Male',
+    history: 'Chest wall pain after sport',
+    diagnosis: 'Chest X-ray requested',
+    reportText: '',
+    status: 'requested',
+    analysisState: 'none',
+    noImage: true,
+    requestedBy: 'USR-DOCTOR-0001',
+    requestedByName: 'Dr. Alex Wong',
+    createdBy: 'USR-DOCTOR-0001',
+    createdByName: 'Dr. Alex Wong',
+    findingsSeed: [],
+  },
+  {
+    caseId: 'CASE-DEMO-0016',
+    patientId: 'PT-2026-0081',
+    firstName: 'Rosa',
+    lastName: 'Fernandes',
+    patientName: 'Rosa Fernandes',
+    age: '69',
+    sex: 'Female',
+    history: 'Annual review, mild osteoarthritis',
+    diagnosis: 'No acute cardiopulmonary findings',
+    reportText: 'Heart size and mediastinal contours are normal. The lungs are clear.',
+    status: 'pending_approve',
+    createdBy: 'USR-NURSE-0001',
+    createdByName: 'Jamie Lee',
+    findingsSeed: [],
+  },
 ];
 
 async function seedUsers() {
@@ -331,12 +504,14 @@ async function seedCases() {
       urgent: Boolean(c.urgent),
       createdBy: c.createdBy || 'USR-DOCTOR-0001',
       createdByName: c.createdByName || 'Dr. Alex Wong',
+      requestedBy: c.requestedBy || '',
+      requestedByName: c.requestedByName || '',
       finalizedBy: c.finalizedBy || null,
       finalizedByName: c.finalizedByName || null,
-      imageId: sampleImage.id,
-      imageFilename: 'demo-xray.webp',
-      imageContentType: sampleImage.contentType,
-      imageSize: sampleImage.size,
+      imageId: c.noImage ? null : sampleImage.id,
+      imageFilename: c.noImage ? '' : 'demo-xray.webp',
+      imageContentType: c.noImage ? '' : sampleImage.contentType,
+      imageSize: c.noImage ? 0 : sampleImage.size,
       aiProvider: 'curv-mlx',
       aiModel: '/Users/PHY/CURV-mlx',
     });
@@ -361,30 +536,37 @@ async function seedCases() {
   return created;
 }
 
-const DEMO_CHARTS = {
-  'PT-2026-0018': { medicines: 'Amlodipine 5 mg daily; salbutamol inhaler', heartRate: '76 bpm', labResults: 'Hb 12.8 g/dL; WBC 8.1; CRP 6' },
-  'PT-2026-0021': { medicines: 'Paracetamol as needed', heartRate: '92 bpm', labResults: 'WBC 11.4; CRP 28' },
-  'PT-2026-0011': { medicines: 'Metformin 500 mg twice daily', heartRate: '68 bpm', labResults: 'HbA1c 6.9%; creatinine 88' },
-  'PT-2026-0033': { medicines: 'Tiotropium; salbutamol', heartRate: '88 bpm', labResults: 'SpO2 93% on air' },
-  'PT-2026-0044': { medicines: 'None recorded', heartRate: '72 bpm', labResults: 'FBC within normal limits' },
-  'PT-2026-0050': { medicines: 'Alendronate weekly', heartRate: '80 bpm', labResults: 'Calcium 2.3; vitamin D 42' },
-  'PT-2026-0051': { medicines: 'Ibuprofen as needed', heartRate: '74 bpm', labResults: 'Hb 14.1 g/dL; WBC 6.8' },
-  'PT-2025-1107': { medicines: 'None recorded', heartRate: '70 bpm', labResults: 'FBC within normal limits' },
-  'PT-2026-0061': { medicines: 'Combined oral contraceptive', heartRate: '78 bpm', labResults: 'D-dimer pending' },
-};
-
 async function seedCharts() {
+  let created = 0;
   let updated = 0;
-  for (const [patientId, extra] of Object.entries(DEMO_CHARTS)) {
-    const p = await Patient.findOne({ patientId });
-    if (!p) continue;
-    p.medicines = extra.medicines;
-    p.heartRate = extra.heartRate;
-    p.labResults = extra.labResults;
-    await p.save();
-    updated++;
+  for (const spec of CHARTS) {
+    let patient = await Patient.findOne({ patientId: spec.patientId });
+    if (!patient) {
+      patient = new Patient({
+        patientId: spec.patientId,
+        firstName: spec.firstName || '',
+        middleName: spec.middleName || '',
+        lastName: spec.lastName || '',
+        age: spec.age || '',
+        sex: spec.sex || '',
+        history: spec.history || '',
+      });
+      patient.name = composePatientName(patient);
+      created += 1;
+    }
+    applyBuilt(patient, spec);
+    await patient.save();
+    updated += 1;
   }
-  console.log(`  · updated ${updated} patient charts with medicines / heart rate / labs`);
+
+  const known = new Set(CHARTS.map((spec) => spec.patientId));
+  const rest = await Patient.find({ patientId: { $nin: [...known] } });
+  for (const patient of rest) {
+    applyBuilt(patient, fallbackChart(patient));
+    await patient.save();
+    updated += 1;
+  }
+  console.log(`  · filled ${updated} patient charts (${created} new patients)`);
   return updated;
 }
 
