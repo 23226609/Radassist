@@ -104,7 +104,7 @@ test("shows an Upload X-Ray drop zone", () => {
 test("dropping an image onto the box selects that file", () => {
   assert.equal(state.selectedFile?.name, "chest.png");
   assert.ok(root.textContent.includes("chest.png"), "filename not shown after drop");
-  assert.ok(root.querySelector("img"), "preview missing after drop");
+  assert.ok(!root.querySelector("img"), "technician register screen does not show the film");
 });
 
 {
@@ -151,7 +151,7 @@ test("Remove clears the chosen film so another can be picked", () => {
 test("a new film can be dropped after Remove", () => {
   assert.equal(state.selectedFile?.name, "followup.jpg");
   assert.ok(root.textContent.includes("followup.jpg"));
-  assert.ok(root.querySelector("img"), "preview missing after second drop");
+  assert.ok(!root.querySelector("img"), "technician register screen does not show the film");
 });
 
 {
@@ -170,7 +170,7 @@ test("submit button is Upload X-Ray", () => {
 
 {
   api.createCase = async () => ({
-    analysing: false,
+    analysing: true,
     case: {
       caseId: "CASE-NEW-1",
       patientId: "PT-1",
@@ -178,8 +178,8 @@ test("submit button is Upload X-Ray", () => {
       firstName: "Ada",
       lastName: "Wong",
       status: "pending",
-      analysisState: "none",
-      diagnosis: "Awaiting AI",
+      analysisState: "running",
+      diagnosis: "Generating report…",
     },
   });
   api.getCase = async () => ({
@@ -200,8 +200,8 @@ test("submit button is Upload X-Ray", () => {
   await new Promise((r) => setTimeout(r, 0));
 }
 
-test("upload returns to the worklist without starting AI", () => {
-  assert.equal(state.page, "dashboard");
+test("upload returns the technician to requested cases without showing the film", () => {
+  assert.equal(state.page, "requests");
   const overlay = document.getElementById("radassist-analysis");
   assert.ok(!overlay || overlay.hidden !== false);
 });

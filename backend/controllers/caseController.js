@@ -4,6 +4,7 @@
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 const Case = require('../models/Case');
+const Patient = require('../models/Patient');
 const ApiError = require('../utils/ApiError');
 const catchAsync = require('../utils/catchAsync');
 const addAuditLog = require('../utils/auditLogger');
@@ -24,6 +25,7 @@ function publicCaseOpts(req, doc) {
     includeShareToken: role === 'radiologist' || role === 'admin',
     includeEditLog: (role === 'radiologist' || role === 'admin') && !finalized,
     stripProvenance: role === 'doctor' || finalized,
+    hideFilm: role === 'technician',
   };
 }
 
@@ -70,9 +72,12 @@ exports.listCases = catchAsync(async (req, res) => {
   }
   if (patientId) filter.patientId = new RegExp(escapeRegex(patientId), 'i');
   if (isReferringDoctor(req.user)) {
-    filter.status = 'finalized';
+    const allowed = ['finalized', 'requested'];
+    if (!filter.status) filter.status = { $in: allowed };
+    else if (typeof filter.status === 'string' && !allowed.includes(publicStatus(filter.status))) filter.status = '__none__';
+    else if (filter.status.$in) filter.status = '__none__';
   } else if (isTechnician(req.user)) {
-    filter.createdBy = req.user.userId;
+    filter.status = 'requested';
   }
   if (q) {
     const re = new RegExp(escapeRegex(q), 'i');
@@ -115,11 +120,12 @@ exports.getCase = catchAsync(async (req, res, next) => {
   const c = await findCaseByAnyId(req.params.id);
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
   const raw = typeof c.toObject === 'function' ? c.toObject() : c;
-  if (isReferringDoctor(req.user) && publicStatus(raw.status) !== 'finalized') {
-    return next(ApiError.forbidden('Doctors can only open finalized reports.'));
+  const visibleStatus = publicStatus(raw.status);
+  if (isReferringDoctor(req.user) && visibleStatus !== 'finalized' && visibleStatus !== 'requested') {
+    return next(ApiError.forbidden('Doctors can only open endorsed reports and their X-ray requests.'));
   }
-  if (isTechnician(req.user) && raw.createdBy && raw.createdBy !== req.user.userId) {
-    return next(ApiError.forbidden('Technicians can only open films they uploaded.'));
+  if (isTechnician(req.user) && visibleStatus !== 'requested') {
+    return next(ApiError.forbidden('Technicians can only open requested cases.'));
   }
   res.json({ success: true, case: toPublicCase(raw, publicCaseOpts(req, raw)) });
 });
@@ -146,10 +152,30 @@ exports.createCase = catchAsync(async (req, res, next) => {
   });
   const imageId = up.id;
 
-  const caseId = newCaseId();
   const sexValue = ['Female', 'Male', 'Other'].includes(sex) ? sex : '';
   const userId = req.user.userId;
   const userName = req.user.name;
+  const requestCaseId = String(req.body.requestCaseId || '').trim();
+  if (requestCaseId) {
+    const open = await Case.findOne({ caseId: requestCaseId, status: 'requested' });
+    if (!open) return next(ApiError.badRequest('That X-ray request is not open.'));
+    open.imageId = imageId;
+    open.imageFilename = req.file.originalname;
+    open.imageContentType = req.file.mimetype;
+    open.imageSize = req.file.size;
+    open.createdBy = userId;
+    open.createdByName = userName;
+    if (history) open.history = history;
+    await queueAnalysis(open, userId, req.file.buffer);
+    await addAuditLog(userId, 'CASE_CREATED', `Registered film for request ${open.caseId}`, open.caseId, null, 'pending');
+    return res.status(201).json({
+      success: true,
+      analysing: true,
+      case: toPublicCase(open, publicCaseOpts(req, open)),
+    });
+  }
+
+  const caseId = newCaseId();
 
   await upsertPatientFromCase({
     patientId,
@@ -172,12 +198,12 @@ exports.createCase = catchAsync(async (req, res, next) => {
     age: age || '',
     sex: sexValue,
     history: history || '',
-    diagnosis: 'Awaiting AI',
+    diagnosis: 'Generating report…',
     diagnosisSource: '',
     reportText: '',
     findings: [],
     status: 'pending',
-    analysisState: 'none',
+    analysisState: 'running',
     editLog: [],
     createdBy: userId,
     createdByName: userName,
@@ -197,10 +223,68 @@ exports.createCase = catchAsync(async (req, res, next) => {
     null,
     'pending'
   );
+  await queueAnalysis(doc, userId, req.file.buffer);
 
   res.status(201).json({
     success: true,
-    analysing: false,
+    analysing: true,
+    case: toPublicCase(doc, publicCaseOpts(req, doc)),
+  });
+});
+
+function queueAnalysis(doc, userId, fileBuffer) {
+  const ext = path.extname(doc.imageFilename || '') || '.jpg';
+  const tmpPath = path.join(UPLOAD_DIR, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
+  fs.writeFileSync(tmpPath, fileBuffer);
+  doc.status = 'pending';
+  doc.analysisState = 'running';
+  doc.diagnosis = 'Generating report…';
+  const caseId = doc.caseId;
+  const patientId = doc.patientId;
+  const age = doc.age;
+  const sex = doc.sex;
+  const history = doc.history;
+  const aiModel = process.env.AI_MODEL_PATH || '/Users/PHY/CURV-mlx';
+  return doc.save().then(() => {
+    setImmediate(() => {
+      finishAnalysis({ caseId, tmpPath, patientId, age, sex, history, userId, aiModel })
+        .catch((err) => console.error('[createCase] background analysis failed:', err));
+    });
+  });
+}
+
+exports.requestExam = catchAsync(async (req, res, next) => {
+  const patientId = String(req.body?.patientId || '').trim();
+  if (!patientId) return next(ApiError.badRequest('patientId is required.'));
+  const patient = await Patient.findOne({ patientId });
+  if (!patient) return next(ApiError.badRequest('Register the patient before requesting an X-ray.'));
+  const open = await Case.findOne({ ...OWNED, patientId, status: 'requested' });
+  if (open) return next(ApiError.badRequest('This patient already has an open X-ray request.'));
+
+  const doc = await Case.create({
+    caseId: newCaseId(),
+    patientId,
+    firstName: patient.firstName || '',
+    middleName: patient.middleName || '',
+    lastName: patient.lastName || '',
+    patientName: patient.name || '',
+    age: patient.age || '',
+    sex: patient.sex || '',
+    history: patient.history || '',
+    diagnosis: 'Chest X-ray requested',
+    status: 'requested',
+    analysisState: 'none',
+    reportText: '',
+    findings: [],
+    editLog: [],
+    requestedBy: req.user.userId,
+    requestedByName: req.user.name,
+    createdBy: req.user.userId,
+    createdByName: req.user.name,
+  });
+  await addAuditLog(req.user.userId, 'CASE_CREATED', `Requested chest X-ray ${doc.caseId} for ${patientId}`, doc.caseId, null, 'requested');
+  res.status(201).json({
+    success: true,
     case: toPublicCase(doc, publicCaseOpts(req, doc)),
   });
 });

@@ -24,6 +24,59 @@ function statusBadge(s) {
   );
 }
 
+export async function renderRequestedPage({ target }) {
+  let rows = [];
+  let error = "";
+  async function load() {
+    const data = await api.listCases({ status: "requested" });
+    rows = data.cases || [];
+  }
+  function paint() {
+    mount(target, el("main", { class: PAGE },
+      pageHeading({
+        title: "Requested case",
+        subtitle: "Chest X-ray requests from the ward. Register the film here. Reports and images stay with the radiologist.",
+      }),
+      error
+        ? el("p", { class: "mt-4 text-red-700" }, error)
+        : el("section", { class: "card mt-6 overflow-hidden p-0" },
+            rows.length
+              ? el("table", { class: "w-full text-left text-sm" },
+                  el("thead", { class: "bg-slate-50 text-slate-600" },
+                    el("tr", {}, ["Patient", "Requested by", "When", ""].map((h) => el("th", { class: "p-3" }, h)))
+                  ),
+                  el("tbody", {}, ...rows.map((row) => el("tr", { class: "border-t" },
+                    el("td", { class: "p-3" },
+                      el("div", { class: "font-semibold" }, patientDisplayName(row) || row.patientId),
+                      el("div", { class: "font-mono text-xs text-slate-500" }, row.patientId)
+                    ),
+                    el("td", { class: "p-3" }, row.requestedByName || row.createdByName || "—"),
+                    el("td", { class: "p-3" }, row.createdAt ? new Date(row.createdAt).toLocaleString() : "—"),
+                    el("td", { class: "p-3 text-right" },
+                      el("button", {
+                        class: "rounded-lg bg-ha-blue px-3 py-1.5 text-sm font-semibold text-white",
+                        onClick: () => {
+                          state.pendingRequestId = row.caseId || row._id;
+                          state.selectedPatientId = row.patientId;
+                          setPage("new");
+                        },
+                      }, "Register film")
+                    )
+                  )))
+                )
+              : emptyState({
+                  icon: "file-text",
+                  title: "No open X-ray requests",
+                  hint: "When a doctor requests a chest X-ray, it appears here.",
+                })
+          )
+    ));
+  }
+  try { await load(); }
+  catch (err) { error = err.message || "Could not load requests."; }
+  paint();
+}
+
 function openCase(caseId) {
   state.selectedCaseId = caseId;
   setPage("case");

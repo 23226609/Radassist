@@ -325,6 +325,15 @@ function concatBytes(parts) {
   return out;
 }
 
+export function reportSignOff(c = {}, signerName = "") {
+  const doctor = String(c.finalizedByName || signerName || "").trim() || "Reporting radiologist";
+  const when = c.status === "finalized" && c.updatedAt ? new Date(c.updatedAt) : new Date();
+  const date = Number.isNaN(when.getTime())
+    ? ""
+    : when.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  return { doctor, date };
+}
+
 export function buildReportSections(c = {}) {
   const findings = Array.isArray(c.findings) ? c.findings : [];
   return {
@@ -335,6 +344,7 @@ export function buildReportSections(c = {}) {
     sex: c.sex || "",
     history: c.history || "",
     body: String(c.reportText || "").replace(/\r\n/g, "\n").trim(),
+    signOff: reportSignOff(c),
     findings: findings.map((f, i) => ({
       n: i + 1,
       label: f.label || `Finding ${i + 1}`,
@@ -393,6 +403,13 @@ export async function downloadReportDocx(c) {
   for (const line of s.body.split("\n")) {
     children.push(new Paragraph({ text: line }));
   }
+  children.push(new Paragraph({ text: "" }));
+  children.push(new Paragraph({ text: `Date: ${s.signOff.date}` }));
+  children.push(new Paragraph({ text: `Reporting doctor: ${s.signOff.doctor}` }));
+  children.push(new Paragraph({ text: "Signature" }));
+  children.push(new Paragraph({
+    children: [new TextRun({ text: s.signOff.doctor, italics: true, size: 32 })],
+  }));
   const blob = await Packer.toBlob(new Document({
     sections: [{ properties: {}, children }],
   }));
@@ -465,7 +482,14 @@ export function buildReportPdfBytes(c, film = null) {
   if (film?.type === "jpg" && film.bytes && film.width && film.height) {
     headerLines.push("Chest X-ray", "");
   }
-  const bodyLines = [...wrapPlain(s.body || "(No report text)", 90)];
+  const bodyLines = [
+    ...wrapPlain(s.body || "(No report text)", 90),
+    "",
+    `Date: ${s.signOff.date}`,
+    `Reporting doctor: ${s.signOff.doctor}`,
+    "Signature",
+    s.signOff.doctor,
+  ];
 
   const pageWidth = 595;
   const pageHeight = 842;

@@ -53,7 +53,7 @@ Working name: **RadAssist AI**. Role-separated, clinician-in-the-loop web applic
 1. Authorised staff sign in as **technician**, **radiologist**, **doctor**, or **system administrator**.
 2. Patient chart (name, age, sex, history, **prior medicines**, **heart rate**, **lab test results**) before or at imaging.
 3. **Technician** uploads the chest X-ray to the system (the **only** technician function). Sem 1 formats: **PNG / JPG / JPEG / WebP**. The statement lists DICOM as an example; a DICOM store/viewer is a **Semester 2 stretch**, not required for the first prototype. Upload stores the film; it does **not** start AI.
-4. **Radiologist** opens the worklist, sees the uploaded film, and **one click** starts AI. **Asynchronous** backend job calls **local CURV** (`mlx_vlm`); response is report text plus bounding boxes where a finding can be localised [3].
+4. **Referring doctor** may request a chest X-ray. **Technician** registers the film. Inference starts **automatically** when the film is stored — there is no Use AI click. The backend sends the film with the **official CURV conversation** from the model release: the system prompt in `prompt_cxr.txt` and the user line “Please analyze this chest X-ray image…”. CURV replies with `<findings>`, `<thinking>`, and `<impression>`. The radiologist opens the work list and finds the case as **pending approve**, then edits and endorses [1][3].
 5. Frontend renders the film with **interactive overlays** and **editable finding cards**. While the radiologist edits, the review screen shows an **attribution log** (which sentences/findings are **AI** vs **manual**). Remarks, urgency, explicit **finalisation**.
 6. On finalise, the **issued report is the clean clinical text** — AI/manual markers stay in the system audit / draft log and are **not** printed in the report the doctor sees or exports.
 7. **Doctor** sees **only finalized** reports (read-only). They do not upload films, run AI, or edit findings.
@@ -261,7 +261,7 @@ Browser (Vite, localhost:5173)
 - **Presentation:** vanilla JS SPA + Tailwind (Vite). The Project Statement named React/Vue as example frameworks; the SPA behaviour (upload, overlays, chips, export) is what matters.
 - **Application:** REST, role middleware, audit writer.
 - **Data:** Patient (incl. medicines, heart rate, lab results), Case (findings, report, status, urgent, **draft attribution log**), User, AuditLog, images in GridFS.
-- **AI:** local CURV for the report; optional Azure for short diagnosis labels and finding cards. Started **only** by radiologist (or admin) click, not by technician upload.
+- **AI:** local CURV for the report, called with the official system prompt and user line from the CURV release (not a prompt typed by the radiologist, and not an image-only call). Optional Azure only labels the worklist / finding cards after the report exists. Started **only** by radiologist (or admin) click, not by technician upload.
 - **Control principle:** AI never finalises. Status is `pending` (film stored, AI not run or still generating) → `pending_approve` → `finalized`. Issued report text is unmarked.
 
 ### A.7.2 Why this, not the alternatives
@@ -427,7 +427,7 @@ Same diagram as a Word-friendly sketch (paste into draw.io or redraw in PowerPoi
 | Actors | CURV (supporting); Radiologist / Admin (initiator from Review or worklist **Analyse** control) |
 | Goal | Produce draft `reportText` and findings without blocking the UI; radiologist stays in control of **when** AI runs |
 | Precondition | Case stored with an image; user is radiologist/admin; AI middleware reachable *or* failure handled |
-| Main success | 1. Radiologist opens the case and **clicks once** to use AI. 2. Backend writes a temp file. 3. POST to `/analyze` (timeout ~180s) with age/sex/history (and chart context if available). 4. Map `{ report, findings }` onto the case; each generated finding/sentence tagged `source: ai` in the **draft log**. 5. Optional Azure short diagnosis. 6. Status → `pending_approve`. 7. Upsert patient from case. 8. AI_ANALYZED audit. |
+| Main success | 1. Radiologist opens the case and **clicks once** (no prompt box). 2. Backend writes a temp file. 3. POST the image to `/analyze` (timeout ~180s). Middleware sends the official CURV system prompt, the user line, and the film. Age, sex, history, and medicines stay on the chart. 4. Map the reply (`Findings`, `Thinking`, `Impression`) onto the case; cards parsed from Findings and tagged `source: ai` in the **draft log**. 5. Optional Azure short diagnosis (separate from CURV). 6. Status → `pending_approve`. 7. Upsert patient from case. 8. AI_ANALYZED audit. |
 | Alternatives | CURV down/timeout → placeholder report, still `pending_approve`, radiologist completes by hand (`source: manual`). Technician / doctor → cannot start AI. |
 | Postcondition | Radiologist can continue Review. Worklist overlay clears when status is no longer generating. |
 
@@ -870,7 +870,7 @@ This layout is the web version of the briefing slide: current image + numbered b
 | Technician | Staff who only upload X-rays into the system |
 | Radiologist | Staff who open the film, run AI, edit, and finalise (replaces the old “doctor” reporting role) |
 | Doctor | Referring clinician who sees **finalized** reports only |
-| CURV | Local chest X-ray VLM used in this prototype; from Wang et al., NeurIPS 2025 [1] |
+| CURV | Chest X-ray VLM (Wang et al., NeurIPS 2025 [1]). Inference uses the released system prompt (`prompt_cxr.txt`) plus “Please analyze this chest X-ray image…” and the film. Output is findings, thinking, and impression |
 | AHIVE | Anatomy-aware interactive report retrieval (related research, CVPR 2024) [2] |
 | Grounded finding | A finding tied to a region (bbox) on the film, as in the briefing UI |
 | HITL | Human-in-the-loop: technician captures; AI drafts; radiologist decides; doctor reads the signed report |

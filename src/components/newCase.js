@@ -6,6 +6,8 @@ import { state, setPage, toast } from "../state.js";
 import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { nameFieldsFrom } from "../lib/patientName.js";
+import { isTechnician } from "../lib/roles.js";
+import { startAnalysisWatch } from "../lib/analysisJob.js";
 import {
   labeledField,
   sexPills,
@@ -27,7 +29,9 @@ export async function renderNewCasePage({ target }) {
     age: "",
     sex: "",
     history: "",
+    requestCaseId: state.pendingRequestId || "",
   };
+  let requests = [];
   let preview = null;
   let busy = false;
   let progress = 0;
@@ -160,6 +164,7 @@ export async function renderNewCasePage({ target }) {
     fd.append("age", String(f.age));
     fd.append("sex", f.sex);
     fd.append("history", f.history || "");
+    if (f.requestCaseId) fd.append("requestCaseId", f.requestCaseId);
 
     try {
       const data = await api.createCase(fd);
@@ -167,8 +172,17 @@ export async function renderNewCasePage({ target }) {
       if (!created?.caseId) throw new Error("Case was saved without an id.");
       state.cases = [created, ...state.cases.filter((x) => x.caseId !== created.caseId)];
       state.selectedFile = null;
-      toast("X-ray uploaded. A radiologist can open Review and run AI.");
-      setPage("dashboard");
+      state.pendingRequestId = null;
+      toast("Film registered. The report is generating and will show as pending approve.");
+      if (data.analysing !== false && !isTechnician(state.user)) {
+        startAnalysisWatch({
+          caseId: created.caseId,
+          patientName: created.patientName,
+          patientId: created.patientId,
+          openReview: false,
+        });
+      }
+      setPage(isTechnician(state.user) ? "requests" : "dashboard");
     } catch (err) {
       busy = false; progress = 0; statusMsg = "";
       render();
@@ -185,10 +199,28 @@ export async function renderNewCasePage({ target }) {
         class: "mb-4 inline-flex items-center gap-1 text-slate-700 hover:text-slate-900",
         onClick: () => setPage("dashboard"),
       }, svgIcon("arrow-left", { size: 16 }), "Worklist"),
-      el("h1", { class: "text-3xl font-bold text-slate-900" }, "New X-Ray case"),
+      el("h1", { class: "text-3xl font-bold text-slate-900" }, "Register X-ray"),
       el("p", { class: "mt-2 text-slate-500" },
-        "Look up an existing chart, attach the film, then return to the worklist. The radiologist starts AI from Review."
+        "Register a ward request, or upload a film for a patient already on the chart. The report starts as soon as the film is stored."
       ),
+      requests.length ? el("label", { class: "mt-4 block text-sm font-semibold text-slate-800" },
+        "Open request",
+        el("select", {
+          class: `mt-1 ${CONTROL}`,
+          value: f.requestCaseId,
+          onChange: (e) => {
+            f.requestCaseId = e.target.value;
+            const hit = requests.find((row) => (row.caseId || row._id) === f.requestCaseId);
+            if (hit) applyPerson(hit);
+            else render();
+          },
+        },
+          el("option", { value: "" }, "No request — register a new film"),
+          ...requests.map((row) => el("option", { value: row.caseId || row._id },
+            `${row.patientId} · ${row.patientName || row.caseId} · requested`
+          ))
+        )
+      ) : null,
 
       el("section", { class: "card mt-6" },
         el("h2", { class: "text-lg font-bold text-slate-900" }, "1. Patient"),
@@ -280,7 +312,7 @@ export async function renderNewCasePage({ target }) {
         ),
         preview
           ? el("div", { class: "mt-3 flex items-center gap-3" },
-              el("img", { src: preview, class: "h-28 rounded-lg grayscale" }),
+              isTechnician(state.user) ? null : el("img", { src: preview, class: "h-28 rounded-lg grayscale" }),
               el("div", { class: "min-w-0 flex-1" },
                 el("p", { class: "truncate text-sm font-medium text-slate-800" }, state.selectedFile?.name || "Selected film"),
                 el("p", { class: "text-sm text-slate-500" }, "Preview only. The original file is stored when you upload.")
@@ -302,7 +334,7 @@ export async function renderNewCasePage({ target }) {
       el("section", { class: "card mt-4" },
         el("h2", { class: "font-bold text-slate-900" }, "3. Upload"),
         el("p", { class: "mt-2 text-sm text-slate-500" },
-          "The film is stored first. AI is not started here — a radiologist opens the case and clicks Use AI."
+          "The film is stored, then the draft report is generated automatically. The radiologist finds it on the work list as pending approve."
         ),
         busy && el("div", { class: "my-3 h-2 overflow-hidden rounded bg-slate-200" },
           el("div", { class: "h-2 bg-ha-blue transition-all", style: { width: `${progress}%` } })
@@ -320,6 +352,12 @@ export async function renderNewCasePage({ target }) {
     paintNamePreview(f);
   }
 
-  if (f.patientId) await lookup();
+  try {
+    const data = await api.listCases({ status: "requested" });
+    requests = data.cases || [];
+  } catch { requests = []; }
+  const preset = requests.find((row) => (row.caseId || row._id) === f.requestCaseId);
+  if (preset) applyPerson(preset);
+  else if (f.patientId) await lookup();
   else render();
 }

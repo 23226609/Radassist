@@ -121,6 +121,7 @@ export const api = {
   },
   createCase: (formData) =>
     request("POST", "/cases", formData, { headers: {} }), // FormData keeps its own Content-Type
+  requestExam: (payload) => request("POST", "/cases/request", payload),
   updateCase: (id, payload) => request("PUT", `/cases/${encodeURIComponent(id)}`, payload),
   analyzeCase: (id) => request("POST", `/cases/${encodeURIComponent(id)}/analyze`),
   finalizeCase: (id) => request("POST", `/cases/${encodeURIComponent(id)}/finalize`),

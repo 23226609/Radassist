@@ -12,8 +12,8 @@ import { emptyState } from "../lib/ui.js";
 import { statusLabel } from "../lib/caseStatus.js";
 import { CASES_CHANGED } from "../lib/analysisJob.js";
 import { forgetPatients } from "../lib/records.js";
-import { canEditPatient, canUpload, isAdmin as roleIsAdmin } from "../lib/roles.js";
-import { monitorAlert } from "./clinical.js";
+import { canEditPatient, canUpload, canRequestExam, isAdmin as roleIsAdmin } from "../lib/roles.js";
+import { reviewState, cmsAssessmentStamp } from "./clinical.js";
 
 function openPatient(patientId) {
   state.selectedPatientId = patientId;
@@ -289,6 +289,22 @@ export async function renderPatientPage({ target }) {
     error = err.message || "Could not load this patient.";
   }
 
+  async function requestExam() {
+    if (!patient || !canRequestExam(state.user)) return;
+    busy = true;
+    paint();
+    try {
+      await api.requestExam({ patientId: patient.patientId });
+      await load();
+      toast("Chest X-ray requested. A technician registers the film before anyone reports it.");
+    } catch (err) {
+      toast(err.message || "Could not request the X-ray.");
+    } finally {
+      busy = false;
+      paint();
+    }
+  }
+
   async function saveNotes() {
     if (!patient || !canEdit()) return;
     busy = true;
@@ -356,6 +372,11 @@ export async function renderPatientPage({ target }) {
               disabled: busy,
               onClick: () => setPage("new"),
             }, "New case"),
+            canRequestExam(state.user) && el("button", {
+              class: "rounded border border-white/40 px-2 py-0.5 text-[11px] font-semibold disabled:opacity-80",
+              disabled: busy || cases.some((c) => c.status === "requested"),
+              onClick: requestExam,
+            }, cases.some((c) => c.status === "requested") ? "Requested" : "Request chest X-ray"),
             edit && el("button", {
               class: "rounded bg-white px-2 py-0.5 text-[11px] font-bold text-ha-blue",
               disabled: busy,
@@ -388,17 +409,24 @@ export async function renderPatientPage({ target }) {
               ),
               (() => {
                 const obs = (patient?.observations || []).slice(-1)[0] || {};
-                const reasons = monitorAlert(obs, heartRateDraft);
+                const review = reviewState(obs, heartRateDraft);
+                const stamp = cmsAssessmentStamp(obs.at);
                 const tile = (label, value) => el("article", { class: "rounded border border-slate-200 bg-slate-50 p-3" },
                   el("p", { class: "text-xs text-gray-500" }, label),
                   el("p", { class: "text-lg font-bold" }, value || "—")
                 );
                 return el("section", { class: "rounded-lg border border-slate-200 bg-white p-4" },
                   el("h3", { class: "flex items-center gap-2 font-bold" }, "Health metrics and trends"),
-                  reasons.length
-                    ? el("div", { role: "status", class: "my-3 rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900" },
-                        el("strong", {}, "Abnormal observations — review"),
-                        el("div", { class: "mt-1 font-bold" }, reasons.join("; "), ". Record a new assessment."))
+                  review.level !== "none"
+                    ? el("div", {
+                        role: "status",
+                        class: review.level === "urgent"
+                          ? "my-3 rounded border border-red-300 bg-red-50 p-2 text-xs text-red-900"
+                          : "my-3 rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900",
+                      },
+                        el("strong", {}, review.title),
+                        stamp ? el("span", {}, " · ", stamp) : null,
+                        el("div", { class: "mt-1 font-bold" }, review.reasons.join("; "), ". Record a new assessment."))
                     : null,
                   el("div", { class: "mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3" },
                     tile("Blood pressure", obs.sbp ? `${obs.sbp} mmHg` : "—"),

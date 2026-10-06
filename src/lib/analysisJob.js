@@ -13,6 +13,7 @@ const BOX = "fixed inset-0 z-[60] items-center justify-center bg-slate-950/45 p-
 let timer = null;
 let watchingId = "";
 let startedAt = 0;
+let openWhenDone = true;
 
 function host() {
   let node = document.getElementById(HOST_ID);
@@ -77,7 +78,7 @@ function finish(ok, message, created) {
   const id = created?.caseId || created?._id || watchingId;
   stopAnalysisWatch();
   if (message) toast(message);
-  if (ok && id) setPage("review", { selectedCaseId: id });
+  if (ok && id && openWhenDone) setPage("review", { selectedCaseId: id });
   try {
     window.dispatchEvent(new CustomEvent(DONE, { detail: { ok, case: created || null } }));
   } catch { /* tests */ }
@@ -103,10 +104,11 @@ async function tick() {
   }
 }
 
-export function startAnalysisWatch({ caseId, patientName, patientId } = {}) {
+export function startAnalysisWatch({ caseId, patientName, patientId, openReview = true } = {}) {
   if (timer) clearInterval(timer);
   timer = null;
   if (!caseId) return;
+  openWhenDone = openReview !== false;
   watchingId = caseId;
   startedAt = Date.now();
   const who = [patientName, patientId].filter(Boolean).join(" · ");

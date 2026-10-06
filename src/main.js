@@ -11,14 +11,14 @@ import { renderReviewPage, stopReviewWatch } from "./components/review.js";
 import { renderAuditPage } from "./components/audit.js";
 import { renderPatientsPage, renderPatientPage } from "./components/patients.js";
 import { renderNewPatientPage } from "./components/newPatient.js";
-import { renderCasesPage, renderCasePage } from "./components/cases.js";
+import { renderCasesPage, renderCasePage, renderRequestedPage } from "./components/cases.js";
 import { renderUsersPage } from "./components/users.js";
 import { renderBedsPage, renderMonitorPage, renderLabsPage, renderMedsPage, renderNotesPage } from "./components/clinical.js";
 import { renderSharePage } from "./components/shareView.js";
 import { isReportPopup, renderReportViewPage } from "./components/reportView.js";
 import { el, mount } from "./dom.js";
 import { stopAnalysisWatch } from "./lib/analysisJob.js";
-import { canUpload, canEditPatient, canSeeAudit, isAdmin } from "./lib/roles.js";
+import { canUpload, canEditPatient, canSeeAudit, isAdmin, isTechnician } from "./lib/roles.js";
 import "./index.css";
 
 const app = document.getElementById("app");
@@ -120,8 +120,12 @@ function render() {
     setPage("dashboard");
     return;
   }
+  if (isTechnician(state.user) && ["dashboard", "cases", "case", "review", "labs", "meds"].includes(state.page)) {
+    setPage("requests");
+    return;
+  }
   if (!canUpload(state.user) && state.page === "new") {
-    setPage("dashboard");
+    setPage(isTechnician(state.user) ? "requests" : "dashboard");
     return;
   }
   if (!canEditPatient(state.user) && state.page === "new-patient") {
@@ -151,6 +155,7 @@ function render() {
     case "labs":      pageNode = "labs";      break;
     case "meds":      pageNode = "meds";      break;
     case "notes":     pageNode = "notes";     break;
+    case "requests":  pageNode = "requests";  break;
     default:          pageNode = "dashboard";
   }
 
@@ -192,6 +197,8 @@ function render() {
     renderMedsPage({ target });
   } else if (pageNode === "notes") {
     renderNotesPage({ target });
+  } else if (pageNode === "requests") {
+    renderRequestedPage({ target });
   }
 }
 

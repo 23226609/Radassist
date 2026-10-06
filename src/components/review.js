@@ -288,9 +288,10 @@ function isBoilerplateLine(line) {
 
 function findingsProse(text) {
   const src = String(text || "");
-  const section = src.match(/(?:description of findings|findings)\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:conclusion|impression|recommendation|clinician-added findings|radiologist remarks)\s*:?\s*(?:\n|$)|$)/i);
+  const stop = "conclusion|impression|thinking|reasoning|recommendation|clinician-added findings|radiologist remarks";
+  const section = src.match(new RegExp(`(?:description of findings|findings)\\s*:?\\s*\\n([\\s\\S]*?)(?=\\n\\s*(?:${stop})\\s*:?\\s*(?:\\n|$)|$)`, "i"));
   if (section?.[1]?.trim()) return section[1].trim();
-  const colon = src.match(/(?:description of findings|findings)\s*:\s*([\s\S]*?)(?=\n\s*(?:conclusion|impression|recommendation|clinician-added findings|radiologist remarks)\s*:|$)/i);
+  const colon = src.match(new RegExp(`(?:description of findings|findings)\\s*:\\s*([\\s\\S]*?)(?=\\n\\s*(?:${stop})\\s*:|$)`, "i"));
   if (colon?.[1]?.trim()) return colon[1].trim();
   return src;
 }
@@ -968,7 +969,7 @@ export async function renderReviewPage({ target }) {
       toast("The report is still generating.");
       return;
     }
-    if (!confirm("Finalize this report? Finalized cases are read-only for clinicians.")) return;
+    if (!confirm("Endorse this report? The ward will see the clean report, without the draft log.")) return;
     busy = true; render();
     try {
       await persistClinicianEdits({ includeDraft: true });
@@ -1309,11 +1310,11 @@ export async function renderReviewPage({ target }) {
           )
         ),
         el("div", { class: "flex gap-2 flex-wrap" },
-          canRunAi(state.user) && localCase.status !== "finalized" && el("button", {
+          canRunAi(state.user) && localCase.status !== "finalized" && !awaitingAi && el("button", {
             class: "inline-flex items-center gap-1 rounded-xl bg-ha-blue px-3 py-2 text-sm font-semibold text-white hover:bg-[#074f85] disabled:opacity-50",
             disabled: busy || generating,
             onClick: runAi,
-          }, generating ? "Generating…" : awaitingAi ? "Use AI" : "Re-run AI"),
+          }, generating ? "Generating…" : "Re-run AI"),
           canExport(state.user) && el("button", {
             class: "inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50",
             disabled: busy || generating || awaitingAi,
@@ -1343,7 +1344,7 @@ export async function renderReviewPage({ target }) {
             class: "rounded-xl bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-700",
             disabled: busy,
             onClick: finalize,
-          }, "Finalize & approve"),
+          }, "Endorse report"),
           canFlag && el("button", {
             class: localCase.urgent
               ? "rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50"
@@ -1365,7 +1366,7 @@ export async function renderReviewPage({ target }) {
 
       msg && el("p", { class: "mt-4 rounded-lg bg-green-50 text-green-700 p-3" }, msg),
       awaitingAi && el("p", { class: "mt-4 rounded-lg bg-violet-50 text-violet-900 p-3" },
-        "Film is stored. Click ", el("b", {}, "Use AI"), " once to generate the draft report."
+        "The film is registered. The draft report is generated automatically and will appear here as pending approve."
       ),
       generating && el("p", { class: "mt-4 rounded-lg bg-amber-50 text-amber-800 p-3" },
         "The report is still generating. Return to the worklist — Review is ready once the status is ",

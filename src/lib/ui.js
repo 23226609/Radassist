@@ -47,9 +47,10 @@ export function searchField({
 export function statusChips({ value, onChange, extra }) {
   const opts = [
     { id: "all", label: "All" },
-    { id: "pending", label: "Awaiting AI" },
+    { id: "requested", label: "Requested" },
+    { id: "pending", label: "Outstanding" },
     { id: "pending_approve", label: "Pending approve" },
-    { id: "finalized", label: "Finalized" },
+    { id: "finalized", label: "Endorsed" },
     ...(extra || []),
   ];
   return el("div", { class: "flex flex-wrap gap-1.5", role: "tablist", "aria-label": "Filter by status" },

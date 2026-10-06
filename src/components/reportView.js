@@ -7,7 +7,7 @@ import { el, mount } from "../dom.js";
 import { api } from "../api.js";
 import { state, toast } from "../state.js";
 import { unwrapLegacyReport, resyncMachineFindings } from "./review.js";
-import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, applyRemarksToReport } from "../lib/reportExport.js";
+import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, applyRemarksToReport, reportSignOff } from "../lib/reportExport.js";
 import { svgIcon } from "./icons.js";
 import { canEditReport } from "../lib/roles.js";
 import { reportPopupUrl, isReportPopup, reportPopupCaseId } from "../lib/reportPopup.js";
@@ -194,6 +194,16 @@ export async function renderReportViewPage({ target }) {
               : el("pre", { class: "whitespace-pre-wrap font-sans text-sm leading-6 text-slate-800" },
                   draftBody || "No report has been saved for this case yet."
                 ),
+            stored && (() => {
+              const sign = reportSignOff(stored, state.user?.name || "");
+              return el("div", { class: "mt-6 border-t border-slate-200 pt-4 text-sm text-slate-800" },
+                el("p", {}, el("span", { class: "font-semibold" }, "Date: "), sign.date),
+                el("p", { class: "mt-1" }, el("span", { class: "font-semibold" }, "Reporting doctor: "), sign.doctor),
+                el("p", { class: "mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500" }, "Signature"),
+                el("p", { class: "mt-1 font-serif text-2xl italic text-slate-900" }, sign.doctor),
+                el("div", { class: "mt-1 h-px w-56 bg-slate-400" })
+              );
+            })(),
             el("div", { class: "mt-6 border-t border-slate-200 pt-4" },
               el("h2", { class: "text-sm font-semibold text-slate-700" }, "Radiologist remarks"),
               canRemark()

@@ -33,10 +33,29 @@ export function isAwaitingApprove(c = {}) {
   return caseStatus(c.status) === "pending_approve";
 }
 
+export function worklistStage(c = {}) {
+  const s = caseStatus(c.status);
+  if (s === "requested") return "requested";
+  if (s === "finalized") return "endorsed";
+  if (isGenerating(c) || isAwaitingApprove(c) || analysisStateOf(c) === "done") return "draft";
+  return "outstanding";
+}
+
+export function worklistLabel(c = {}) {
+  const stage = worklistStage(c);
+  if (stage === "requested") return "Requested";
+  if (stage === "endorsed") return "Endorsed";
+  if (isGenerating(c)) return "Generating";
+  if (stage === "draft") return "Pending approve";
+  return "Outstanding";
+}
+
 export function statusLabel(s, c) {
+  if (c && typeof c === "object") return worklistLabel({ ...c, status: c.status || s });
   if (c && isGenerating(c)) return "Generating";
   if (c && isAwaitingAi(c)) return "Awaiting AI";
   const v = caseStatus(typeof s === "object" ? s?.status : s);
+  if (v === "requested") return "Requested";
   if (v === "pending") return "Awaiting AI";
   if (v === "pending_approve") return "Pending approve";
   if (v === "finalized") return "Finalized";
@@ -44,9 +63,17 @@ export function statusLabel(s, c) {
 }
 
 export function statusBadgeClass(s, c) {
+  if (c && typeof c === "object") {
+    const stage = worklistStage({ ...c, status: c.status || s });
+    if (stage === "requested") return "bg-slate-100 text-slate-700";
+    if (stage === "outstanding") return "bg-violet-50 text-violet-700";
+    if (stage === "draft") return "bg-amber-50 text-amber-800";
+    return "bg-green-50 text-green-700";
+  }
   if (c && isGenerating(c)) return "bg-amber-50 text-amber-700";
   if (c && isAwaitingAi(c)) return "bg-violet-50 text-violet-700";
   const v = caseStatus(typeof s === "object" ? s?.status : s);
+  if (v === "requested") return "bg-slate-100 text-slate-700";
   if (v === "pending") return "bg-violet-50 text-violet-700";
   if (v === "pending_approve") return "bg-blue-50 text-ha-blue";
   if (v === "finalized") return "bg-green-50 text-green-700";

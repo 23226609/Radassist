@@ -3,7 +3,7 @@
 
 const mongoose = require('mongoose');
 
-const STATUS = ['pending', 'pending_approve', 'completed', 'finalized'];
+const STATUS = ['requested', 'pending', 'pending_approve', 'completed', 'finalized'];
 
 const findingSchema = new mongoose.Schema(
   {
@@ -74,8 +74,10 @@ const caseSchema = new mongoose.Schema(
     status: { type: String, enum: STATUS, default: 'pending' },
     urgent: { type: Boolean, default: false },
     // Ownership / audit
-    createdBy: { type: String, default: '' }, // userId
+    createdBy: { type: String, default: '' }, // userId of the uploader once the film is registered
     createdByName: { type: String, default: '' },
+    requestedBy: { type: String, default: '' },
+    requestedByName: { type: String, default: '' },
     finalizedBy: { type: String, default: null }, // userId
     finalizedByName: { type: String, default: null },
     // Image stored in GridFS

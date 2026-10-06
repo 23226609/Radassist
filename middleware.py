@@ -12,6 +12,7 @@ insert UUID `_id` documents that the dashboard then 404s on.
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import math
 import os
 import uuid
 import re
@@ -28,6 +29,12 @@ MODEL_PATH = "/Users/PHY/CURV-mlx"
 # Temporary scratch dir for the file we hand to the AI server
 UPLOAD_DIR = os.path.expanduser("~/curv_uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Same budget as ~/CURV-mlx/preprocessor_config.json.
+# The whole film is scaled to fit. Nothing is cropped.
+CURV_MAX_PIXELS = 50176
+CURV_MIN_PIXELS = 784
+CURV_FACTOR = 28  # patch_size 14 * merge_size 2
 
 # ---------------------------------------------------------------------------
 # App
@@ -48,138 +55,102 @@ app.add_middleware(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _opaque_side_hint(image_path: str) -> str:
-    """Cheap left/right brightness check so a white-out film cannot be ignored.
+# CURV-main trains on this system text plus the user line below.
+# An image with no text makes this checkpoint reply that it cannot see a film.
+CURV_SYSTEM_PROMPT = """You are a medical expert tasked with generating a detailed radiology report based on the provided medical image. Analyze the image carefully and produce a structured report using the following tagged sections: <findings>, <thinking>, and <impression>. Follow these guidelines for each section:
 
-    CURV often never 'sees' a complete hemithorax white-out and emits the same
-    bilateral-consolidation template for every chest film. If one lung field is
-    much brighter (more white) than the other, tell the model which patient
-    side that is. Standard PA/AP: the patient's RIGHT is on the VIEWER'S LEFT.
-    """
-    try:
-        from PIL import Image
-    except ImportError:
+- <findings>: Describe only observable features in the image, such as abnormalities, anatomical structures, or notable patterns. Be precise and avoid speculation.
+
+- <thinking>: Provide a logical reasoning process based on the findings, considering possible diagnoses or clinical implications.
+
+- <impression>: Summarize the key takeaways and suggest next steps or potential diagnoses in a concise manner.
+
+
+Output Format:
+
+<findings>  Detailed description of image observations </findings>
+
+<thinking> Reasoning based on findings </thinking>
+
+<impression> Concise summary and recommendations </impression>"""
+
+CURV_USER_TEXT = (
+    "Please analyze this chest X-ray image and generate a detailed radiology report "
+    "following the specified format."
+)
+
+_CURV_SECTION = re.compile(
+    r"<(findings|thinking|impression)>\s*(.*?)\s*</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _format_curv_report(text: str) -> str:
+    """Turn CURV's tagged reply into the three sections the review page shows."""
+    found = {}
+    for match in _CURV_SECTION.finditer(text or ""):
+        body = _plain_text(match.group(2))
+        if body:
+            found[match.group(1).lower()] = body
+    if not found.get("findings") and not found.get("impression"):
         return ""
-    try:
-        im = Image.open(image_path).convert("L")
-    except Exception:
-        return ""
-    im.thumbnail((320, 320))
-    w, h = im.size
-    if w < 40 or h < 40:
-        return ""
-    field = im.crop((int(w * 0.08), int(h * 0.16), int(w * 0.92), int(h * 0.88)))
-    fw, fh = field.size
-    third = max(8, fw // 3)
-    left_px = list(field.crop((0, 0, third, fh)).getdata())
-    right_px = list(field.crop((fw - third, 0, fw, fh)).getdata())
-    if not left_px or not right_px:
-        return ""
-    left_mean = sum(left_px) / len(left_px)
-    right_mean = sum(right_px) / len(right_px)
-    if abs(left_mean - right_mean) < 32:
-        return ""
-    if left_mean > right_mean:
-        viewer, patient = "left", "right"
-    else:
-        viewer, patient = "right", "left"
-    return (
-        f"This image file is not symmetric: the viewer's {viewer} lung field is "
-        f"much more opaque (white) than the other side. On a standard chest "
-        f"X-ray that is the patient's {patient} hemithorax. Report a white-out / "
-        f"complete opacification of the patient's {patient} hemithorax. Do not "
-        f"call this bilateral lower-lobe consolidation."
-    )
+    parts = []
+    for key, title in (("findings", "Findings"), ("thinking", "Thinking"), ("impression", "Impression")):
+        if found.get(key):
+            parts.append(f"{title}:\n{found[key]}")
+    return "\n\n".join(parts)
 
 
-def _build_prompt(patient_id: str = "", age: str = "", sex: str = "",
-                  history: str = "", film_hint: str = "") -> str:
-    """The plain report instruction the CURV fine-tune was trained to answer.
-
-    Asking this model for JSON pushes it outside its training distribution and
-    it starts looping, so we ask for the report in its native form and let the
-    frontend derive findings from the text. Real patient details are supplied
-    so the model fills the header instead of inventing a clinical history.
-
-    A bare "write a radiology report" cue makes this 3B checkpoint emit a stock
-    "bilateral lower lobe consolidations" template for every film, including a
-    complete hemithorax white-out. The first Findings sentence must name both
-    sides or that template wins.
-    """
-    prompt = (
-        "Look at this frontal chest X-ray. The patient's RIGHT is on YOUR LEFT. "
-        "Write a standard radiology report for THIS film only. Start with the "
-        "patient details, then Findings, then Conclusion. Do not add a section "
-        "titled Header.\n\n"
-        "The first sentence of Findings must say, for each side, whether the "
-        "lung is DARK (air) or WHITE (opaque). "
-        "If one whole hemithorax is white and the other is dark, that is a "
-        "WHITE-OUT. Name the patient's side (right or left) in Findings and "
-        "again in the Conclusion. "
-        "Do not write 'bilateral lower lobe consolidations' unless BOTH lungs "
-        "really show the same basal finding. "
-        "Do not reuse a stock report from another patient."
-    )
-    if film_hint:
-        prompt += "\n\n" + film_hint
-
-    details = [
-        ("Patient ID", patient_id),
-        ("Age", age),
-        ("Sex", sex),
-        ("Clinical History", history),
-    ]
-    known = [f"{label}: {value.strip()}" for label, value in details if value and value.strip()]
-    if known:
-        prompt += (
-            "\n\nUse exactly these patient details as the first lines of the report. "
-            "Do not invent any other patient details, clinical history, "
-            "or comparison with previous imaging.\n"
-            + "\n".join(known)
-        )
-
-    prompt += (
-        "\n\nAnswer the clinical history in Findings. If the history mentions "
-        "a fall, trauma, or rib pain, comment on the ribs and bony thorax and "
-        "say whether a pneumothorax is present. If you cannot see a fracture, "
-        "say the ribs are not clearly fractured on this frontal film; do not "
-        "replace that with a lung-only report. "
-        "Never mention prior studies, old films, or comparison with previous imaging. "
-        "Do not write that the lungs are clear or that there is no acute "
-        "cardiopulmonary disease if you have named an opacity, white-out, "
-        "consolidation, or pneumonia. "
-        "End the report after the conclusion. Do not add a signature, date or "
-        "any placeholder written in square brackets."
-    )
-    return prompt
+def _curv_target_size(width: int, height: int) -> tuple:
+    """Size the whole frame down to CURV's pixel budget, keeping the aspect ratio."""
+    factor = CURV_FACTOR
+    h_bar = round(height / factor) * factor
+    w_bar = round(width / factor) * factor
+    if h_bar * w_bar > CURV_MAX_PIXELS:
+        beta = math.sqrt((height * width) / CURV_MAX_PIXELS)
+        h_bar = max(factor, math.floor(height / beta / factor) * factor)
+        w_bar = max(factor, math.floor(width / beta / factor) * factor)
+    elif h_bar * w_bar < CURV_MIN_PIXELS:
+        beta = math.sqrt(CURV_MIN_PIXELS / (height * width))
+        h_bar = math.ceil(height * beta / factor) * factor
+        w_bar = math.ceil(width * beta / factor) * factor
+    return int(w_bar), int(h_bar)
 
 
-def _ai_analyze(image_path: str, patient_id: str = "", age: str = "",
-                sex: str = "", history: str = "") -> dict:
-    """Send the image to the local mlx_vlm server.
+def _resize_for_curv(image_path: str) -> str:
+    """Write a resized copy of the whole film. The caller's original file is left as-is."""
+    from PIL import Image
+
+    with Image.open(image_path) as im:
+        frame = im.convert("RGB")
+        width, height = frame.size
+        target_w, target_h = _curv_target_size(width, height)
+        if (width, height) != (target_w, target_h):
+            frame = frame.resize((target_w, target_h), Image.Resampling.BICUBIC)
+        out_path = os.path.splitext(image_path)[0] + "-curv.png"
+        frame.save(out_path, format="PNG")
+    return out_path
+
+
+def _ai_analyze(image_path: str) -> dict:
+    """Send the official CURV system text, the user line, and the resized film.
 
     Returns {"report": str, "findings": list}. `findings` is always empty:
-    the model cannot localise findings, so the review page parses them out of
-    the report text instead (see parseFindingsFromReport in review.js).
+    the review page parses cards from the report text.
     """
     payload = {
         "model": MODEL_PATH,
         "messages": [
+            {"role": "system", "content": CURV_SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type": "text",
-                        "text": _build_prompt(
-                            patient_id, age, sex, history,
-                            film_hint=_opaque_side_hint(image_path),
-                        ),
-                    },
+                    {"type": "text", "text": CURV_USER_TEXT},
                     {"type": "input_image", "image_url": image_path},
                 ],
-            }
+            },
         ],
-        "max_tokens": 800,
+        "max_tokens": 1536,
         # mlx_vlm defaults to greedy decoding with no repetition penalty, which
         # lets this 3B model fall into "No Evidence of X" loops that run to the
         # token cap. A mild penalty keeps it stopping on its own.
@@ -192,8 +163,9 @@ def _ai_analyze(image_path: str, patient_id: str = "", age: str = "",
     response.raise_for_status()
     result = response.json()
     content = result["choices"][0]["message"]["content"]
-
-    return {"report": _tidy_report(_plain_text(_dedupe_report(content))), "findings": []}
+    deduped = _dedupe_report(content)
+    report = _format_curv_report(deduped) or _tidy_report(_plain_text(deduped))
+    return {"report": report, "findings": []}
 
 
 # Sentence boundary: a ., ! or ? followed by whitespace.
@@ -435,8 +407,13 @@ async def analyze_xray(
     report_text = ""
     findings = []
     ai_error = None
+    model_path = None
     try:
-        ai_result = _ai_analyze(save_path, patient_id=patientId, age=age, sex=sex, history=history)
+        # The official CURV template does not take age, sex, or history.
+        # Those stay on the patient chart. The form fields are still accepted.
+        _ = (patientId, age, sex, history)
+        model_path = _resize_for_curv(save_path)
+        ai_result = _ai_analyze(model_path)
         report_text = ai_result.get("report", "")
         findings = ai_result.get("findings", [])
     except requests.exceptions.RequestException as e:
@@ -444,11 +421,12 @@ async def analyze_xray(
     except Exception as e:  # noqa: BLE001
         ai_error = f"Unexpected AI error: {e}"
     finally:
-        if os.path.exists(save_path):
-            try:
-                os.remove(save_path)
-            except OSError:
-                pass
+        for path in (model_path, save_path):
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
     if ai_error and not report_text:
         raise HTTPException(status_code=500, detail=ai_error)

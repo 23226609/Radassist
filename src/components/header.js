@@ -5,7 +5,7 @@ import { el } from "../dom.js";
 import { state, setPage } from "../state.js";
 import { svgIcon } from "./icons.js";
 import { bindListHotkeys } from "../lib/ui.js";
-import { canUpload, canSeeAudit, isAdmin, roleOf } from "../lib/roles.js";
+import { canUpload, canSeeAudit, isAdmin, isTechnician, roleOf } from "../lib/roles.js";
 
 function go(page) {
   setPage(page);
@@ -15,6 +15,7 @@ function isActive(item) {
   const page = state.page;
   if (item.page === "new" || item.page === "new-patient") return page === item.page;
   if (item.page === "dashboard") return page === "dashboard" || page === "review";
+  if (item.page === "requests") return page === "requests" || page === "new";
   if (item.page === "patients") return page === "patients" || page === "patient";
   if (item.page === "cases") return page === "cases" || page === "case";
   if (item.page === "users") return page === "users";
@@ -52,15 +53,19 @@ function sidebar() {
   ];
   const ward = [
     { page: "monitor", icon: "activity", label: "Sepsis Monitor" },
-    { page: "labs", icon: "file-text", label: "Lab Orders & Results" },
-    { page: "meds", icon: "list", label: "Medication Chart" },
+    ...(isTechnician(state.user) ? [] : [
+      { page: "labs", icon: "file-text", label: "Lab Orders & Results" },
+      { page: "meds", icon: "list", label: "Medication Chart" },
+    ]),
     { page: "notes", icon: "edit", label: "Nursing / Care Notes" },
   ];
-  const imaging = [
-    { page: "dashboard", icon: "image", label: "X-ray Worklist" },
-    ...(canUpload(state.user) ? [{ page: "new", icon: "plus", label: "Upload X-ray" }] : []),
-    { page: "cases", icon: "file-text", label: "Case archive" },
-  ];
+  const imaging = isTechnician(state.user)
+    ? [{ page: "requests", icon: "file-text", label: "Requested case" }]
+    : [
+        { page: "dashboard", icon: "image", label: "X-ray Worklist" },
+        ...(canUpload(state.user) ? [{ page: "new", icon: "plus", label: "Upload X-ray" }] : []),
+        { page: "cases", icon: "file-text", label: "Case archive" },
+      ];
   const admin = [
     ...(canSeeAudit(state.user) ? [{ page: "audit", icon: "shield", label: "Audit log" }] : []),
     ...(isAdmin(state.user) ? [{ page: "users", icon: "users", label: "Users" }] : []),

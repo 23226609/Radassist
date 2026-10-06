@@ -8,7 +8,7 @@ router.get('/', c.listPatients);
 router.post('/', authorize('technician', 'radiologist', 'admin'), c.createPatient);
 router.post('/bulk-delete', authorize('admin'), c.deletePatients);
 router.get('/:id', c.getPatient);
-router.put('/:id', authorize('technician', 'radiologist', 'admin'), c.updatePatient);
+router.put('/:id', authorize('technician', 'radiologist', 'admin', 'doctor'), c.updatePatient);
 router.delete('/:id', authorize('admin'), c.deletePatient);
 
 module.exports = router;

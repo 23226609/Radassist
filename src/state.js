@@ -11,6 +11,7 @@ export const state = {
   cases: [],          // all cases cached in memory
   selectedCaseId: null,
   selectedPatientId: null,
+  pendingRequestId: null,
   shareToken: null,
   pendingFilter: { status: "all", q: "", urgentOnly: false },
   loading: false,
@@ -68,6 +69,7 @@ export function parseHash(hash = currentHash()) {
   if (head === "labs") return { page: "labs" };
   if (head === "meds") return { page: "meds" };
   if (head === "notes") return { page: "notes" };
+  if (head === "requests") return { page: "requests" };
   if (head === "new") return { page: "new" };
   return { page: "dashboard" };
 }
@@ -103,6 +105,7 @@ export function hashFor(s = state) {
     case "labs": return "#/labs";
     case "meds": return "#/meds";
     case "notes": return "#/notes";
+    case "requests": return "#/requests";
     default: return "#/dashboard";
   }
 }

@@ -9,7 +9,8 @@ const fs = require('fs');
 const AI_BASE_URL = process.env.AI_BASE_URL || 'http://localhost:8001';
 
 /**
- * Ask the FastAPI middleware to analyze an X-ray.
+ * Run CURV with the official system text, the user line, and the film.
+ * Chart fields are still posted so the call shape stays stable; CURV does not use them.
  * @param {{ imagePath: string, patientId?: string, age?: string, sex?: string, history?: string }} opts
  * @returns {Promise<{report: string, findings: Array<object>}>}
  *   The AI middleware returns both the report text AND a list of structured

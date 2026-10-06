@@ -7,6 +7,7 @@ const upload = require('../middleware/upload');
 router.use(authenticate);
 
 router.get('/', c.listCases);
+router.post('/request', authorize('doctor', 'admin'), c.requestExam);
 router.post('/', authorize('technician', 'admin'), upload.single('file'), c.createCase);
 router.post('/bulk-delete', authorize('admin'), c.deleteCases);
 router.get('/:id', c.getCase);

@@ -27,6 +27,12 @@ function toPublicCase(doc, extra = {}) {
   o.shared = Boolean(token);
   if (extra.includeShareToken && token) o.shareToken = token;
   if (!extra.includeEditLog) delete o.editLog;
+  if (extra.hideFilm) {
+    delete o.imageId;
+    delete o.imageUrl;
+    o.reportText = '';
+    o.findings = [];
+  }
   if (extra.stripProvenance) {
     o.findings = (o.findings || []).map((f) => {
       const row = f && typeof f.toObject === 'function' ? f.toObject() : { ...f };
@@ -34,7 +40,7 @@ function toPublicCase(doc, extra = {}) {
       return row;
     });
   }
-  const { includeShareToken, includeEditLog, stripProvenance, ...rest } = extra;
+  const { includeShareToken, includeEditLog, stripProvenance, hideFilm, ...rest } = extra;
   return { ...o, ...rest };
 }
 

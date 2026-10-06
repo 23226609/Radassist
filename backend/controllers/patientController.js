@@ -275,7 +275,7 @@ exports.getPatient = catchAsync(async (req, res, next) => {
 
   let cases = await Case.find(caseFilter(patientId)).sort({ createdAt: -1 });
   if (normalizeRole(req.user.role) === 'doctor') {
-    cases = cases.filter((c) => c.status === 'finalized');
+    cases = cases.filter((c) => c.status === 'finalized' || c.status === 'requested');
   }
   let record = await findPatientRecord(patientId);
   if (!cases.length && !record) {
@@ -298,8 +298,9 @@ exports.getPatient = catchAsync(async (req, res, next) => {
 });
 
 exports.updatePatient = catchAsync(async (req, res, next) => {
-  if (normalizeRole(req.user.role) === 'doctor') {
-    return next(ApiError.forbidden('Doctors cannot edit patient charts.'));
+  const doctorLabOnly = normalizeRole(req.user.role) === 'doctor';
+  if (doctorLabOnly && !Array.isArray(req.body?.labOrders)) {
+    return next(ApiError.forbidden('Doctors can arrange lab orders only.'));
   }
 
   const patientId = String(req.params.id || '').trim();
@@ -326,6 +327,19 @@ exports.updatePatient = catchAsync(async (req, res, next) => {
     medicines, heartRate, labResults, ward, bed, admissionStatus,
     observations, labOrders, medOrders, careNotes,
   } = req.body || {};
+  if (doctorLabOnly) {
+    record.labOrders = labOrders.slice(-40);
+    if (labResults !== undefined) record.labResults = String(labResults);
+    await record.save();
+    await addAuditLog(req.user.userId, 'PATIENT_UPDATED', `Arranged lab orders for ${record.patientId}`, record.patientId);
+    const doctorCases = await Case.find(caseFilter(record.patientId)).sort({ createdAt: -1 });
+    const visible = doctorCases.filter((c) => c.status === 'finalized' || c.status === 'requested');
+    return res.json({
+      success: true,
+      patient: summarisePatient(record, {}, visible),
+      cases: visible.map(summariseCase),
+    });
+  }
   if (firstName !== undefined || middleName !== undefined || lastName !== undefined || name !== undefined) {
     const names = nameFieldsFrom({
       firstName: firstName !== undefined ? firstName : record.firstName,

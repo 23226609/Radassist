@@ -18,9 +18,19 @@ export function isReferringDoctor(user) {
   return roleOf(user) === "doctor";
 }
 
+export function canRequestExam(user) {
+  const r = roleOf(user);
+  return r === "doctor" || r === "admin";
+}
+
 export function canUpload(user) {
   const r = roleOf(user);
   return r === "technician" || r === "admin";
+}
+
+export function canArrangeLab(user) {
+  const r = roleOf(user);
+  return r === "doctor" || r === "technician" || r === "radiologist" || r === "admin";
 }
 
 export function canEditPatient(user) {

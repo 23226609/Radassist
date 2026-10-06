@@ -2,7 +2,7 @@
 
 Clinician-in-the-loop chest X-ray reporting for a final-year project, presented in a hospital CMS-style shell.
 
-A **technician** uploads the film. A **radiologist** opens the case, clicks **Use AI**, reviews and edits finding cards, then finalizes. A referring **doctor** can only read finalized reports. An **admin** can do radiologist work plus user, audit, and bulk-delete administration.
+A referring **doctor** can request a chest X-ray. A **technician** registers the film, and the draft report is generated automatically. A **radiologist** opens the work list, sees the case as pending approve, edits finding cards, and endorses. The referring doctor then reads that endorsed report. An **admin** can do radiologist work plus user, audit, and bulk-delete administration.
 
 This is a **demonstration system**, not a clinical product. Findings and reports are decision support. A human must always review them.
 
@@ -39,7 +39,7 @@ The UI is **not React**. Pages are plain modules that build DOM with `src/dom.js
         │
         ├──────────────► Cosmos DB (Mongo API)
         │
-        ├──────────────► FastAPI middleware (:8001)   [only after Use AI]
+        ├──────────────► FastAPI middleware (:8001)   [starts when the film is registered]
         │                      │
         │                      ▼
         │                 mlx_vlm CURV server (:8080)
@@ -50,7 +50,7 @@ The UI is **not React**. Pages are plain modules that build DOM with `src/dom.js
 
 **On upload** (`POST /api/cases`), the backend stores the image in GridFS and saves the case with `analysisState: none`. AI is **not** started.
 
-**On Use AI** (`POST /api/cases/:id/analyze`), a radiologist (or admin) starts CURV in the background. The API returns immediately; the worklist/review overlay polls until `analysisState: done`. If CURV is down, the case stays stored so the radiologist can write the report by hand.
+**On registration** (`POST /api/cases`), the technician’s film is stored and CURV starts in the background. There is no Use AI click. The API returns immediately; the work list shows **Generating**, then **Pending approve**. If CURV is down, the case stays stored so the radiologist can write the report by hand. **Re-run AI** is available after a draft exists.
 
 **On review**, the page shows stored findings as a **point-form list**, with the selected row opened as an editable card bound to the box on the film. While the report is still a draft, an **AI vs manual attribution log** is visible. After finalize, that log is kept in the system but **stripped from the report body** the referring doctor and share/export views see.
 
@@ -335,7 +335,7 @@ The Express process is **plain `node server.js`** unless you use `npm run dev` (
 1. `mlx_vlm.server --model ~/CURV-mlx --port 8080`
 2. `uvicorn middleware:app --port 8001` from this repo
 
-`backend/utils/aiService.js` posts the image plus age/sex/history to `POST {AI_BASE_URL}/analyze`. The middleware should return `{ report, findings }`. Findings should already include bbox / confidence / location / size / pattern when the model provides them.
+`backend/utils/aiService.js` posts the image to `POST {AI_BASE_URL}/analyze`. The middleware sends the official CURV conversation from `CURV-main`: the system prompt in `training/prompts/prompt_cxr.txt`, the user line “Please analyze this chest X-ray image and generate a detailed radiology report following the specified format.”, and the film. Patient age, sex, and history stay on the chart. CURV answers with `<findings>`, `<thinking>`, and `<impression>`. Those are saved as Findings, Thinking, and Impression. The review page parses finding cards from the Findings section.
 
 ### Azure OpenAI (optional)
 

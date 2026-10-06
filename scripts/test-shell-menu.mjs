@@ -63,7 +63,10 @@ test("radiologists see Audit log in the menu", () => {
   const { root: nurseRoot } = Shell({ onLogout() {} });
   document.body.appendChild(nurseRoot);
   test("technicians do not see Audit log in the menu", () => {
-    assert.ok([...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.includes("X-ray Worklist")));
+    assert.ok([...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.includes("Requested case")));
+    assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.includes("Lab Orders")));
+    assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.includes("Medication Chart")));
+    assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.includes("X-ray Worklist")));
     assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Audit log"));
     assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Users"));
   });

@@ -13,7 +13,7 @@ import { PAGE, searchField, statusChips, metricCard, emptyState, pageHeading, so
 import { statusLabel, statusBadgeClass, isGenerating, isAwaitingAi, caseStatus } from "../lib/caseStatus.js";
 import { CASES_CHANGED } from "../lib/analysisJob.js";
 import { forgetCases } from "../lib/records.js";
-import { canUpload, canEditReport, isAdmin as roleIsAdmin } from "../lib/roles.js";
+import { canUpload, canEditReport, isReferringDoctor, isAdmin as roleIsAdmin } from "../lib/roles.js";
 
 let dashboardLive = null;
 
@@ -74,6 +74,7 @@ export async function renderDashboardPage({ target }) {
       cases = sortWorklist(data.cases || []);
       if (urgentOnly) cases = cases.filter((c) => c.urgent);
       state.cases = cases;
+      startQueuedReports(cases);
       for (const id of [...selected]) {
         if (!cases.some((c) => caseIdOf(c) === id)) selected.delete(id);
       }
@@ -92,6 +93,17 @@ export async function renderDashboardPage({ target }) {
   }
 
   window.addEventListener(CASES_CHANGED, () => refresh(), { signal });
+
+  const autoStarted = new Set();
+  function startQueuedReports(list) {
+    if (!canEditReport(state.user)) return;
+    for (const c of list || []) {
+      const id = caseIdOf(c);
+      if (!id || autoStarted.has(id) || !c.imageId || !isAwaitingAi(c)) continue;
+      autoStarted.add(id);
+      api.analyzeCase(id).catch(() => autoStarted.delete(id));
+    }
+  }
 
   async function fillDiagnoses(list) {
     if (!canEditReport(state.user)) return;
@@ -206,6 +218,16 @@ export async function renderDashboardPage({ target }) {
             class: "inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-slate-600 hover:bg-slate-100 text-sm",
             onClick: (e) => {
               e.stopPropagation();
+              if (caseStatus(c.status) === "requested") {
+                if (canUpload(state.user)) {
+                  state.pendingRequestId = id;
+                  state.selectedPatientId = c.patientId;
+                  setPage("new");
+                } else {
+                  toast("Waiting for the technician to register the film.");
+                }
+                return;
+              }
               if (isGenerating(c)) {
                 toast("The report is still generating.");
                 return;
@@ -217,7 +239,7 @@ export async function renderDashboardPage({ target }) {
               state.selectedCaseId = id;
               setPage("review");
             },
-          }, svgIcon("image", { size: 16 }), "Review")
+          }, svgIcon("image", { size: 16 }), caseStatus(c.status) === "requested" && canUpload(state.user) ? "Register" : "Review")
         )
       );
     }
@@ -232,7 +254,9 @@ export async function renderDashboardPage({ target }) {
 
       pageHeading({
         title: "Worklist",
-        subtitle: "Today’s reporting queue. Urgent stays at the top. Open Review for the film.",
+        subtitle: isReferringDoctor(state.user)
+          ? "Ward enquiry. Endorsed reports are ready to read. Requested exams are waiting for a film."
+          : "Radiologist work list. A registered film generates its draft automatically. Pending approve is ready to report. Endorsed is what the ward can read.",
         actions: canUpload(state.user)
           ? el("button", {
               class: "inline-flex items-center gap-2 rounded-xl bg-ha-blue px-4 py-2 font-semibold text-white hover:bg-[#074f85]",
@@ -258,7 +282,7 @@ export async function renderDashboardPage({ target }) {
           onClick: () => setFilter("all", { urgent: true }),
         }),
         metricCard({
-          n: totalFinalized, label: "Finalized", tone: "bg-green-600",
+          n: totalFinalized, label: "Endorsed", tone: "bg-green-600",
           active: status === "finalized" && !urgentOnly,
           onClick: () => setFilter("finalized"),
         }),
@@ -284,9 +308,10 @@ export async function renderDashboardPage({ target }) {
               onChange: (e) => setFilter(e.target.value),
             },
               el("option", { value: "all" }, "All statuses"),
-              el("option", { value: "pending" }, "Awaiting AI"),
+              el("option", { value: "requested" }, "Requested"),
+              el("option", { value: "pending" }, "Outstanding"),
               el("option", { value: "pending_approve" }, "Pending approve"),
-              el("option", { value: "finalized" }, "Finalized")
+              el("option", { value: "finalized" }, "Endorsed")
             ),
             isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })
           ),
