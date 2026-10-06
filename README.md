@@ -81,33 +81,6 @@ Public `POST /api/auth/register` exists for demo signup. Treat that as demo-only
 
 ---
 
-## CMS layout
-
-Modelled on [COMP4126 CMS mock](https://ug-cs-hkbu.github.io/COMP4126_CMS_mock/) and the RIS screens in the COMP4126 CMS lecture:
-
-- Navy title bar (`#003366`) — “Clinical Management System · RadAssist”, user, role, department, Sign out
-- Permanent **MODULES** sidebar (gray `#d4d0c8` / `#ece9d8` inner windows)
-- X-ray work list: left **My work** queue (Outstanding, Partially endorsed, Fully endorsed, Requested, Urgent) and a blue-striped examination grid
-- Status footer with “demonstration data only”
-
-| Sidebar group | Module | Who | Page |
-| --- | --- | --- | --- |
-| Index | Patient Master | everyone | `patients` |
-| Ward | Sepsis Monitor | everyone | `monitor` |
-| Ward | Lab Orders & Results | doctor, admin | `labs` |
-| Ward | Medication Chart (eMAR) | doctor, admin | `meds` |
-| Ward | Nursing / Care Notes | everyone | `notes` |
-| Imaging | Requested case | technician | `requests` |
-| Imaging | X-ray Worklist | radiologist, doctor, admin | `dashboard` |
-| Imaging | Upload X-ray | admin | `new` |
-| Imaging | Case archive | radiologist, doctor, admin | `cases` |
-| Admin | Audit log | admin | `audit` |
-| Admin | Users | admin | `users` |
-
-A technician’s imaging menu is only **Requested case**. An amber count on that item refreshes about once a minute when new requests are waiting. Bed management is intentionally omitted.
-
----
-
 ## Data model
 
 ### Patient
