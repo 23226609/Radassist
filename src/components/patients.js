@@ -546,12 +546,33 @@ export async function renderPatientPage({ target }) {
 
               el("section", { class: "overflow-hidden rounded border border-gray-200" },
                 el("div", { class: "border-b bg-gray-50 px-3 py-2" },
+                  el("h2", { class: "text-sm font-bold" }, "X-ray requests")
+                ),
+                cases.filter((c) => c.status === "requested").length === 0
+                  ? el("p", { class: "p-3 text-slate-400" }, "No open chest X-ray request.")
+                  : el("ul", { class: "divide-y" },
+                      ...cases.filter((c) => c.status === "requested").map((c) =>
+                        el("li", { class: "flex items-center justify-between gap-3 px-3 py-3" },
+                          el("div", {},
+                            el("div", { class: "font-semibold" }, "Chest X-ray"),
+                            el("p", { class: "text-sm text-slate-600" },
+                              c.createdAt ? new Date(c.createdAt).toLocaleString() : "Requested",
+                              c.requestedByName ? ` · ${c.requestedByName}` : ""
+                            )
+                          ),
+                          el("span", { class: "text-xs font-semibold text-amber-800" }, "Requested")
+                        )
+                      )
+                    )
+              ),
+              el("section", { class: "overflow-hidden rounded border border-gray-200" },
+                el("div", { class: "border-b bg-gray-50 px-3 py-2" },
                   el("h2", { class: "text-sm font-bold" }, "Studies")
                 ),
-                cases.length === 0
+                cases.filter((c) => c.status !== "requested").length === 0
                   ? el("p", { class: "p-3 text-slate-400" }, "No studies yet.")
                   : el("ul", { class: "divide-y" },
-                      ...cases.map((c) =>
+                      ...cases.filter((c) => c.status !== "requested").map((c) =>
                         el("li", {},
                           el("button", {
                             class: "flex w-full items-center justify-between gap-3 px-3 py-3 text-left hover:bg-slate-50",
@@ -561,7 +582,7 @@ export async function renderPatientPage({ target }) {
                               el("div", { class: "font-semibold" }, c.caseId, c.urgent ? urgentBadge({ class: "ml-2" }) : null),
                               el("p", { class: "text-sm text-slate-600" }, c.diagnosis || "No diagnosis")
                             ),
-                            el("span", { class: "text-xs text-slate-500" }, statusLabel(c.status))
+                            el("span", { class: "text-xs text-slate-500" }, statusLabel(c.status, c))
                           )
                         )
                       )

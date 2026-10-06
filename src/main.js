@@ -18,7 +18,7 @@ import { renderSharePage } from "./components/shareView.js";
 import { isReportPopup, renderReportViewPage } from "./components/reportView.js";
 import { el, mount } from "./dom.js";
 import { stopAnalysisWatch } from "./lib/analysisJob.js";
-import { canUpload, canEditPatient, canSeeAudit, isAdmin, isTechnician } from "./lib/roles.js";
+import { canUpload, canEditPatient, canSeeAudit, isAdmin, isTechnician, roleOf } from "./lib/roles.js";
 import "./index.css";
 
 const app = document.getElementById("app");
@@ -117,6 +117,10 @@ function render() {
     return;
   }
   if (!isAdmin(state.user) && state.page === "users") {
+    setPage("dashboard");
+    return;
+  }
+  if (roleOf(state.user) === "radiologist" && ["labs", "meds"].includes(state.page)) {
     setPage("dashboard");
     return;
   }

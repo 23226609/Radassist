@@ -6,7 +6,7 @@ import { el, mount } from "../dom.js";
 import { api } from "../api.js";
 import { state, setPage, toast } from "../state.js";
 import { patientDisplayName } from "../lib/tags.js";
-import { canEditPatient, canArrangeLab } from "../lib/roles.js";
+import { canEditPatient, canArrangeLab, canPrescribe } from "../lib/roles.js";
 
 const BEDS = ["4A-01", "4A-02", "4A-03", "4A-04", "4B-01", "4B-02", "4B-03", "4B-04"];
 const INPUT = "w-full rounded border border-gray-400 bg-white px-2 py-1.5 text-sm outline-none focus:border-ha-blue focus:ring-2 focus:ring-blue-200 disabled:bg-gray-100";
@@ -648,7 +648,7 @@ export async function renderMedsPage({ target }) {
     prescribedBy: state.user?.name || "",
     allergyAck: false,
   };
-  const canEdit = canEditPatient(state.user);
+  const canEdit = canPrescribe(state.user);
 
   async function choose(id) {
     state.selectedPatientId = id;

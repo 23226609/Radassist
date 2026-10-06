@@ -3,9 +3,36 @@
 
 import { el } from "../dom.js";
 import { state, setPage } from "../state.js";
+import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { bindListHotkeys } from "../lib/ui.js";
 import { canUpload, canSeeAudit, isAdmin, isTechnician, roleOf } from "../lib/roles.js";
+
+let requestCount = 0;
+let requestPoll = null;
+
+function paintRequestCount() {
+  const slot = document.getElementById("request-count");
+  if (!slot) return;
+  const n = requestCount;
+  slot.textContent = n > 0 ? String(n) : "";
+  slot.classList.toggle("hidden", n < 1);
+  slot.setAttribute("aria-label", n === 1 ? "1 open request" : `${n} open requests`);
+}
+
+function watchRequests() {
+  if (!isTechnician(state.user)) return;
+  const load = async () => {
+    if (!isTechnician(state.user)) return;
+    try {
+      const data = await api.listCases({ status: "requested" });
+      requestCount = (data.cases || []).length;
+      paintRequestCount();
+    } catch { /* leave the last count */ }
+  };
+  load();
+  if (!requestPoll) requestPoll = setInterval(load, 60000);
+}
 
 function go(page) {
   setPage(page);
@@ -36,7 +63,15 @@ function navButton(item) {
     onClick: () => go(item.page),
   },
     el("span", { class: "shrink-0", "aria-hidden": "true" }, svgIcon(item.icon, { size: 16 })),
-    el("span", { class: "text-[9px] leading-tight md:text-sm" }, item.label)
+    el("span", { class: "text-[9px] leading-tight md:text-sm" }, item.label),
+    item.page === "requests"
+      ? el("span", {
+          id: "request-count",
+          class: requestCount > 0
+            ? "ml-auto min-w-5 rounded-full bg-amber-600 px-1.5 text-center text-[10px] font-bold text-white"
+            : "ml-auto hidden min-w-5 rounded-full bg-amber-600 px-1.5 text-center text-[10px] font-bold text-white",
+        }, requestCount > 0 ? String(requestCount) : "")
+      : null
   );
 }
 
@@ -53,7 +88,7 @@ function sidebar() {
   ];
   const ward = [
     { page: "monitor", icon: "activity", label: "Sepsis Monitor" },
-    ...(isTechnician(state.user) ? [] : [
+    ...(isTechnician(state.user) || roleOf(state.user) === "radiologist" ? [] : [
       { page: "labs", icon: "file-text", label: "Lab Orders & Results" },
       { page: "meds", icon: "list", label: "Medication Chart" },
     ]),
@@ -89,6 +124,7 @@ function sidebar() {
 
 export function Shell({ onLogout }) {
   bindListHotkeys();
+  watchRequests();
   const user = state.user || {};
   const main = el("div", { class: "min-w-0 flex-1 overflow-auto" });
   const root = el("div", { class: "flex min-h-screen flex-col bg-ha-bg font-sans text-sm text-slate-900" },

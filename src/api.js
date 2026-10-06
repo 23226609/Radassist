@@ -160,6 +160,8 @@ export const api = {
   },
   setUserActive: (id, isActive) =>
     request("PUT", `/users/${encodeURIComponent(id)}/active`, { isActive }),
+  createUser: (payload) => request("POST", "/users", payload),
+  deleteUser: (id) => request("DELETE", `/users/${encodeURIComponent(id)}`),
 
   // Audit
   listAudit: (params = {}) => {

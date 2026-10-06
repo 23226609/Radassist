@@ -53,8 +53,10 @@ test("the CMS shell shows a permanent modules column", () => {
   assert.equal(root.querySelector("#app-menu-button"), null);
 });
 
-test("radiologists see Audit log in the menu", () => {
-  assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Audit log"));
+test("radiologists do not see Audit log in the menu", () => {
+  assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Audit log"));
+  assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.includes("Lab Orders")));
+  assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.includes("Medication Chart")));
   assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Users"));
 });
 
@@ -78,6 +80,7 @@ test("radiologists see Audit log in the menu", () => {
   document.body.appendChild(adminRoot);
   test("admins see Users in the menu", () => {
     assert.ok([...adminRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Users"));
+    assert.ok([...adminRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Audit log"));
   });
 }
 
