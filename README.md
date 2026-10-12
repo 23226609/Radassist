@@ -2,11 +2,11 @@
 
 Clinician-in-the-loop chest X-ray reporting for a final-year project, presented in a hospital CMS-style shell.
 
-A referring **doctor** requests a chest X-ray on a patient already in the master index. A **technician** opens **Requested case**, saves the film, and CURV starts on its own. A **radiologist** opens the work list, sees **Generating** then **Pending approve**, edits the draft, and **endorses** it. The referring doctor then reads that endorsed report from **Examination enquiry**. An **admin** can do radiologist work plus user, audit, and bulk-delete administration.
+A referring **doctor** books a chest X-ray on a calendar. A **technician** opens **Requested case**, saves the film, and CURV starts on its own. A **radiologist** opens the work list, sees **Generating** then **Pending approve**, edits the draft, and **endorses** it. The referring doctor then reads that endorsed report from **Examination enquiry**. An **admin** can do radiologist work plus user, audit, and bulk-delete administration.
 
 This is a **demonstration system**, not a clinical product. Findings and reports are decision support. A human must always review them before they go back to the ward.
 
-The browser chrome follows the COMP4126 CMS mock (navy title bar, permanent **MODULES** column, gray Windows-style inner windows). The X-ray work list follows the RIS worklist in the same lecture: a **My work** queue and a dense blue grid. Bed management, HKID, pay codes, and appointment booking are not included.
+The shell has a beige title bar (`#ece9da`) and a gray **MODULES** column. The X-ray work list follows the RIS worklist in the COMP4126 lecture: a **My work** queue and a dense examination grid. Bed management, HKID, and pay codes are not included. There is no medication chart.
 
 ---
 
@@ -48,11 +48,11 @@ The UI is **not React**. Pages are plain modules that build DOM with `src/dom.js
                          diagnosis + finding boxes
 ```
 
-**On request** (`POST /api/cases/request`), the referring doctor creates a case with `status: requested` and no film. The patient chart button stays **Requested** until a technician saves the film.
+**On booking** (`POST /api/cases/request`), the referring doctor drops **Chest X-ray** on a calendar day. The case is `status: requested`, with `scheduledAt` and no film. The chart button stays **Requested** until a technician saves the film.
 
 **On registration of the film** (`POST /api/cases`), the image is stored in GridFS and CURV starts in the background. There is no Use AI click. The API returns immediately; the radiologist work list shows **Generating**, then **Pending approve**. If CURV is down, the case stays stored so the radiologist can write the report by hand. **Re-run AI** is available after a draft exists.
 
-**On review**, the page shows stored findings as a **point-form list**, with the selected row opened as an editable card bound to the box on the film. While the report is still a draft, an **AI vs manual attribution log** is visible. **Endorse** locks the report. After that, the log stays in the system but is **stripped from the report body** the referring doctor and share/export views see. A sign-off (date, reporting doctor, signature line) sits under the report and in Word/PDF, outside the editable body.
+**On review**, the page shows stored findings as a **point-form list**, with the selected row opened as an editable card. Every finding with a box is drawn on the film; when there is more than one box, each has its own colour. The film can be zoomed, and **Measure** draws a line. Centimetres are shown only when the DICOM file included pixel spacing. While the report is still a draft, an **AI vs manual** log is visible. Click a log row to see what was added, removed, or edited. Nothing is written until **Save draft** or **Save remarks**. **Endorse** locks the report. After that, **Thinking** is omitted from the report the ward sees and from Word and PDF. The date, reporting doctor, and signature stay on the report and in both downloads.
 
 ---
 
@@ -93,7 +93,7 @@ Stored in `patients`. A patient can exist **before** any X-ray. In a hospital th
 - Ward context (display only; no bed-management UI): `ward`, `bed`, `admissionStatus`
 - Clinical sub-records: `observations[]`, `labOrders[]`, `medOrders[]`, `careNotes[]`
 
-The chart lists **X-ray requests** separately from completed studies. **Request chest X-ray** becomes **Requested** while a request is still open.
+The chart lists **X-ray requests** separately from completed studies. **Book chest X-ray** opens the calendar. The button reads **Requested** while a request is still open.
 
 Deleting a **patient** removes the chart, every study for that ID, and GridFS images. Deleting a **case** removes that study and its image; the patient chart stays.
 
@@ -107,7 +107,8 @@ Stored in `cases`. One study / one film.
 - AI: `analysisState` (`none` \| `running` \| `done`)
 - Draft provenance: `editLog[]` (`kind`: `ai` \| `manual`). Shown on Review while drafting; **not** included in endorsed / shared / exported report text
 - Workflow: `status` (`requested` no film yet \| `pending` outstanding or generating \| `pending_approve` draft ready \| `finalized` endorsed) and `urgent`. Old documents may still say `completed` — the UI treats that as pending approve
-- Image: `imageId` (GridFS), filename / type / size. Hidden from technician responses
+- Image: `imageId` (GridFS), filename / type / size. Hidden from technician responses. `registeredAt` is the day the technician saved the film; the work list **Reg. Date** uses that, not the request day. `pixelSpacingMm` is `[row, column]` in millimetres when the DICOM file had it
+- Booking: `scheduledAt`
 - People: `requestedBy`, `requestedByName`, `createdBy`, `createdByName` (uploader), `finalizedBy`, `finalizedByName`
 - Share: `shareToken` (set when someone shares an endorsed report)
 
@@ -115,7 +116,7 @@ Work-list labels: **Requested**, **Outstanding**, **Generating**, **Pending appr
 
 A **finding** has `label`, `confidence`, `bbox` `[left, top, width, height]` in percent, `location`, `size`, `pattern`, `sentence`, `status`, `source` (`AI` / `Azure` / `manual`), plus optional calibration fields.
 
-**Locking:** after endorse, diagnosis, report text, and findings cannot change. Remarks and the urgent flag still can. Referring doctors never receive `editLog` or source tags on the report body. Technicians never receive the film, report, or findings.
+**Locking:** after endorse, diagnosis, report text, and findings cannot change. Remarks and the urgent flag still can. Referring doctors never receive `editLog` or source tags, and they do not see confidence or the **Accepted** tag. Technicians never receive the film, report, or findings.
 
 ### Other collections
 
@@ -151,9 +152,9 @@ Press `/` on list pages to focus search.
 
 The chart shows prior medicines, heart rate, and lab results, plus Sepsis Monitor, labs, and care notes where that role can open them. A referring doctor can order labs. A technician or radiologist cannot.
 
-### 3. Doctor: request the exam
+### 3. Doctor: book the exam
 
-On the patient chart, **Request chest X-ray** calls `POST /api/cases/request`. The case is `status: requested`, diagnosis “Chest X-ray requested”, with no image. A second open request for the same patient is refused. The button reads **Requested** until the technician saves the film, then it returns to **Request chest X-ray**. The request also appears under **X-ray requests** on the chart.
+On the patient chart, **Book chest X-ray** opens a month calendar. Drag the **Chest X-ray** chip onto a day, or click the day, then **Confirm booking**. That calls `POST /api/cases/request` with `scheduledAt`. The case is `status: requested`, diagnosis “Chest X-ray requested”, with no image. A second open request for the same patient is refused. The button reads **Requested** until the technician saves the film, then it returns to **Book chest X-ray**. The booked day appears under **X-ray requests**.
 
 ### 4. Technician: receive the request and save the film
 
@@ -172,7 +173,7 @@ Backend:
 
 ### 5. Radiologist: work list and endorse
 
-Open **X-ray Worklist**. Outstanding films that are still running show **Generating**. When CURV finishes they show **Pending approve**. The left queue filters All work, Outstanding, Partially endorsed, Fully endorsed, Requested, and Urgent attention.
+Open **X-ray Worklist**. **Reg. Date** is the day the technician saved the film. A request with no film yet shows **—**. Outstanding films that are still running show **Generating**, and the list updates on its own when the draft is ready. When CURV finishes they show **Pending approve**. The left queue filters All work, Outstanding, Partially endorsed, Fully endorsed, Requested, and Urgent attention.
 
 `POST /api/cases/:id/analyze` is the re-run path after a draft exists. It is not required to produce the first draft.
 
@@ -187,9 +188,11 @@ Admins can tick rows and bulk-delete.
 
 ### 6. Report review
 
-Left: original film from GridFS with bbox overlays. Right: findings list, selected editable card, remarks. The report body is Findings, Thinking, and Impression. Thinking is the model’s reasoning trace. The sign-off is separate from that body.
+Left: the film, with **Zoom in**, **Zoom out**, and **Measure**. **Measure** draws a line. The length is in centimetres only when `pixelSpacingMm` came from the DICOM file; otherwise it stays in pixels. Right: findings list, selected editable card, remarks. When more than one finding has a box, each box has its own colour.
 
-While drafting, the page shows an **attribution log** (AI vs manual). **Endorse report** issues a clean report: no source badges in the body the doctor, share page, Word, or PDF see.
+The draft report body is Findings, Thinking, and Impression. Thinking is the model’s reasoning. The radiologist’s report window says that Thinking is **not** included after endorse. **Reject** removes that finding’s sentence from the report and leaves the rest. Edits stay on the page until **Save draft** or **Save remarks**.
+
+While drafting, the page shows an **attribution log** (AI vs manual). Open a row to see the added, removed, and edited lines. **Endorse report** issues a clean report: no Thinking section, no source badges, and no confidence or **Accepted** tags for the referring doctor. Word and PDF include the date, reporting doctor, and signature.
 
 Radiologist / admin can:
 
@@ -202,7 +205,7 @@ Radiologist / admin can:
 - Save remarks (allowed after endorse; does **not** rewrite an endorsed report)
 - **Report** / **Word** / **PDF**
 
-Export composition (`src/lib/reportExport.js`) is the clean CURV/clinician report plus the sign-off.
+Export composition (`src/lib/reportExport.js`) is the endorsed report without Thinking, plus the sign-off.
 
 ### 7. Endorse
 
@@ -214,7 +217,7 @@ After endorse, Review shows **Share**. That creates a token (`POST /api/cases/:i
 
 ### 9. Referring doctor
 
-Sees requested exams and endorsed reports. Enquiry, share, and export of an endorsed report are read-only. No re-run, no draft log, no save, no endorse.
+Sees requested exams and endorsed reports. Enquiry, share, and export of an endorsed report are read-only. The endorsed report has Findings and Impression, the signature, and no Thinking section. Finding cards do not show confidence or **Accepted**. No re-run, no draft log, no save, no endorse.
 
 ### 10. Users (admin)
 
@@ -270,8 +273,8 @@ Shared pieces:
 | `GET` | `/api/auth/me` | any | Session user |
 | `POST` | `/api/auth/logout` | any | Audit only |
 | `GET` | `/api/cases` | any | Doctors: `finalized` and `requested`. Technicians: `requested` only, film and report stripped |
-| `POST` | `/api/cases/request` | doctor, admin | chest X-ray request, no film |
-| `POST` | `/api/cases` | technician, admin | multipart film; **starts CURV** |
+| `POST` | `/api/cases/request` | doctor, admin | book a chest X-ray; optional `scheduledAt`, no film |
+| `POST` | `/api/cases` | technician, admin | multipart PNG, JPG, WebP, or uncompressed DICOM; **starts CURV** |
 | `GET` | `/api/cases/:id` | any | Doctors: requested or endorsed. Technicians: requested only |
 | `PUT` | `/api/cases/:id` | radiologist, admin | findings / report / remarks / urgent |
 | `POST` | `/api/cases/:id/analyze` | radiologist, admin | re-run AI after a draft exists |
@@ -286,7 +289,7 @@ Shared pieces:
 | `GET` | `/api/share/:token/image` | public | film for that share link |
 | `GET` | `/api/patients` | any | includes patients with no studies |
 | `POST` | `/api/patients` | technician, radiologist, admin | demo new patient |
-| `GET`/`PUT` | `/api/patients/:id` | GET any; PUT as noted | doctors may save labs and medicines only |
+| `GET`/`PUT` | `/api/patients/:id` | GET any; PUT as noted | doctors may save lab orders |
 | `POST`/`DELETE` | `/api/patients/bulk-delete`, `.../:id` | admin | also deletes studies + images |
 | `GET` | `/api/images/:id` | any | GridFS stream (JWT) |
 | `GET` | `/api/audit-logs` | admin | |
@@ -310,7 +313,7 @@ The Express process is **plain `node server.js`** unless you use `npm run dev` (
 1. `mlx_vlm.server --model ~/CURV-mlx --port 8080`
 2. `uvicorn middleware:app --port 8001` from this repo
 
-`backend/utils/aiService.js` posts the image to `POST {AI_BASE_URL}/analyze`. A `.dcm` upload is rendered to PNG before that call, and the middleware can render a DICOM file itself if one is posted directly. The middleware resizes the **whole frame** (no crop) to the CURV preprocessor budget (`max_pixels` 50176, about 224×224) and sends the official CURV conversation from `CURV-main`: the system prompt in `training/prompts/prompt_cxr.txt`, the user line “Please analyze this chest X-ray image and generate a detailed radiology report following the specified format.”, and that resized film. Patient age, sex, and history stay on the chart. CURV answers with `<findings>`, `<thinking>`, and `<impression>`. Those are saved as Findings, Thinking, and Impression. The review page parses finding cards from the Findings section and still displays the original image.
+`backend/utils/aiService.js` posts the image to `POST {AI_BASE_URL}/analyze`. A `.dcm` upload is rendered to PNG before that call. If the file has pixel spacing, that spacing is kept so **Measure** can report centimetres. The middleware can render a DICOM file itself if one is posted directly. It resizes the **whole frame** (no crop) to the CURV preprocessor budget (`max_pixels` 50176, about 224×224) and sends the official CURV conversation from `CURV-main`: the system prompt in `training/prompts/prompt_cxr.txt`, the user line “Please analyze this chest X-ray image and generate a detailed radiology report following the specified format.”, and that resized film. Patient age, sex, and history stay on the chart. CURV answers with `<findings>`, `<thinking>`, and `<impression>`. Those are saved as Findings, Thinking, and Impression. Thinking stays on the radiologist’s draft and is removed from the endorsed report and from Word and PDF. The review page parses finding cards from the Findings section and still displays the original image.
 
 Calling the model with an image and no user text makes this checkpoint say it cannot see an image. The official prompt is required.
 
@@ -418,7 +421,7 @@ Dry-run by default; pass `--apply` to write.
 
 1. Start backend, Vite, and `start_server.sh` before the session. Confirm `/api/health` says `mongo: "up"` and `:8001/health` is OK. Wait until the model has finished loading.
 2. Restart Express after any backend edit (`node server.js` does not hot-reload). Restart `start_server.sh` after any `middleware.py` edit.
-3. Walk: doctor **Request chest X-ray** → technician **Requested case** → save the film (draft generates on its own) → radiologist work list moves from **Generating** to **Pending approve** → edit a card → **Endorse report** → doctor login reads the clean report → Share copies a public link.
+3. Walk: doctor **Book chest X-ray** on the calendar → technician **Requested case** → save the film (draft generates on its own) → radiologist work list moves from **Generating** to **Pending approve** → edit a card → **Endorse report** → doctor login reads the report without Thinking, with the signature → Share copies a public link.
 4. Show Patient Master, an X-ray request on the chart, and Sepsis / labs / notes for a doctor. Show that a technician and a radiologist do not have labs or the audit log.
 5. Show admin **Users** (add by email, temporary password once) and bulk-delete on a throwaway row, not on the last demo case.
 
@@ -442,7 +445,7 @@ Dry-run by default; pass `--apply` to write.
 | Backend tests | UI tests do not cover Express or Mongo |
 | Patient ID allocation | `PT-2026-0007` is max+1; two concurrent creates can collide |
 | Do not store JWT in `localStorage` for a real hospital deploy | XSS can steal it; httpOnly cookies are safer |
-| DICOM | Today only raster images; real PACS would need a DICOM store and viewer |
+| Full DICOM viewer | Uncompressed `.dcm` is rendered to PNG. Compressed transfer syntaxes and a PACS viewer are still out of scope |
 | Structured logs / request IDs | Helps debug CURV timeouts (180s) |
 
 ### Deployment sketch (if asked)
