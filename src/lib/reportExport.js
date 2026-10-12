@@ -28,6 +28,16 @@ export function splitReportAndRemarks(reportText) {
   return { body, remarks: section };
 }
 
+// The model's reasoning stays on the draft. Endorsed reports and downloads omit it.
+export function withoutThinking(reportText) {
+  const src = String(reportText || "").replace(/\r\n/g, "\n");
+  const cleaned = src.replace(
+    /(^|\n)[ \t]*#*\s*Thinking\s*:?[ \t]*\n[\s\S]*?(?=\n[ \t]*#*\s*(?:Findings|Impression|Conclusion|Radiologist remarks|Clinician-added findings)\s*:?[ \t]*\n|$)/gi,
+    "$1"
+  );
+  return cleaned.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 export function splitManualFindings(reportText) {
   const { body, section } = splitOnHeading(reportText, MANUAL_FINDINGS_HEADING);
   return { body, manual: section };
@@ -343,7 +353,9 @@ export function buildReportSections(c = {}) {
     age: c.age || "",
     sex: c.sex || "",
     history: c.history || "",
-    body: String(c.reportText || "").replace(/\r\n/g, "\n").trim(),
+    body: (c.status === "finalized"
+      ? withoutThinking(c.reportText)
+      : String(c.reportText || "").replace(/\r\n/g, "\n").trim()),
     signOff: reportSignOff(c),
     findings: findings.map((f, i) => ({
       n: i + 1,
@@ -406,10 +418,14 @@ export async function downloadReportDocx(c) {
   children.push(new Paragraph({ text: "" }));
   children.push(new Paragraph({ text: `Date: ${s.signOff.date}` }));
   children.push(new Paragraph({ text: `Reporting doctor: ${s.signOff.doctor}` }));
-  children.push(new Paragraph({ text: "Signature" }));
+  children.push(new Paragraph({ text: "" }));
   children.push(new Paragraph({
-    children: [new TextRun({ text: s.signOff.doctor, italics: true, size: 32 })],
+    children: [new TextRun({ text: "Signature", bold: true, size: 20 })],
   }));
+  children.push(new Paragraph({
+    children: [new TextRun({ text: s.signOff.doctor, italics: true, size: 36, font: "Times New Roman" })],
+  }));
+  children.push(new Paragraph({ text: "______________________________" }));
   const blob = await Packer.toBlob(new Document({
     sections: [{ properties: {}, children }],
   }));
@@ -487,8 +503,10 @@ export function buildReportPdfBytes(c, film = null) {
     "",
     `Date: ${s.signOff.date}`,
     `Reporting doctor: ${s.signOff.doctor}`,
+    "",
     "Signature",
     s.signOff.doctor,
+    "______________________________",
   ];
 
   const pageWidth = 595;

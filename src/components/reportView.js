@@ -7,9 +7,10 @@ import { el, mount } from "../dom.js";
 import { api } from "../api.js";
 import { state, toast } from "../state.js";
 import { unwrapLegacyReport, resyncMachineFindings } from "./review.js";
-import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, applyRemarksToReport, reportSignOff } from "../lib/reportExport.js";
+import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, applyRemarksToReport, reportSignOff, withoutThinking } from "../lib/reportExport.js";
 import { svgIcon } from "./icons.js";
 import { canEditReport } from "../lib/roles.js";
+import { isGenerating } from "../lib/caseStatus.js";
 import { reportPopupUrl, isReportPopup, reportPopupCaseId } from "../lib/reportPopup.js";
 
 export { reportPopupUrl, isReportPopup, reportPopupCaseId };
@@ -50,8 +51,8 @@ export async function renderReportViewPage({ target }) {
     stored = null;
   }
 
-  let saveTimer = null;
   let persistChain = Promise.resolve();
+  let genPoll = null;
 
   function hintMongo(text) {
     const n = document.getElementById("mongo-report-status");
@@ -64,18 +65,24 @@ export async function renderReportViewPage({ target }) {
     } catch { /* popup tests / no opener */ }
   }
 
-  function queuePersist() {
-    if (!stored || !canRemark()) return;
-    hintMongo("Saving to MongoDB…");
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      persist({ silent: true }).catch(() => {});
-    }, 450);
+  function watchGenerating() {
+    if (genPoll || !stored || !isGenerating(stored)) return;
+    genPoll = setInterval(async () => {
+      try {
+        await load();
+      } catch (err) {
+        error = err.message || "Could not load the report.";
+      }
+      paint();
+      if (!stored || !isGenerating(stored)) {
+        clearInterval(genPoll);
+        genPoll = null;
+      }
+    }, 2000);
   }
 
   async function persist({ silent } = {}) {
     if (!stored || !canRemark()) return;
-    clearTimeout(saveTimer);
     const typedBody = draftBody;
     const typedRemarks = remarks;
     const run = async () => {
@@ -147,7 +154,10 @@ export async function renderReportViewPage({ target }) {
   }
 
   function paint() {
-    const edit = canEdit();
+    const generating = Boolean(stored && isGenerating(stored));
+    const edit = canEdit() && !generating;
+    const endorsed = stored?.status === "finalized";
+    const shownBody = endorsed ? withoutThinking(draftBody) : draftBody;
     const root = el("main", { class: "mx-auto max-w-3xl px-5 py-7" },
       el("div", { class: "flex flex-wrap items-center justify-between gap-3" },
         el("div", {},
@@ -170,7 +180,7 @@ export async function renderReportViewPage({ target }) {
             disabled: busy,
             onClick: () => download("pdf"),
           }, svgIcon("download", { size: 16 }), "PDF"),
-          canRemark() && el("button", {
+          canRemark() && !generating && el("button", {
             class: "rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50",
             disabled: busy,
             onClick: () => persist(),
@@ -184,15 +194,18 @@ export async function renderReportViewPage({ target }) {
       error
         ? el("p", { class: "mt-6 rounded-xl bg-red-50 p-4 text-red-700" }, error)
         : el("section", { class: "card mt-5" },
+            edit && el("p", { class: "mb-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950" },
+              "Thinking is on this draft so you can check the model’s reasoning. It is not included in the endorsed report, or in the Word and PDF files after you endorse."
+            ),
             edit
               ? el("textarea", {
                   id: "report-body",
                   class: "input min-h-[360px] font-sans text-sm leading-6",
                   rows: 18,
-                  onInput: (e) => { draftBody = e.target.value; queuePersist(); },
+                  onInput: (e) => { draftBody = e.target.value; hintMongo("Unsaved changes. Press Save report."); },
                 }, draftBody)
               : el("pre", { class: "whitespace-pre-wrap font-sans text-sm leading-6 text-slate-800" },
-                  draftBody || "No report has been saved for this case yet."
+                  shownBody || "No report has been saved for this case yet."
                 ),
             stored && (() => {
               const sign = reportSignOff(stored, state.user?.name || "");
@@ -206,7 +219,7 @@ export async function renderReportViewPage({ target }) {
             })(),
             el("div", { class: "mt-6 border-t border-slate-200 pt-4" },
               el("h2", { class: "text-sm font-semibold text-slate-700" }, "Radiologist remarks"),
-              canRemark()
+              canRemark() && !generating
                 ? el("textarea", {
                     id: "report-remarks",
                     class: "input mt-2 min-h-[120px] font-sans text-sm leading-6",
@@ -214,7 +227,7 @@ export async function renderReportViewPage({ target }) {
                     placeholder: stored?.status === "finalized"
                       ? "Notes stay on this case. They are not added to the finalized report…"
                       : "Notes or extra findings to add to the report…",
-                    onInput: (e) => { remarks = e.target.value; queuePersist(); },
+                    onInput: (e) => { remarks = e.target.value; hintMongo("Unsaved changes. Press Save report."); },
                   }, remarks)
                 : el("p", { class: "mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-800" },
                     remarks || "No remarks have been added."
@@ -223,8 +236,9 @@ export async function renderReportViewPage({ target }) {
             canRemark() && el("p", { class: "mt-3 text-xs text-slate-500" },
               stored?.status === "finalized"
                 ? "The report is locked. Remarks are saved as notes only and are not written into the report, Word, or PDF."
-                : "Typing saves the draft. Click Save report to add, update, or remove finding cards from what you changed."
+                : "Nothing is written until you press Save report."
             ),
+            generating && el("p", { class: "mt-3 text-sm font-semibold text-amber-700" }, "The draft is still generating. This page updates when it is ready."),
             canRemark() && el("p", { id: "mongo-report-status", class: "mt-1 text-xs font-medium text-ha-blue" })
           )
     );
@@ -232,4 +246,5 @@ export async function renderReportViewPage({ target }) {
   }
 
   paint();
+  watchGenerating();
 }

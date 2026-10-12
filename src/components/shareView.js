@@ -4,7 +4,7 @@ import { el, mount } from "../dom.js";
 import { api } from "../api.js";
 import { state } from "../state.js";
 import { svgIcon } from "./icons.js";
-import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks } from "../lib/reportExport.js";
+import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, reportSignOff, withoutThinking } from "../lib/reportExport.js";
 import { patientDisplayName, doctorInCharge } from "../lib/tags.js";
 
 function findingDetail(f) {
@@ -91,6 +91,7 @@ export async function renderSharePage({ target }) {
   }
 
   function reportCard(body) {
+    const sign = reportSignOff(stored || {});
     return el("section", { class: "card" },
       el("div", { class: "flex flex-wrap items-center justify-between gap-2" },
         el("h2", { class: "font-bold text-slate-900" }, "Report"),
@@ -109,12 +110,19 @@ export async function renderSharePage({ target }) {
       ),
       el("pre", { class: "mt-4 max-w-3xl whitespace-pre-wrap font-sans text-sm leading-7 text-slate-800" },
         body || "No report text."
+      ),
+      el("div", { class: "mt-6 border-t border-slate-200 pt-4 text-sm text-slate-800" },
+        el("p", {}, el("span", { class: "font-semibold" }, "Date: "), sign.date),
+        el("p", { class: "mt-1" }, el("span", { class: "font-semibold" }, "Reporting doctor: "), sign.doctor),
+        el("p", { class: "mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500" }, "Signature"),
+        el("p", { class: "mt-1 font-serif text-2xl italic text-slate-900" }, sign.doctor),
+        el("div", { class: "mt-1 h-px w-56 bg-slate-400" })
       )
     );
   }
 
   function paint() {
-    const body = splitReportAndRemarks(stored?.reportText || "").body;
+    const body = withoutThinking(splitReportAndRemarks(stored?.reportText || "").body);
     const findings = (stored?.findings || []).filter((f) => f.status !== "rejected");
     const root = el("main", { class: "mx-auto max-w-5xl px-5 py-8" },
       el("p", { class: "text-xs font-semibold uppercase tracking-wider text-ha-blue" }, "Shared report"),

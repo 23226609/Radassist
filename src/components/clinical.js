@@ -6,7 +6,7 @@ import { el, mount } from "../dom.js";
 import { api } from "../api.js";
 import { state, setPage, toast } from "../state.js";
 import { patientDisplayName } from "../lib/tags.js";
-import { canEditPatient, canArrangeLab, canPrescribe } from "../lib/roles.js";
+import { canEditPatient, canArrangeLab } from "../lib/roles.js";
 
 const BEDS = ["4A-01", "4A-02", "4A-03", "4A-04", "4B-01", "4B-02", "4B-03", "4B-04"];
 const INPUT = "w-full rounded border border-gray-400 bg-white px-2 py-1.5 text-sm outline-none focus:border-ha-blue focus:ring-2 focus:ring-blue-200 disabled:bg-gray-100";
@@ -15,7 +15,7 @@ const BTN = "rounded bg-ha-blue px-3 py-2 text-xs font-bold text-white hover:bg-
 function cmsWindow(title, ...body) {
   return el("div", { class: "flex h-full min-h-[70vh] flex-col p-2" },
     el("div", { class: "relative flex h-full flex-col border-2 border-white border-b-gray-500 border-r-gray-500 bg-[#d4d0c8] p-2 shadow-sm" },
-      el("div", { class: "flex items-center gap-2 bg-ha-blue px-2 py-1 text-sm font-bold text-white" }, title),
+      el("div", { class: "flex items-center gap-2 border-b border-[#d9d3bc] bg-ha-paper px-2 py-1 text-sm font-bold text-stone-900" }, title),
       ...body
     )
   );
@@ -105,6 +105,64 @@ function latestObs(patient) {
   return rows[rows.length - 1] || null;
 }
 
+function sexShort(sex) {
+  if (sex === "Male") return "M";
+  if (sex === "Female") return "F";
+  return sex || "";
+}
+
+// Demonstration figure from the saved observations. It is not a hospital model score.
+export function teachingScore(obs = {}, heartRate = "") {
+  const row = { ...obs };
+  if (row.hr == null || row.hr === "") row.hr = heartRate;
+  const review = reviewState(row, heartRate);
+  let points = 0;
+  const hr = num(row.hr);
+  const rr = num(row.rr);
+  const sbp = num(row.sbp);
+  const spo2 = num(row.spo2);
+  const temp = num(row.temp);
+  const lactate = num(row.lactate);
+  const wbc = num(row.wbc);
+  const crp = num(row.crp);
+  if (hr != null) points += Math.min(12, Math.abs(hr - 80) / 4);
+  if (rr != null) points += Math.min(14, Math.max(0, rr - 16));
+  if (sbp != null && sbp < 110) points += Math.min(10, (110 - sbp) / 4);
+  if (spo2 != null) points += Math.min(16, Math.max(0, 96 - spo2));
+  if (temp != null) points += Math.min(8, Math.max(0, (temp - 37.2) * 6));
+  if (lactate != null) points += Math.min(10, Math.max(0, (lactate - 1.2) * 4));
+  if (wbc != null) points += Math.min(8, Math.max(0, wbc - 11));
+  if (crp != null) points += Math.min(12, Math.max(0, (crp - 10) / 4));
+  let score = 6 + points;
+  if (review.level === "urgent") score = Math.max(score, 48);
+  if (review.level === "abnormal") score = Math.min(46, Math.max(22, score));
+  if (review.level === "none") score = Math.min(score, 18);
+  return Math.round(Math.max(4, Math.min(88, score)));
+}
+
+function qsofaLabel(review) {
+  return review.level === "urgent" ? "ALERT" : "No proxy trigger";
+}
+
+function cohortLabel(patient) {
+  const obs = latestObs(patient) || {};
+  const review = reviewState(obs, patient.heartRate);
+  const bits = [sexShort(patient.sex), patient.age ? `Age ${patient.age}` : ""].filter(Boolean);
+  const who = bits.length ? ` (${bits.join(", ")})` : "";
+  return `${patient.patientId}${who} | Teaching score: ${teachingScore(obs, patient.heartRate)}% | qSOFA: ${qsofaLabel(review)}`;
+}
+
+function inCohort(patient, filter) {
+  const review = reviewState(latestObs(patient) || {}, patient.heartRate);
+  if (filter === "alerts") return review.level === "urgent" || review.level === "abnormal";
+  if (filter === "progression") {
+    const rows = patient.observations || [];
+    if (rows.length < 6) return false;
+    return teachingScore(rows[rows.length - 1]) - teachingScore(rows[0]) >= 8;
+  }
+  return true;
+}
+
 const TREND_METRICS = [
   { key: "hr", label: "Heart Rate (bpm)", max: 180, bar: "bg-rose-500", text: "text-rose-700" },
   { key: "rr", label: "Resp Rate (breaths/min)", max: 40, bar: "bg-red-500", text: "text-red-700" },
@@ -143,12 +201,28 @@ function trendLane(metric, slots, hour) {
   );
 }
 
-function assessmentPreface(patient, review, stamp, hour, { onReturn, onEvaluate, qaOpen, onToggleQa }) {
+function assessmentPreface(patient, review, stamp, hour, {
+  patients = [],
+  cohort = "all",
+  onCohort,
+  onPatient,
+  onReturn,
+  onEvaluate,
+  qaOpen,
+  onToggleQa,
+  hourScore,
+}) {
   const urgent = review.level === "urgent";
   const box = urgent
     ? "border-red-300 bg-red-50 text-red-900"
     : "border-amber-300 bg-amber-50 text-amber-950";
   const name = patientDisplayName(patient) || patient.patientId;
+  const counts = {
+    all: patients.length,
+    alerts: patients.filter((row) => inCohort(row, "alerts")).length,
+    progression: patients.filter((row) => inCohort(row, "progression")).length,
+  };
+  const choices = patients.filter((row) => inCohort(row, cohort) || row.patientId === patient.patientId);
   return el("div", { class: "mb-3 space-y-2" },
     el("div", { class: "rounded border border-teal-200 bg-teal-50 px-3 py-2 text-xs text-teal-950" },
       "Latest resulted biomarkers linked to this patient: WBC, Lactate, CRP. Review the lab timestamps before recording a new assessment."
@@ -163,7 +237,7 @@ function assessmentPreface(patient, review, stamp, hour, { onReturn, onEvaluate,
       el("p", { class: "font-bold" }, "Assessment due under the 4-hour monitoring plan; reassess the patient.")
     ),
     el("p", { class: "text-[11px] leading-relaxed text-gray-600" },
-      "Adult teaching screen: the two-criterion proxy omits mental status and is not full qSOFA or NEWS2. Negative screening does not exclude sepsis. Dataset scores are historical model outputs, not recalculated clinical probabilities. The source outcome is deterioration within 12 hours, not adjudicated sepsis."
+      "Adult teaching screen: the two-criterion proxy omits mental status and is not full qSOFA or NEWS2. Negative screening does not exclude sepsis. The teaching score is calculated from the saved observations on this chart. It is not a hospital deterioration model and not a clinical probability."
     ),
     el("div", { class: "flex flex-wrap items-center justify-between gap-2 rounded bg-sky-100 px-3 py-2 text-xs text-sky-950" },
       el("span", {}, `Historical H+${hour} preview — read-only. The saved current assessment is unchanged.`),
@@ -172,25 +246,32 @@ function assessmentPreface(patient, review, stamp, hour, { onReturn, onEvaluate,
     el("details", { class: "rounded border border-sky-200 bg-sky-50 text-xs", open: true },
       el("summary", { class: "cursor-pointer px-3 py-2 font-bold text-sky-950" }, "Teaching cases — historical cohort selection and evaluation"),
       el("div", { class: "space-y-2 border-t border-sky-200 px-3 py-2" },
-        el("p", {}, "Linked inpatient teaching cohort: not loaded"),
+        el("p", {}, `Linked inpatient teaching cohort: ward demonstration charts (${patients.length})`),
         el("div", { class: "flex flex-wrap items-end gap-2" },
           el("label", { class: "flex flex-col gap-1" },
             "Filter",
-            el("select", { class: INPUT, disabled: true },
-              el("option", {}, "All current inpatients")
+            el("select", {
+              class: INPUT,
+              value: cohort,
+              onChange: (e) => onCohort?.(e.target.value),
+            },
+              el("option", { value: "all", selected: cohort === "all" }, `All cases (${counts.all})`),
+              el("option", { value: "alerts", selected: cohort === "alerts" }, `Deterioration alerts (${counts.alerts})`),
+              el("option", { value: "progression", selected: cohort === "progression" }, `Synthetic teaching cases (${counts.progression})`)
             )
           ),
-          el("label", { class: "flex min-w-[14rem] flex-col gap-1" },
+          el("label", { class: "flex min-w-[22rem] flex-1 flex-col gap-1" },
             "Patient",
-            el("input", {
+            el("select", {
               class: INPUT,
-              readOnly: true,
-              value: `${name} (${patient.patientId})${patient.sex ? ` ${patient.sex}` : ""}${patient.age ? `, Age ${patient.age}` : ""}`,
-            })
-          ),
-          el("label", { class: "flex flex-col gap-1" },
-            "Dataset score",
-            el("input", { class: `${INPUT} w-28`, readOnly: true, value: "—" })
+              value: patient.patientId || "",
+              onChange: (e) => onPatient?.(e.target.value),
+            },
+              ...choices.map((row) => el("option", {
+                value: row.patientId,
+                selected: row.patientId === patient.patientId,
+              }, cohortLabel(row)))
+            )
           ),
           el("button", { type: "button", class: BTN, onClick: onEvaluate }, "Evaluate selected hour")
         )
@@ -206,8 +287,8 @@ function assessmentPreface(patient, review, stamp, hour, { onReturn, onEvaluate,
         )
       ),
       el("div", { class: "flex flex-wrap items-center gap-3" },
-        el("span", {}, "QA outcome ", el("strong", {}, "Not loaded")),
-        el("span", {}, "Historical dataset score ", el("strong", {}, "—")),
+        el("span", {}, "QA outcome ", el("strong", {}, qaOpen ? "Open" : "Sealed")),
+        el("span", {}, "Teaching score ", el("strong", {}, hourScore == null ? "—" : `${hourScore}%`)),
         el("span", { class: urgent ? "rounded bg-red-600 px-2 py-0.5 font-bold text-white" : "rounded bg-amber-500 px-2 py-0.5 font-bold text-white" },
           urgent ? "qSOFA proxy ALERT" : "qSOFA proxy"
         ),
@@ -216,30 +297,57 @@ function assessmentPreface(patient, review, stamp, hour, { onReturn, onEvaluate,
     ),
     qaOpen
       ? el("p", { class: "rounded border border-gray-300 bg-gray-50 px-3 py-2 text-xs text-gray-600" },
-          "QA review mode is layout only. No historical dataset score is loaded, and the saved assessment is unchanged."
+          "QA review mode shows the teaching score for the selected hour. The saved assessment is unchanged until you record new vitals."
         )
       : null
   );
 }
 
-function trendPanel(observations, hour, onHour) {
+function scoreLane(slots, hour) {
+  const selected = slots[hour];
+  const shown = selected ? teachingScore(selected) : null;
+  return el("div", {},
+    el("div", { class: "mb-1 flex justify-between gap-2 text-[11px] font-bold text-gray-600" },
+      el("span", {}, "Teaching score (%)"),
+      el("span", { class: "text-violet-800" }, shown == null ? "—" : `${shown}%`)
+    ),
+    el("div", { class: "flex h-12 items-end gap-0.5" },
+      ...slots.map((row, i) => {
+        const n = row ? teachingScore(row) : null;
+        const pct = n == null ? 8 : Math.max(12, Math.min(100, n));
+        return el("div", {
+          class: `min-w-0 flex-1 ${n == null ? "bg-slate-200" : "bg-violet-500"} ${i === hour ? "outline outline-1 outline-slate-900" : ""}`,
+          style: { height: `${pct}%` },
+          title: n == null ? `H+${i} not recorded` : `H+${i} ${n}%`,
+        });
+      })
+    )
+  );
+}
+
+function trendPanel(observations, hour, onHour, patientId) {
   const slots = trendSlots(observations);
   const saved = (observations || []).slice(-12).length;
+  const lanes = TREND_METRICS.map((metric) => trendLane(metric, slots, hour));
+  lanes.splice(3, 0, scoreLane(slots, hour));
   return el("section", { class: "mb-3 border border-gray-400 bg-white", "aria-label": "12-hour observation trend" },
     el("div", { class: "flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 bg-slate-50 px-3 py-2" },
-      el("h3", { class: "text-sm font-bold text-slate-800" }, "12-hour observation trend"),
+      el("h3", { class: "text-sm font-bold text-slate-800" }, `12-hour teaching trajectory${patientId ? ` (${patientId})` : ""}`),
       el("span", { class: "text-xs text-gray-500" }, saved ? `${saved} of 12 hours saved` : "No hourly series saved yet")
     ),
     el("div", { class: "flex flex-wrap items-center gap-1 px-3 py-2 text-xs" },
       el("span", { class: "mr-1 font-bold text-gray-600" }, "Select hour"),
       ...slots.map((row, i) => el("button", {
         type: "button",
-        class: `min-w-9 rounded px-2 py-1 font-bold ${i === hour ? "bg-slate-900 text-white" : row ? "bg-slate-200 text-slate-800" : "bg-slate-100 text-slate-400"}`,
+        class: `min-w-9 rounded px-2 py-1 text-center font-bold leading-tight ${i === hour ? "bg-slate-900 text-white" : row ? "bg-slate-200 text-slate-800" : "bg-slate-100 text-slate-400"}`,
         onClick: () => onHour(i),
-      }, `H+${i}`))
+      },
+        el("span", { class: "block" }, `H+${i}`),
+        el("span", { class: "block text-[10px] font-normal" }, row ? `${teachingScore(row)}%` : "—")
+      ))
     ),
     el("div", { class: "grid gap-3 px-3 pb-2 sm:grid-cols-2 xl:grid-cols-4" },
-      ...TREND_METRICS.map((metric) => trendLane(metric, slots, hour))
+      ...lanes
     ),
     el("p", { class: "px-3 pb-3 text-xs text-gray-500" },
       "Shown only for Abnormal observations — review and Urgent review. Empty hours stay blank until an assessment is saved. Patients on No configured trigger do not use this trend."
@@ -372,6 +480,11 @@ export async function renderMonitorPage({ target }) {
   let trendHour = 11;
   let qaOpen = false;
   let hourNote = "";
+  let wardFilter = "all";
+  let findQuery = "";
+  let showFilter = "all";
+  let sortBy = "bed";
+  let cohort = "all";
   const canEdit = canEditPatient(state.user);
 
   async function choose(id) {
@@ -414,8 +527,28 @@ export async function renderMonitorPage({ target }) {
 
   function paint() {
     const admitted = patients.filter((p) => p.admissionStatus === "admitted" || p.bed);
-    const list = (admitted.length ? admitted : patients);
-    const urgentCount = list.filter((p) => reviewState(latestObs(p) || {}, p.heartRate).level === "urgent").length;
+    const base = admitted.length ? admitted : patients;
+    const wards = [...new Set(base.map((p) => p.ward).filter(Boolean))].sort();
+    const query = findQuery.trim().toLowerCase();
+    const rank = { urgent: 0, abnormal: 1, none: 2 };
+    const list = base.filter((p) => {
+      if (wardFilter !== "all" && (p.ward || wardOf(p.bed)) !== wardFilter) return false;
+      const level = reviewState(latestObs(p) || {}, p.heartRate).level;
+      if (showFilter !== "all" && level !== showFilter) return false;
+      if (!query) return true;
+      return `${patientDisplayName(p)} ${p.patientId} ${p.bed || ""}`.toLowerCase().includes(query);
+    }).sort((a, b) => {
+      if (sortBy === "name") return (patientDisplayName(a) || "").localeCompare(patientDisplayName(b) || "");
+      if (sortBy === "review") {
+        const diff = rank[reviewState(latestObs(a) || {}, a.heartRate).level] - rank[reviewState(latestObs(b) || {}, b.heartRate).level];
+        if (diff) return diff;
+      }
+      return `${a.ward || ""}${a.bed || ""}`.localeCompare(`${b.ward || ""}${b.bed || ""}`);
+    });
+    const urgentCount = base.filter((p) => reviewState(latestObs(p) || {}, p.heartRate).level === "urgent").length;
+    const slots = selected ? trendSlots(selected.observations) : [];
+    const hourRow = slots[trendHour] || null;
+    const hourScore = hourRow ? teachingScore(hourRow) : null;
     const obsRows = (selected?.observations || []).slice().reverse();
     mount(target, cmsWindow("Inpatient Observations & Sepsis Screening (Teaching)",
       error ? el("p", { class: "mt-2 bg-red-100 p-2 text-sm text-red-900" }, error) : null,
@@ -423,8 +556,57 @@ export async function renderMonitorPage({ target }) {
       el("section", { class: "my-3 rounded border border-slate-300 bg-white", "aria-label": "Ward patient worklist" },
         el("div", { class: "flex flex-wrap justify-between gap-2 rounded-t bg-slate-800 px-3 py-2 text-white" },
           el("h2", { class: "font-bold" }, "Ward patient worklist"),
-          el("span", { class: "text-xs" }, `${list.length} inpatients · ${urgentCount} require urgent review`)
+          el("span", { class: "text-xs" }, `${base.length} inpatients · ${urgentCount} require urgent review`)
         ),
+        el("div", { class: "grid gap-2 border-b border-slate-200 bg-slate-50 p-2 text-xs md:grid-cols-4" },
+          el("label", { class: "flex flex-col gap-1" },
+            "Ward",
+            el("select", {
+              class: INPUT,
+              value: wardFilter,
+              onChange: (e) => { wardFilter = e.target.value; paint(); },
+            },
+              el("option", { value: "all", selected: wardFilter === "all" }, "All wards"),
+              ...wards.map((ward) => el("option", { value: ward, selected: wardFilter === ward }, ward))
+            )
+          ),
+          el("label", { class: "flex flex-col gap-1" },
+            "Find a patient",
+            el("input", {
+              id: "sepsis-find",
+              class: INPUT,
+              placeholder: "Name or patient number",
+              value: findQuery,
+              onInput: (e) => { findQuery = e.target.value; paint(); },
+            })
+          ),
+          el("label", { class: "flex flex-col gap-1" },
+            "Show",
+            el("select", {
+              class: INPUT,
+              value: showFilter,
+              onChange: (e) => { showFilter = e.target.value; paint(); },
+            },
+              el("option", { value: "all", selected: showFilter === "all" }, "All current inpatients"),
+              el("option", { value: "urgent", selected: showFilter === "urgent" }, "Urgent review"),
+              el("option", { value: "abnormal", selected: showFilter === "abnormal" }, "Abnormal observations"),
+              el("option", { value: "none", selected: showFilter === "none" }, "No configured trigger")
+            )
+          ),
+          el("label", { class: "flex flex-col gap-1" },
+            "Sort by",
+            el("select", {
+              class: INPUT,
+              value: sortBy,
+              onChange: (e) => { sortBy = e.target.value; paint(); },
+            },
+              el("option", { value: "bed", selected: sortBy === "bed" }, "Ward and bed"),
+              el("option", { value: "name", selected: sortBy === "name" }, "Patient name"),
+              el("option", { value: "review", selected: sortBy === "review" }, "Review state")
+            )
+          )
+        ),
+        el("p", { class: "px-2 py-1 text-[11px] text-gray-600" }, `Showing ${list.length} of ${base.length} patients.`),
         el("div", { class: "max-h-80 overflow-auto" },
           el("table", { class: "w-full min-w-[680px] text-left text-xs" },
             el("thead", { class: "sticky top-0 bg-slate-100" },
@@ -457,13 +639,13 @@ export async function renderMonitorPage({ target }) {
                 },
                   el("td", { class: "p-2 font-semibold" }, p.ward || "—", el("br"), p.bed || "No bed"),
                   el("td", { class: "p-2" },
-                    el("strong", {}, `${p.patientId} · ${patientDisplayName(p) || ""}`),
+                    el("strong", {}, `${p.patientId} · ${(patientDisplayName(p) || "").toUpperCase()}`),
                     el("br"),
-                    [p.age && `${p.age}y`, p.sex].filter(Boolean).join(" · ")
+                    [p.age && `${p.age}y`, sexShort(p.sex) || p.sex].filter(Boolean).join(" · ")
                   ),
                   el("td", { class: "p-2" },
                     obsLine || obsLine2
-                      ? el("span", {}, obsLine, obsLine && obsLine2 ? el("br") : null, obsLine2)
+                      ? el("span", {}, obsLine, obsLine && obsLine2 ? el("br") : null, obsLine2, stamp ? el("div", { class: "mt-1 text-stone-600" }, stamp) : null)
                       : (p.heartRate || "No observations")
                   ),
                   el("td", { class: "p-2" },
@@ -491,14 +673,41 @@ export async function renderMonitorPage({ target }) {
               cmsAssessmentStamp(latestObs(selected)?.at),
               trendHour,
               {
+                patients,
+                cohort,
+                hourScore,
+                onCohort: (value) => { cohort = value; paint(); },
+                onPatient: (id) => { if (id && id !== selected?.patientId) choose(id); },
                 onReturn: () => {
                   const saved = (selected.observations || []).length;
                   trendHour = Math.min(11, Math.max(0, saved - 1));
+                  const latest = latestObs(selected) || {};
+                  form.hr = latest.hr || String(selected?.heartRate || "").replace(/[^\d.]/g, "");
+                  form.rr = latest.rr || "";
+                  form.sbp = latest.sbp || "";
+                  form.spo2 = latest.spo2 || "";
+                  form.temp = latest.temp || "";
+                  form.wbc = latest.wbc || "";
+                  form.lactate = latest.lactate || "";
+                  form.crp = latest.crp || "";
                   hourNote = "";
                   paint();
                 },
                 onEvaluate: () => {
-                  hourNote = `H+${trendHour} is a read-only preview. The saved assessment is unchanged.`;
+                  const row = trendSlots(selected.observations)[trendHour];
+                  if (row) {
+                    form.hr = row.hr || "";
+                    form.rr = row.rr || "";
+                    form.sbp = row.sbp || "";
+                    form.spo2 = row.spo2 || "";
+                    form.temp = row.temp || "";
+                    form.wbc = row.wbc || "";
+                    form.lactate = row.lactate || "";
+                    form.crp = row.crp || "";
+                    hourNote = `H+${trendHour} preview · teaching score ${teachingScore(row)}%. The saved assessment is unchanged until you record new vitals.`;
+                  } else {
+                    hourNote = `H+${trendHour} has no saved observation.`;
+                  }
                   paint();
                 },
                 qaOpen,
@@ -506,7 +715,7 @@ export async function renderMonitorPage({ target }) {
               }
             ),
             hourNote ? el("p", { class: "mb-2 text-xs font-bold text-sky-900" }, hourNote) : null,
-            trendPanel(selected.observations, trendHour, (hour) => { trendHour = hour; hourNote = ""; paint(); })
+            trendPanel(selected.observations, trendHour, (hour) => { trendHour = hour; hourNote = ""; paint(); }, selected.patientId)
           )
         : null,
       selected && el("div", { class: "flex flex-1 flex-col gap-4 overflow-hidden lg:flex-row" },
@@ -547,18 +756,19 @@ export async function renderMonitorPage({ target }) {
             ? el("table", { class: "w-full border-collapse text-center text-xs" },
                 el("thead", {},
                   el("tr", { class: "border-b border-gray-400 bg-gray-200" },
-                    ["Time", "Source", "HR", "RR", "BP", "SpO2", "Temp", "WBC", "Lactate", "CRP", "System Alert"].map((h) =>
+                    ["Time", "Source", "HR", "RR", "BP", "SpO2", "Temp", "WBC", "Lactate", "CRP", "Teaching score", "QA", "System Alert"].map((h) =>
                       el("th", { class: "border-r border-gray-400 p-1.5" }, h)
                     )
                   )
                 ),
                 el("tbody", {},
-                  ...obsRows.map((row) => {
+                  ...obsRows.map((row, index) => {
                     const review = reviewState(row, row.hr);
                     const flagged = review.level !== "none";
+                    const hour = obsRows.length - 1 - index;
                     return el("tr", { class: `border-b border-gray-300 ${review.level === "urgent" ? "bg-red-50 text-red-900" : flagged ? "bg-amber-50 text-amber-900" : ""}` },
                       el("td", { class: "border-r border-gray-400 p-1.5" }, cmsAssessmentStamp(row.at) || "—"),
-                      el("td", { class: "border-r border-gray-400 p-1.5" }, row.by || "Recorded assessment"),
+                      el("td", { class: "border-r border-gray-400 p-1.5" }, row.by ? `${row.by} · H+${hour}` : `H+${hour}`),
                       el("td", { class: "border-r border-gray-400 p-1.5" }, row.hr || "—"),
                       el("td", { class: "border-r border-gray-400 p-1.5" }, row.rr || "—"),
                       el("td", { class: "border-r border-gray-400 p-1.5" }, row.sbp || "—"),
@@ -567,6 +777,8 @@ export async function renderMonitorPage({ target }) {
                       el("td", { class: "border-r p-1.5" }, row.wbc || "—"),
                       el("td", { class: "border-r p-1.5" }, row.lactate || "—"),
                       el("td", { class: "border-r p-1.5" }, row.crp || "—"),
+                      el("td", { class: "border-r p-1.5" }, `${teachingScore(row)}%`),
+                      el("td", { class: "border-r p-1.5" }, "Sealed"),
                       el("td", { class: "p-1.5" }, review.level === "urgent" ? "TRIGGERED" : flagged ? "Review" : "—")
                     );
                   })
@@ -627,161 +839,8 @@ export async function renderLabsPage({ target }) {
   });
 }
 
-const FORMULARY = [
-  { label: "Paracetamol · 1 g tablet", route: "Oral", perDose: "1 stock item per dose", stock: "240" },
-  { label: "Amoxicillin · 500 mg capsule", route: "Oral", perDose: "1 stock item per dose", stock: "120" },
-  { label: "Salbutamol inhaler", route: "Inhaled", perDose: "2 stock items per dose", stock: "18" },
-];
 const NOTE_ROLES = ["RN (Registered Nurse)", "Radiologist", "Doctor", "Technician"];
 const NOTE_CATEGORIES = ["General", "Handover", "Incident", "Pain Assessment", "Wound Care"];
-const DOSE_FREQ = ["OD", "BD", "TDS", "QID", "PRN", "STAT"];
-
-export async function renderMedsPage({ target }) {
-  let patients = [];
-  let selected = null;
-  let error = "";
-  let busy = false;
-  const form = {
-    drug: FORMULARY[0].label,
-    dose: "1",
-    frequency: "OD",
-    prescribedBy: state.user?.name || "",
-    allergyAck: false,
-  };
-  const canEdit = canPrescribe(state.user);
-
-  async function choose(id) {
-    state.selectedPatientId = id;
-    selected = id ? await loadPatient(id) : null;
-    paint();
-  }
-
-  async function addRow() {
-    if (!canEdit || !selected) return;
-    if (!String(form.dose || "").trim() || !String(form.prescribedBy || "").trim()) {
-      toast("Enter the dose and who prescribed it.");
-      return;
-    }
-    if (!form.allergyAck) {
-      toast("Confirm the allergy note before adding the prescription.");
-      return;
-    }
-    const item = FORMULARY.find((row) => row.label === form.drug) || FORMULARY[0];
-    busy = true;
-    paint();
-    try {
-      const row = {
-        at: new Date().toISOString(),
-        drug: item.label,
-        dose: form.dose.trim(),
-        route: item.route,
-        frequency: form.frequency,
-        prescribedBy: form.prescribedBy.trim(),
-        status: "active",
-      };
-      const rows = [...(selected.medOrders || []), row];
-      const text = rows.map((entry) => [entry.drug, entry.dose, entry.frequency].filter(Boolean).join(" ")).join("; ");
-      const data = await api.updatePatient(selected.patientId, { medOrders: rows, medicines: text });
-      selected = data.patient;
-      form.allergyAck = false;
-      toast("Added to the medication chart.");
-    } catch (err) {
-      toast(err.message || "Could not save.");
-    } finally {
-      busy = false;
-      paint();
-    }
-  }
-
-  function paint() {
-    const rows = selected?.medOrders || [];
-    const item = FORMULARY.find((row) => row.label === form.drug) || FORMULARY[0];
-    mount(target, cmsWindow("Medication Chart (eMAR — Electronic Medication Administration Record)",
-      error ? el("p", { class: "mt-2 bg-red-100 p-2 text-sm" }, error) : null,
-      activePatientBar(selected),
-      el("div", { class: "mb-2" }, patientPicker(patients, selected?.patientId || "", choose)),
-      el("p", { class: "mb-2 text-xs text-gray-700" }, "Allergies: Unknown / not assessed"),
-      el("p", { class: "mb-3 text-[11px] leading-relaxed text-gray-600" },
-        "Prescribe, then the chart keeps the order on this patient. Teaching stock is a label only, not a live pharmacy."
-      ),
-      el("div", { class: "flex flex-1 flex-col gap-3 overflow-hidden lg:flex-row" },
-        canEdit && el("div", { class: "flex w-full flex-col overflow-auto border border-gray-400 bg-[#e4e4e4] p-3 lg:w-1/3" },
-          el("h3", { class: "mb-3 border-b border-gray-400 pb-1 font-bold text-ha-blue" }, "New Prescription"),
-          el("label", { class: "text-xs font-bold" }, "Drug (Formulary)",
-            el("select", {
-              class: "mt-1 w-full border border-gray-500 bg-white px-2 py-1 text-xs",
-              value: form.drug,
-              onChange: (e) => { form.drug = e.target.value; paint(); },
-            }, ...FORMULARY.map((row) => el("option", { value: row.label }, row.label)))
-          ),
-          el("p", { class: "mt-2 text-xs" },
-            "Pharmacy stock: ",
-            el("span", { class: "rounded bg-green-100 px-1 font-bold text-green-800" }, "In stock"),
-            ` ${item.stock} unit(s) on hand`
-          ),
-          el("label", { class: "mt-2 block text-xs font-bold" }, "Dose",
-            el("input", {
-              class: "mt-1 w-full border border-gray-500 bg-white px-2 py-1 text-xs",
-              value: form.dose,
-              onInput: (e) => { form.dose = e.target.value; },
-            })
-          ),
-          el("p", { class: "mt-1 text-[11px] text-gray-600" }, `Route: ${item.route.toLowerCase()} · ${item.perDose}.`),
-          el("label", { class: "mt-2 block text-xs font-bold" }, "Frequency",
-            el("select", {
-              class: "mt-1 w-full border border-gray-500 bg-white px-2 py-1 text-xs",
-              value: form.frequency,
-              onChange: (e) => { form.frequency = e.target.value; },
-            }, ...DOSE_FREQ.map((option) => el("option", { value: option }, option)))
-          ),
-          el("label", { class: "mt-2 block text-xs font-bold" }, "Prescribed by",
-            el("input", {
-              class: "mt-1 w-full border border-gray-500 bg-white px-2 py-1 text-xs",
-              value: form.prescribedBy,
-              onInput: (e) => { form.prescribedBy = e.target.value; },
-            })
-          ),
-          el("label", { class: "mt-3 flex items-start gap-2 bg-[#ffffcc] p-2 text-[11px]" },
-            el("input", {
-              type: "checkbox",
-              class: "mt-0.5",
-              checked: form.allergyAck,
-              onChange: (e) => { form.allergyAck = e.target.checked; },
-            }),
-            "Allergy history is unknown; I have reviewed this uncertainty for the demonstration."
-          ),
-          el("button", { class: `${BTN} mt-3 w-full`, disabled: busy, onClick: addRow }, busy ? "Saving…" : "+ Add to Chart")
-        ),
-        el("div", { class: "flex flex-1 flex-col overflow-auto border border-gray-400 bg-white" },
-          el("div", { class: "bg-[#008080] px-2 py-1 text-xs font-bold text-white" }, `Prescriptions for Current Patient (${rows.length})`),
-          rows.length
-            ? el("table", { class: "w-full text-left text-xs" },
-                el("thead", { class: "bg-slate-100" },
-                  el("tr", {}, ["Drug", "Dose", "Route", "Frequency", "Prescribed by"].map((h) => el("th", { class: "p-2" }, h)))
-                ),
-                el("tbody", {}, ...rows.slice().reverse().map((row) => el("tr", { class: "border-t" },
-                  el("td", { class: "p-2" }, row.drug || "—"),
-                  el("td", { class: "p-2" }, row.dose || "—"),
-                  el("td", { class: "p-2" }, row.route || "—"),
-                  el("td", { class: "p-2" }, row.frequency || "—"),
-                  el("td", { class: "p-2" }, row.prescribedBy || "—")
-                )))
-              )
-            : el("div", { class: "p-8 text-center text-sm text-gray-500" }, "No prescriptions for this patient.")
-        )
-      )
-    ));
-  }
-
-  try {
-    patients = await loadPatients();
-    form.prescribedBy = form.prescribedBy || state.user?.name || "";
-    await choose(state.selectedPatientId || patients[0]?.patientId || "");
-  } catch (err) {
-    error = err.message;
-    paint();
-  }
-}
 
 export async function renderNotesPage({ target }) {
   let patients = [];

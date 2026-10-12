@@ -67,7 +67,6 @@ export function parseHash(hash = currentHash()) {
   if (head === "beds") return { page: "beds" };
   if (head === "monitor") return { page: "monitor" };
   if (head === "labs") return { page: "labs" };
-  if (head === "meds") return { page: "meds" };
   if (head === "notes") return { page: "notes" };
   if (head === "requests") return { page: "requests" };
   if (head === "new") return { page: "new" };
@@ -103,7 +102,6 @@ export function hashFor(s = state) {
     case "beds": return "#/beds";
     case "monitor": return "#/monitor";
     case "labs": return "#/labs";
-    case "meds": return "#/meds";
     case "notes": return "#/notes";
     case "requests": return "#/requests";
     default: return "#/dashboard";

@@ -117,6 +117,75 @@ def _curv_target_size(width: int, height: int) -> tuple:
     return int(w_bar), int(h_bar)
 
 
+def _looks_like_dicom(image_path: str) -> bool:
+    if image_path.lower().endswith(".dcm"):
+        return True
+    try:
+        with open(image_path, "rb") as handle:
+            handle.seek(128)
+            return handle.read(4) == b"DICM"
+    except OSError:
+        return False
+
+
+def _first_float(value, default=None):
+    if value is None or value == "":
+        return default
+    if isinstance(value, (list, tuple)):
+        return _first_float(value[0], default) if value else default
+    text = str(value).split("\\")[0]
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return default
+
+
+def _render_dicom(image_path: str) -> str:
+    """Render DICOM pixels to a PNG. CURV cannot read a DICOM container."""
+    import numpy as np
+    import pydicom
+    from PIL import Image
+
+    dataset = pydicom.dcmread(image_path)
+    if not hasattr(dataset, "PixelData"):
+        raise ValueError("This DICOM has no pixel data.")
+    try:
+        arr = np.asarray(dataset.pixel_array)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(
+            "This DICOM uses compressed pixels. Export an uncompressed chest film, or upload a PNG."
+        ) from exc
+    if arr.ndim == 3 and arr.shape[-1] not in (3, 4):
+        arr = arr[0]
+    elif arr.ndim == 4:
+        arr = arr[0]
+    rgb = arr.ndim == 3 and arr.shape[-1] in (3, 4)
+    if not rgb:
+        arr = arr.astype("float32")
+        slope = _first_float(getattr(dataset, "RescaleSlope", 1), 1.0)
+        intercept = _first_float(getattr(dataset, "RescaleIntercept", 0), 0.0)
+        arr = arr * slope + intercept
+        center = _first_float(getattr(dataset, "WindowCenter", None), None)
+        width = _first_float(getattr(dataset, "WindowWidth", None), None)
+        if center is not None and width is not None and width > 0:
+            low = center - width / 2
+            high = center + width / 2
+            arr = (arr - low) / (high - low)
+        else:
+            low = float(arr.min())
+            high = float(arr.max())
+            arr = (arr - low) / (high - low) if high > low else np.zeros_like(arr)
+        arr = np.clip(arr, 0, 1)
+        if str(getattr(dataset, "PhotometricInterpretation", "")).upper() == "MONOCHROME1":
+            arr = 1 - arr
+        frame = Image.fromarray((arr * 255).astype("uint8"), mode="L").convert("RGB")
+    else:
+        frame = Image.fromarray(arr[:, :, :3].astype("uint8")).convert("RGB")
+    out_path = os.path.splitext(image_path)[0] + "-film.png"
+    frame.save(out_path, format="PNG")
+    return out_path
+
+
 def _resize_for_curv(image_path: str) -> str:
     """Write a resized copy of the whole film. The caller's original file is left as-is."""
     from PIL import Image
@@ -412,7 +481,8 @@ async def analyze_xray(
         # The official CURV template does not take age, sex, or history.
         # Those stay on the patient chart. The form fields are still accepted.
         _ = (patientId, age, sex, history)
-        model_path = _resize_for_curv(save_path)
+        film_path = _render_dicom(save_path) if _looks_like_dicom(save_path) else save_path
+        model_path = _resize_for_curv(film_path)
         ai_result = _ai_analyze(model_path)
         report_text = ai_result.get("report", "")
         findings = ai_result.get("findings", [])
@@ -421,7 +491,7 @@ async def analyze_xray(
     except Exception as e:  # noqa: BLE001
         ai_error = f"Unexpected AI error: {e}"
     finally:
-        for path in (model_path, save_path):
+        for path in (model_path, locals().get("film_path"), save_path):
             if path and os.path.exists(path):
                 try:
                     os.remove(path)

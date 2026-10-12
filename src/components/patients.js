@@ -117,7 +117,7 @@ export async function renderPatientsPage({ target }) {
 
     const root = el("div", { class: "flex h-full min-h-[70vh] flex-col p-2" },
       el("div", { class: "relative flex h-full flex-col border-2 border-white border-b-gray-500 border-r-gray-500 bg-[#d4d0c8] p-2 shadow-sm" },
-        el("div", { class: "flex items-center justify-between bg-ha-blue px-2 py-1 font-bold text-white" },
+        el("div", { class: "flex items-center justify-between border-b border-[#d9d3bc] bg-ha-paper px-2 py-1 font-bold text-stone-900" },
           el("span", {}, "Enquiry of Patient Master Index"),
           el("div", { class: "flex items-center gap-2" },
             canEditPatient(state.user) && el("button", {
@@ -263,6 +263,9 @@ export async function renderPatientPage({ target }) {
   let medicinesDraft = "";
   let heartRateDraft = "";
   let labResultsDraft = "";
+  let booking = false;
+  let bookCursor = new Date();
+  let bookedDay = "";
 
   const canEdit = () => canEditPatient(state.user);
   const isAdmin = () => roleIsAdmin(state.user);
@@ -289,16 +292,40 @@ export async function renderPatientPage({ target }) {
     error = err.message || "Could not load this patient.";
   }
 
-  async function requestExam() {
+  function dayKey(date) {
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${date.getFullYear()}-${month}-${day}`;
+  }
+
+  function monthCells(date) {
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const first = new Date(year, month, 1).getDay();
+    const count = new Date(year, month + 1, 0).getDate();
+    const cells = Array.from({ length: first }, () => null);
+    for (let day = 1; day <= count; day += 1) cells.push(new Date(year, month, day));
+    return cells;
+  }
+
+  async function bookExam() {
     if (!patient || !canRequestExam(state.user)) return;
+    if (!bookedDay) {
+      toast("Drag Chest X-ray onto a day, or click a day.");
+      return;
+    }
     busy = true;
     paint();
     try {
-      await api.requestExam({ patientId: patient.patientId });
+      await api.requestExam({
+        patientId: patient.patientId,
+        scheduledAt: new Date(`${bookedDay}T09:00:00`).toISOString(),
+      });
+      booking = false;
       await load();
-      toast("Chest X-ray requested. A technician registers the film before anyone reports it.");
+      toast("Chest X-ray booked. A technician registers the film on that day.");
     } catch (err) {
-      toast(err.message || "Could not request the X-ray.");
+      toast(err.message || "Could not book the X-ray.");
     } finally {
       busy = false;
       paint();
@@ -356,7 +383,7 @@ export async function renderPatientPage({ target }) {
       "div",
       { class: "flex h-full min-h-[70vh] flex-col p-2" },
       el("div", { class: "relative flex h-full flex-col border-2 border-white border-b-gray-500 border-r-gray-500 bg-[#d4d0c8] p-2 shadow-sm" },
-        el("div", { class: "flex items-center justify-between bg-ha-blue px-2 py-1 font-bold text-white" },
+        el("div", { class: "flex items-center justify-between border-b border-[#d9d3bc] bg-ha-paper px-2 py-1 font-bold text-stone-900" },
           el("button", {
             class: "text-sm",
             onClick: () => setPage("patients"),
@@ -375,8 +402,8 @@ export async function renderPatientPage({ target }) {
             canRequestExam(state.user) && el("button", {
               class: "rounded border border-white/40 px-2 py-0.5 text-[11px] font-semibold disabled:opacity-80",
               disabled: busy || cases.some((c) => c.status === "requested"),
-              onClick: requestExam,
-            }, cases.some((c) => c.status === "requested") ? "Requested" : "Request chest X-ray"),
+              onClick: () => { booking = !booking; paint(); },
+            }, cases.some((c) => c.status === "requested") ? "Requested" : "Book chest X-ray"),
             edit && el("button", {
               class: "rounded bg-white px-2 py-0.5 text-[11px] font-bold text-ha-blue",
               disabled: busy,
@@ -544,6 +571,68 @@ export async function renderPatientPage({ target }) {
                 el("p", { class: "mt-2 text-xs text-slate-500" }, "Patient remarks are saved on the chart only. They do not change any study report.")
               ),
 
+              booking && canRequestExam(state.user) && el("section", { class: "rounded border border-gray-200 bg-white p-3" },
+                el("div", { class: "flex flex-wrap items-center justify-between gap-2" },
+                  el("h2", { class: "text-sm font-bold" }, "Book chest X-ray"),
+                  el("div", { class: "flex items-center gap-2 text-xs" },
+                    el("button", {
+                      type: "button",
+                      class: "rounded border border-gray-300 px-2 py-1",
+                      onClick: () => { bookCursor = new Date(bookCursor.getFullYear(), bookCursor.getMonth() - 1, 1); paint(); },
+                    }, "Prev"),
+                    el("span", { class: "min-w-28 text-center font-semibold" },
+                      bookCursor.toLocaleString(undefined, { month: "long", year: "numeric" })
+                    ),
+                    el("button", {
+                      type: "button",
+                      class: "rounded border border-gray-300 px-2 py-1",
+                      onClick: () => { bookCursor = new Date(bookCursor.getFullYear(), bookCursor.getMonth() + 1, 1); paint(); },
+                    }, "Next")
+                  )
+                ),
+                el("p", { class: "mt-2 text-xs text-slate-600" }, "Drag the exam onto a day, or click the day."),
+                el("div", {
+                  draggable: "true",
+                  class: "mt-2 inline-block cursor-grab rounded bg-ha-blue px-3 py-1 text-xs font-bold text-white",
+                  onDragstart: (e) => {
+                    e.dataTransfer?.setData("text/plain", "chest-xray");
+                    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+                  },
+                }, "Chest X-ray"),
+                el("div", { class: "mt-3 grid grid-cols-7 gap-1 text-center text-[11px] text-slate-500" },
+                  ...["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((name) => el("div", { class: "font-semibold" }, name))
+                ),
+                el("div", { class: "mt-1 grid grid-cols-7 gap-1" },
+                  ...monthCells(bookCursor).map((day) => {
+                    if (!day) return el("div", {});
+                    const key = dayKey(day);
+                    const chosen = key === bookedDay;
+                    return el("button", {
+                      type: "button",
+                      class: `min-h-14 rounded border p-1 text-left text-xs ${chosen ? "border-ha-blue bg-blue-50" : "border-gray-200 bg-white hover:bg-slate-50"}`,
+                      onClick: () => { bookedDay = key; paint(); },
+                      onDragover: (e) => e.preventDefault(),
+                      onDrop: (e) => {
+                        e.preventDefault();
+                        bookedDay = key;
+                        paint();
+                      },
+                    },
+                      el("div", { class: "font-semibold text-slate-700" }, String(day.getDate())),
+                      chosen && el("div", { class: "mt-1 truncate rounded bg-ha-blue px-1 text-[10px] font-bold text-white" }, "Chest X-ray")
+                    );
+                  })
+                ),
+                el("div", { class: "mt-3 flex items-center justify-between gap-2" },
+                  el("span", { class: "text-xs text-slate-600" }, bookedDay ? `Booked day: ${bookedDay}` : "No day chosen yet."),
+                  el("button", {
+                    type: "button",
+                    class: "rounded bg-ha-blue px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50",
+                    disabled: busy || !bookedDay,
+                    onClick: bookExam,
+                  }, busy ? "Booking…" : "Confirm booking")
+                )
+              ),
               el("section", { class: "overflow-hidden rounded border border-gray-200" },
                 el("div", { class: "border-b bg-gray-50 px-3 py-2" },
                   el("h2", { class: "text-sm font-bold" }, "X-ray requests")
@@ -556,7 +645,7 @@ export async function renderPatientPage({ target }) {
                           el("div", {},
                             el("div", { class: "font-semibold" }, "Chest X-ray"),
                             el("p", { class: "text-sm text-slate-600" },
-                              c.createdAt ? new Date(c.createdAt).toLocaleString() : "Requested",
+                              c.scheduledAt ? `Booked ${new Date(c.scheduledAt).toLocaleDateString()}` : (c.createdAt ? new Date(c.createdAt).toLocaleString() : "Requested"),
                               c.requestedByName ? ` · ${c.requestedByName}` : ""
                             )
                           ),

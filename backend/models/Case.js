@@ -68,6 +68,16 @@ const caseSchema = new mongoose.Schema(
         userName: { type: String, default: '' },
         kind: { type: String, enum: ['ai', 'manual'], default: 'manual' },
         summary: { type: String, default: '' },
+        changes: {
+          type: [{
+            action: { type: String, enum: ['added', 'removed', 'edited'], default: 'edited' },
+            field: { type: String, default: '' },
+            label: { type: String, default: '' },
+            before: { type: String, default: '' },
+            after: { type: String, default: '' },
+          }],
+          default: [],
+        },
       }],
       default: [],
     },
@@ -81,6 +91,12 @@ const caseSchema = new mongoose.Schema(
     finalizedBy: { type: String, default: null }, // userId
     finalizedByName: { type: String, default: null },
     // Image stored in GridFS
+    // When the technician saved the film. Requested exams have no film yet.
+    registeredAt: { type: Date, default: null },
+    // Day the referring doctor booked the examination.
+    scheduledAt: { type: Date, default: null },
+    // DICOM PixelSpacing in millimetres: [row, column]. Empty when the film has none.
+    pixelSpacingMm: { type: [Number], default: undefined },
     imageId: { type: mongoose.Schema.Types.ObjectId, default: null },
     imageFilename: { type: String, default: '' },
     imageContentType: { type: String, default: 'image/jpeg' },

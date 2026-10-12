@@ -344,20 +344,10 @@ export async function renderCasePage({ target }) {
     error = err.message || "Could not load this case.";
   }
 
-  let saveTimer = null;
   let persistChain = Promise.resolve();
-
-  function queueRemarksSync() {
-    if (!localCase || !canRemark()) return;
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      saveRemarks({ silent: true }).catch(() => {});
-    }, 450);
-  }
 
   async function saveRemarks({ silent } = {}) {
     if (!localCase || !canRemark()) return;
-    clearTimeout(saveTimer);
     const run = async () => {
       if (!silent) {
         busy = true;
@@ -507,7 +497,7 @@ export async function renderCasePage({ target }) {
                     placeholder: localCase.status === "finalized"
                       ? "Notes stay on this case. They are not added to the finalized report…"
                       : "Notes or extra findings to add to the report…",
-                    onInput: (e) => { remarksDraft = e.target.value; queueRemarksSync(); },
+                    onInput: (e) => { remarksDraft = e.target.value; },
                   }, remarksDraft)
                 : el("p", {
                     id: "case-remarks",
@@ -516,7 +506,7 @@ export async function renderCasePage({ target }) {
               el("p", { class: "mt-2 text-xs text-slate-500" },
                 localCase.status === "finalized"
                   ? "This case is finalized. Remarks are saved as notes only and are not written into the report."
-                  : "Saving writes these remarks into the MongoDB report."
+                  : "Press Save remarks to write these notes. Typing does not save by itself."
               )
             )
           )

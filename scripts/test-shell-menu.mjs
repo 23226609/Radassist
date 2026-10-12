@@ -81,6 +81,7 @@ test("radiologists do not see Audit log in the menu", () => {
   test("admins see Users in the menu", () => {
     assert.ok([...adminRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Users"));
     assert.ok([...adminRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Audit log"));
+    assert.ok(![...adminRoot.querySelectorAll("button")].some((b) => b.textContent.includes("Medication Chart")));
   });
 }
 

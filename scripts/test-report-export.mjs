@@ -1,6 +1,6 @@
 // scripts/test-report-export.mjs
 import assert from "node:assert";
-import { buildReportSections, buildReportPdfBytes, applyRemarksToReport, splitReportAndRemarks, composeReportText, MANUAL_FINDINGS_HEADING, parseImageMeta, fitImageBox, removeFindingFromReport, applyFindingChangeToReport } from "../src/lib/reportExport.js";
+import { buildReportSections, buildReportPdfBytes, applyRemarksToReport, splitReportAndRemarks, composeReportText, MANUAL_FINDINGS_HEADING, parseImageMeta, fitImageBox, removeFindingFromReport, applyFindingChangeToReport, withoutThinking } from "../src/lib/reportExport.js";
 
 let passed = 0;
 let failed = 0;
@@ -225,6 +225,33 @@ test("PDF export embeds the uploaded X-ray", () => {
     reportText: "The lungs are clear.",
   }));
   assert.ok(!plain.includes("/DCTDecode"), "text-only PDF should not embed an image");
+});
+
+test("an endorsed report drops Thinking and keeps the signature", () => {
+  const report = "Findings:\nThe lungs are clear.\n\nThinking:\nThe model compared both lungs.\n\nImpression:\nNo acute findings.";
+  assert.equal(
+    withoutThinking(report),
+    "Findings:\nThe lungs are clear.\n\nImpression:\nNo acute findings."
+  );
+  const sections = buildReportSections({
+    status: "finalized",
+    caseId: "CASE-1",
+    reportText: report,
+    finalizedByName: "Dr. Priya Nair",
+    updatedAt: "2026-10-11T03:16:00.000Z",
+  });
+  assert.ok(!sections.body.includes("Thinking"));
+  assert.ok(sections.body.includes("Impression"));
+  assert.equal(sections.signOff.doctor, "Dr. Priya Nair");
+  const pdf = new TextDecoder("latin1").decode(buildReportPdfBytes({
+    status: "finalized",
+    caseId: "CASE-1",
+    reportText: report,
+    finalizedByName: "Dr. Priya Nair",
+  }));
+  assert.ok(!pdf.includes("The model compared both lungs."));
+  assert.ok(pdf.includes("Signature"));
+  assert.ok(pdf.includes("Dr. Priya Nair"));
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -51,31 +51,31 @@ export function renderLoginPage() {
   function render() {
     const root = el(
       "main",
-      { class: "grid min-h-screen place-items-center bg-gradient-to-br from-slate-200 via-slate-100 to-blue-100 p-4" },
-      el("div", { class: "grid w-full max-w-5xl overflow-hidden rounded-3xl border border-white/80 bg-white/90 shadow-[0_30px_90px_rgba(15,42,65,0.2)] backdrop-blur md:grid-cols-[1.05fr_0.95fr]" },
-        el("section", { class: "relative hidden min-h-[620px] overflow-hidden bg-gradient-to-br from-[#003366] via-[#075985] to-[#0f766e] p-10 text-white md:flex md:flex-col md:justify-between" },
-          el("div", { class: "absolute -right-20 -top-20 h-64 w-64 rounded-full border-[36px] border-white/10" }),
-          el("div", { class: "absolute -bottom-24 -left-16 h-72 w-72 rounded-full bg-cyan-300/10" }),
+      { class: "grid min-h-screen place-items-center bg-ha-paper p-4" },
+      el("div", { class: "grid w-full max-w-5xl overflow-hidden rounded-3xl border border-[#d9d3bc] bg-white shadow-[0_30px_90px_rgba(80,70,40,0.12)] md:grid-cols-[1.05fr_0.95fr]" },
+        el("section", { class: "relative hidden min-h-[620px] overflow-hidden bg-ha-paper p-10 text-stone-900 md:flex md:flex-col md:justify-between" },
+          el("div", { class: "absolute -right-20 -top-20 h-64 w-64 rounded-full border-[36px] border-[#d9d3bc]/80" }),
+          el("div", { class: "absolute -bottom-24 -left-16 h-72 w-72 rounded-full bg-[#e4dfcc]" }),
           el("div", { class: "relative" },
             el("div", { class: "mb-12 flex items-center gap-3" },
-              el("div", { class: "rounded-2xl bg-white/15 p-3 ring-1 ring-white/25" },
+              el("div", { class: "rounded-2xl border border-[#d9d3bc] bg-white p-3" },
                 svgIcon("activity", { size: 28 })
               ),
               el("div", {},
                 el("p", { class: "text-lg font-bold tracking-wide" }, "RadAssist AI"),
-                el("p", { class: "text-xs text-cyan-100" }, "HKBU CS · FYP")
+                el("p", { class: "text-xs text-stone-600" }, "HKBU CS · FYP")
               )
             ),
-            el("p", { class: "mb-3 text-xs font-semibold uppercase tracking-[0.22em] text-cyan-200" }, "Digital Front Door"),
-            el("p", { class: "max-w-md text-sm leading-6 text-blue-100" },
+            el("p", { class: "mb-3 text-xs font-semibold uppercase tracking-[0.22em] text-stone-500" }, "Digital Front Door"),
+            el("p", { class: "max-w-md text-sm leading-6 text-stone-700" },
               "Enter the radiology workspace to upload films, run AI, review findings, and read finalized reports."
             )
           ),
-          el("div", { class: "relative grid gap-3 text-xs text-blue-50" },
-            el("div", { class: "flex items-center gap-3 rounded-xl border border-white/15 bg-white/10 p-3" },
+          el("div", { class: "relative grid gap-3 text-xs text-stone-700" },
+            el("div", { class: "flex items-center gap-3 rounded-xl border border-[#d9d3bc] bg-white/70 p-3" },
               "Classroom-only access with synthetic patient records"
             ),
-            el("div", { class: "flex items-center gap-3 rounded-xl border border-white/15 bg-white/10 p-3" },
+            el("div", { class: "flex items-center gap-3 rounded-xl border border-[#d9d3bc] bg-white/70 p-3" },
               "Technician upload, radiologist sign-off, doctor read of finalized reports"
             )
           )

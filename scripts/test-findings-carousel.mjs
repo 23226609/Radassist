@@ -173,7 +173,7 @@ test("renders one list row per finding", () => {
 
 test("Hide boxes removes the overlays from the film", () => {
   assert.ok(root.querySelector("#toggle-bboxes"), "Hide boxes button missing");
-  assert.equal(root.querySelectorAll("[data-bbox]").length, 1, "only the active finding box should show");
+  assert.equal(root.querySelectorAll("[data-bbox]").length, 3, "every finding box should show");
   assert.ok(root.textContent.includes("F1"), "boxes should start visible");
   root.querySelector("#toggle-bboxes").dispatchEvent(new window.Event("click"));
   assert.equal(root.querySelector("#toggle-bboxes")?.textContent.trim(), "Show boxes");
@@ -183,7 +183,7 @@ test("Hide boxes removes the overlays from the film", () => {
 test("Show boxes brings the overlays back", () => {
   root.querySelector("#toggle-bboxes").dispatchEvent(new window.Event("click"));
   assert.equal(root.querySelector("#toggle-bboxes")?.textContent.trim(), "Hide boxes");
-  assert.equal(root.querySelectorAll("[data-bbox]").length, 1);
+  assert.equal(root.querySelectorAll("[data-bbox]").length, 3);
   assert.ok(root.textContent.includes("F1"));
 });
 
@@ -206,7 +206,7 @@ test("Show boxes brings the overlays back", () => {
     point("pointerdown", 15, 15);
     point("pointermove", 25, 25);
     point("pointerup", 25, 25);
-    const box = root.querySelector("[data-bbox]");
+    const box = root.querySelector("[data-bbox='selected']");
     assert.equal(box.style.left, "20%");
     assert.equal(box.style.top, "20%");
     assert.equal(box.style.width, "20%");
@@ -217,7 +217,7 @@ test("Show boxes brings the overlays back", () => {
     point("pointerdown", 40, 40);
     point("pointermove", 55, 50);
     point("pointerup", 55, 50);
-    const box = root.querySelector("[data-bbox]");
+    const box = root.querySelector("[data-bbox='selected']");
     assert.equal(box.style.left, "20%");
     assert.equal(box.style.top, "20%");
     assert.equal(box.style.width, "35%");
@@ -227,7 +227,7 @@ test("Show boxes brings the overlays back", () => {
     point("pointerdown", 5, 60);
     point("pointermove", 25, 85);
     point("pointerup", 25, 85);
-    const box = root.querySelector("[data-bbox]");
+    const box = root.querySelector("[data-bbox='selected']");
     assert.equal(box.style.left, "5%");
     assert.equal(box.style.top, "60%");
     assert.equal(box.style.width, "20%");
@@ -241,8 +241,8 @@ test("clicking a list row selects that finding", () => {
   assert.equal(selectedLabel(), "Lungs clear", "second finding not shown in the card");
   assert.equal(cards().length, 1, "more than one card after selecting");
   assert.ok(root.textContent.includes("F2"), "active box should follow the selected finding");
-  assert.ok(!root.textContent.includes("F1"), "previous finding box should hide");
-  assert.equal(root.querySelectorAll("[data-bbox]").length, 1);
+  assert.ok(root.textContent.includes("F1"), "other finding boxes stay on the film");
+  assert.equal(root.querySelectorAll("[data-bbox]").length, 3);
 });
 
 test("clicking another row jumps to that finding", () => {
@@ -284,7 +284,7 @@ test("Add manually opens a new card at the end of the list", () => {
   assert.ok(text().includes("Manual"), "manual cards should say Manual, not a confidence %");
   assert.ok(![...root.querySelectorAll("article")].some((n) => /50%/.test(n.textContent)),
     "manual cards should not show a 50% score");
-  assert.equal(root.querySelectorAll("[data-bbox]").length, 0, "manual findings wait for a drawn box");
+  assert.equal(root.querySelectorAll("[data-bbox='selected']").length, 0, "manual findings wait for a drawn box");
   assert.ok(text().includes("Drag on the X-ray to draw a box"));
   const loc = root.querySelector("input[id^='finding-location-tmp-']");
   loc.value = "Left lower zone";
@@ -318,8 +318,8 @@ test("a new card does not autosave until Finish this finding", () => {
 }
 
 test("dragging on the film draws a box on the unsaved manual finding", () => {
-  assert.equal(root.querySelectorAll("[data-bbox]").length, 1);
-  const box = root.querySelector("[data-bbox]");
+  assert.equal(root.querySelectorAll("[data-bbox='selected']").length, 1);
+  const box = root.querySelector("[data-bbox='selected']");
   assert.equal(box.style.left, "10%");
   assert.equal(box.style.top, "20%");
   assert.equal(box.style.width, "30%");

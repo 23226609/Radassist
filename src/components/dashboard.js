@@ -16,6 +16,16 @@ import { canUpload, canEditReport, isReferringDoctor, isAdmin as roleIsAdmin } f
 
 let dashboardLive = null;
 
+function filmDate(c = {}) {
+  const value = c.registeredAt || ((c.imageId || c.imageUrl) ? c.createdAt : null);
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${month}-${day}`;
+}
+
 function newDashboardAbort() {
   return typeof AbortController === "function"
     ? new AbortController()
@@ -61,9 +71,29 @@ export async function renderDashboardPage({ target }) {
   const isAdmin = () => roleIsAdmin(state.user);
   const caseIdOf = (c) => c.caseId || c._id;
 
-  async function refresh() {
+  let genPoll = null;
+  function watchGenerating() {
+    const waiting = cases.some((row) => isGenerating(row));
+    if (waiting && !genPoll) {
+      genPoll = setInterval(() => refresh({ quiet: true }), 3000);
+    }
+    if (!waiting && genPoll) {
+      clearInterval(genPoll);
+      genPoll = null;
+    }
+  }
+  signal.addEventListener("abort", () => {
+    if (genPoll) clearInterval(genPoll);
+    genPoll = null;
+  });
+
+  async function refresh({ quiet = false } = {}) {
     if (signal.aborted) return;
-    loading = true; error = ""; render();
+    if (!quiet) {
+      loading = true;
+      error = "";
+      render();
+    }
     try {
       const data = await api.listCases({ q }, { signal });
       if (signal.aborted) return;
@@ -76,6 +106,7 @@ export async function renderDashboardPage({ target }) {
       try { stats = (await api.stats({ signal })).stats; } catch { stats = null; }
       if (signal.aborted) return;
       online = true;
+      watchGenerating();
       fillDiagnoses(cases);
     } catch (err) {
       if (signal.aborted || isAbortError(err)) return;
@@ -210,7 +241,7 @@ export async function renderDashboardPage({ target }) {
             : null
         ),
         el("td", { class: "border border-[#b7d3ea] px-2 py-1" }, "XRAY"),
-        el("td", { class: "border border-[#b7d3ea] px-2 py-1 whitespace-nowrap" }, c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : ""),
+        el("td", { class: "border border-[#b7d3ea] px-2 py-1 whitespace-nowrap" }, filmDate(c)),
         el("td", { class: "border border-[#b7d3ea] px-2 py-1" },
           el("div", {}, "Chest"),
           el("div", { class: "max-w-md text-[11px] opacity-80" }, diagnosisCell(c))
@@ -324,11 +355,11 @@ export async function renderDashboardPage({ target }) {
               : el("div", { class: "flex min-h-0 flex-1 flex-col" },
                   el("div", { class: "overflow-auto" },
                     el("table", { class: "w-full min-w-[860px] border-collapse text-left text-xs" },
-                      el("thead", { class: "bg-[#5b92c9] text-white" },
+                      el("thead", { class: "bg-ha-paper text-stone-900" },
                         el("tr", {},
                           isAdmin() ? headerCheckbox(pageIds, selected, (on) => { togglePage(selected, pageIds, on); render(); }) : null,
                           ["Patient Name", "Mod.", "Reg. Date", "Procedure", "Ex. Pri.", "Status", "Uploaded by", ""].map((h) =>
-                            el("th", { class: "border border-[#3d74ad] px-2 py-1 font-semibold" }, h)
+                            el("th", { class: "border border-[#d9d3bc] px-2 py-1 font-semibold" }, h)
                           )
                         )
                       ),

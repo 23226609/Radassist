@@ -13,7 +13,7 @@ import { renderPatientsPage, renderPatientPage } from "./components/patients.js"
 import { renderNewPatientPage } from "./components/newPatient.js";
 import { renderCasesPage, renderCasePage, renderRequestedPage } from "./components/cases.js";
 import { renderUsersPage } from "./components/users.js";
-import { renderBedsPage, renderMonitorPage, renderLabsPage, renderMedsPage, renderNotesPage } from "./components/clinical.js";
+import { renderBedsPage, renderMonitorPage, renderLabsPage, renderNotesPage } from "./components/clinical.js";
 import { renderSharePage } from "./components/shareView.js";
 import { isReportPopup, renderReportViewPage } from "./components/reportView.js";
 import { el, mount } from "./dom.js";
@@ -120,11 +120,15 @@ function render() {
     setPage("dashboard");
     return;
   }
-  if (roleOf(state.user) === "radiologist" && ["labs", "meds"].includes(state.page)) {
+  if (state.page === "meds") {
+    setPage(isTechnician(state.user) ? "requests" : "dashboard");
+    return;
+  }
+  if (roleOf(state.user) === "radiologist" && state.page === "labs") {
     setPage("dashboard");
     return;
   }
-  if (isTechnician(state.user) && ["dashboard", "cases", "case", "review", "labs", "meds"].includes(state.page)) {
+  if (isTechnician(state.user) && ["dashboard", "cases", "case", "review", "labs"].includes(state.page)) {
     setPage("requests");
     return;
   }
@@ -157,7 +161,6 @@ function render() {
     case "beds":      pageNode = "beds";      break;
     case "monitor":   pageNode = "monitor";   break;
     case "labs":      pageNode = "labs";      break;
-    case "meds":      pageNode = "meds";      break;
     case "notes":     pageNode = "notes";     break;
     case "requests":  pageNode = "requests";  break;
     default:          pageNode = "dashboard";
@@ -197,8 +200,6 @@ function render() {
     renderMonitorPage({ target });
   } else if (pageNode === "labs") {
     renderLabsPage({ target });
-  } else if (pageNode === "meds") {
-    renderMedsPage({ target });
   } else if (pageNode === "notes") {
     renderNotesPage({ target });
   } else if (pageNode === "requests") {

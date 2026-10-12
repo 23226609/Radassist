@@ -92,6 +92,20 @@ function findingPointMeta(f) {
   return extra.length > 90 ? extra.slice(0, 87).trim() + "…" : extra;
 }
 
+const FILM_BOX_COLORS = [
+  { border: "border-yellow-300", fill: "bg-yellow-300/30", handle: "border-yellow-100 bg-yellow-300", chip: "bg-yellow-400", name: "yellow" },
+  { border: "border-cyan-300", fill: "bg-cyan-300/30", handle: "border-cyan-100 bg-cyan-300", chip: "bg-cyan-400", name: "cyan" },
+  { border: "border-rose-400", fill: "bg-rose-400/30", handle: "border-rose-200 bg-rose-400", chip: "bg-rose-400", name: "rose" },
+  { border: "border-lime-300", fill: "bg-lime-300/30", handle: "border-lime-100 bg-lime-300", chip: "bg-lime-400", name: "lime" },
+  { border: "border-violet-400", fill: "bg-violet-400/30", handle: "border-violet-200 bg-violet-400", chip: "bg-violet-400", name: "violet" },
+  { border: "border-orange-400", fill: "bg-orange-400/25", handle: "border-orange-200 bg-orange-400", chip: "bg-orange-400", name: "orange" },
+];
+
+function filmBoxColor(index, total) {
+  if (total <= 1) return FILM_BOX_COLORS[0];
+  return FILM_BOX_COLORS[index % FILM_BOX_COLORS.length];
+}
+
 function hasBbox(f) {
   return Array.isArray(f?.bbox) && f.bbox.length === 4
     && Number(f.bbox[2]) > 0 && Number(f.bbox[3]) > 0;
@@ -467,8 +481,14 @@ export async function renderReviewPage({ target }) {
   let selectedIndex = 0; // which finding is selected in the list / editor
   let showBoxes = true;
   let boxDrag = null;
+  let zoom = 1;
+  let filmTool = "box";
+  let measureLine = null;
   let remarksDraft = "";
   let remarksDirty = false;
+  let reportDirty = false;
+  let openLogKey = "";
+  let genPoll = null;
 
   // Effective case ID that works with both caseId (new) and _id (legacy)
   const getEffectiveCaseId = () => localCase?.caseId || localCase?._id || state.selectedCaseId;
@@ -502,9 +522,29 @@ export async function renderReviewPage({ target }) {
     localCase = { ...localCase, findings: parsed };
   }
 
+  function stopGeneratingWatch() {
+    if (genPoll) clearInterval(genPoll);
+    genPoll = null;
+  }
+
+  function watchGenerating() {
+    if (genPoll || signal.aborted || leaving || !isGenerating(localCase)) return;
+    genPoll = setInterval(() => {
+      if (signal.aborted || leaving) {
+        stopGeneratingWatch();
+        return;
+      }
+      refreshFromServer();
+    }, 2000);
+  }
+
+  signal.addEventListener("abort", stopGeneratingWatch);
+
   async function refreshFromServer() {
     const caseId = getEffectiveCaseId();
     if (!caseId || signal.aborted || leaving) return;
+    if (reportDirty || remarksDirty) return;
+    const wasGenerating = isGenerating(localCase);
     try {
       const data = await api.getCase(caseId, { signal });
       if (signal.aborted || leaving) return;
@@ -519,6 +559,12 @@ export async function renderReviewPage({ target }) {
         }
       }
       syncRemarksFromCase();
+      if (wasGenerating && !isGenerating(localCase)) {
+        stopGeneratingWatch();
+        toast("Draft ready — pending approve.");
+      } else {
+        watchGenerating();
+      }
       // Sync the cache so the rest of the app sees the same case.
       const idx = state.cases.findIndex(
         (c) => c.caseId === (localCase.caseId || localCase._id) || c._id === localCase._id
@@ -598,23 +644,15 @@ export async function renderReviewPage({ target }) {
     if (n) n.textContent = text;
   }
 
-  let saveTimer = null;
   let persistChain = Promise.resolve();
+
+  function markUnsaved() {
+    reportDirty = true;
+    hintMongo("Unsaved changes. Press Save draft or Save remarks.");
+  }
 
   function isDraftFindingId(id) {
     return String(id || "").startsWith("tmp-");
-  }
-
-  function queueReportSync() {
-    if (!canEditReport(state.user) || !getEffectiveCaseId()) return;
-    hintMongo("Saving to MongoDB…");
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      persistClinicianEdits().catch((err) => {
-        hintMongo("");
-        toast(err.message || "Could not save the report.");
-      });
-    }, 450);
   }
 
   function patchFinding(id, patch, { refresh = false } = {}) {
@@ -650,9 +688,7 @@ export async function renderReviewPage({ target }) {
     // Text fields keep their own caret — remounting on every keystroke made
     // the remarks box and finding inputs feel like they wouldn't accept typing.
     if (refresh) render();
-    // Keep unsaved manual cards local until Finish this finding — otherwise a
-    // mid-draw autosave can overwrite the box or the details.
-    if (!isDraftFindingId(id)) queueReportSync();
+    if (!isDraftFindingId(id)) markUnsaved();
   }
 
   function addFinding() {
@@ -701,11 +737,10 @@ export async function renderReviewPage({ target }) {
     };
     if (selectedIndex >= findings.length) selectedIndex = Math.max(0, findings.length - 1);
     render();
-    if (isDraftFindingId(removed._id || removed.id)) return;
-    persistClinicianEdits({ includeDraft: true }).catch((err) => {
-      hintMongo("");
-      toast(err.message || "Could not delete this finding.");
-    });
+    if (!isDraftFindingId(removed._id || removed.id)) {
+      markUnsaved();
+      toast("Finding removed. That sentence is taken out of the report. The rest stays. Press Save draft to keep it.");
+    }
   }
 
   function acceptFinding(id) {
@@ -757,7 +792,87 @@ export async function renderReviewPage({ target }) {
     return boxFromCorners(boxDrag.start, pct);
   }
 
+  function measureOverlay(line) {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("data-measure", "1");
+    svg.setAttribute("class", "pointer-events-none absolute inset-0 h-full w-full");
+    svg.setAttribute("viewBox", "0 0 100 100");
+    svg.setAttribute("preserveAspectRatio", "none");
+    const ln = document.createElementNS(NS, "line");
+    ln.setAttribute("x1", line.x1);
+    ln.setAttribute("y1", line.y1);
+    ln.setAttribute("x2", line.x2);
+    ln.setAttribute("y2", line.y2);
+    ln.setAttribute("stroke", "#67e8f9");
+    ln.setAttribute("stroke-width", "0.8");
+    svg.appendChild(ln);
+    return svg;
+  }
+
+  function paintMeasure(stage, line) {
+    if (!stage || !line) return;
+    const NS = "http://www.w3.org/2000/svg";
+    let svg = stage.querySelector("[data-measure]");
+    if (!svg) {
+      svg = document.createElementNS(NS, "svg");
+      svg.setAttribute("data-measure", "1");
+      svg.setAttribute("class", "pointer-events-none absolute inset-0 h-full w-full");
+      svg.setAttribute("viewBox", "0 0 100 100");
+      svg.setAttribute("preserveAspectRatio", "none");
+      stage.appendChild(svg);
+    }
+    let ln = svg.querySelector("line");
+    if (!ln) {
+      ln = document.createElementNS(NS, "line");
+      ln.setAttribute("stroke", "#67e8f9");
+      ln.setAttribute("stroke-width", "0.7");
+      svg.appendChild(ln);
+    }
+    ln.setAttribute("x1", line.x1);
+    ln.setAttribute("y1", line.y1);
+    ln.setAttribute("x2", line.x2);
+    ln.setAttribute("y2", line.y2);
+  }
+
+  function measureText(line) {
+    if (!line) return "";
+    const img = document.getElementById("xray-film");
+    const width = img?.naturalWidth || 0;
+    const height = img?.naturalHeight || 0;
+    const spacing = Array.isArray(localCase?.pixelSpacingMm) && localCase.pixelSpacingMm.length === 2
+      ? localCase.pixelSpacingMm
+      : null;
+    if (!width || !height) return "Drag across the area you want to measure.";
+    const dx = ((line.x2 - line.x1) / 100) * width;
+    const dy = ((line.y2 - line.y1) / 100) * height;
+    const pixels = Math.sqrt(dx * dx + dy * dy);
+    if (!spacing) return `${pixels.toFixed(0)} px. This film has no DICOM pixel spacing, so centimetres are not available.`;
+    const mm = Math.sqrt((dx * Number(spacing[1])) ** 2 + (dy * Number(spacing[0])) ** 2);
+    return `${(mm / 10).toFixed(2)} cm`;
+  }
+
+  function onFilmWheel(e) {
+    e.preventDefault();
+    const next = e.deltaY < 0 ? Math.min(4, +(zoom + 0.25).toFixed(2)) : Math.max(1, +(zoom - 0.25).toFixed(2));
+    if (next === zoom) return;
+    zoom = next;
+    render();
+  }
+
   function onFilmPointerDown(e) {
+    if (filmTool === "measure") {
+      if (e.button != null && e.button !== 0) return;
+      const stage = e.currentTarget || document.getElementById("xray-stage");
+      if (!stage) return;
+      const pct = eventToPct(e, stage);
+      measureLine = { x1: pct.x, y1: pct.y, x2: pct.x, y2: pct.y };
+      boxDrag = { mode: "measure" };
+      try { stage.setPointerCapture?.(e.pointerId); } catch { /* tests */ }
+      paintMeasure(stage, measureLine);
+      e.preventDefault();
+      return;
+    }
     if (!canEditBox()) return;
     if (e.button != null && e.button !== 0) return;
     const stage = e.currentTarget || document.getElementById("xray-stage");
@@ -782,6 +897,11 @@ export async function renderReviewPage({ target }) {
     const stage = e.currentTarget || document.getElementById("xray-stage");
     if (!stage) return;
     const pct = eventToPct(e, stage);
+    if (boxDrag?.mode === "measure" && measureLine) {
+      measureLine = { ...measureLine, x2: pct.x, y2: pct.y };
+      paintMeasure(stage, measureLine);
+      return;
+    }
     if (!boxDrag) {
       if (!canEditBox()) return;
       const f = (localCase.findings || [])[selectedIndex];
@@ -794,10 +914,10 @@ export async function renderReviewPage({ target }) {
   function commitDrawnBox(stage, bbox) {
     if (!stage || !bbox) return;
     stage.querySelector("[data-draw-box]")?.remove();
-    let node = stage.querySelector("[data-bbox]");
+    let node = stage.querySelector("[data-bbox='selected']");
     if (!node) {
       node = document.createElement("div");
-      node.setAttribute("data-bbox", "1");
+      node.setAttribute("data-bbox", "selected");
       node.className = "pointer-events-none absolute border-2 border-yellow-300 bg-yellow-300/25";
       stage.appendChild(node);
     }
@@ -820,6 +940,16 @@ export async function renderReviewPage({ target }) {
   }
 
   function onFilmPointerUp(e) {
+    if (boxDrag?.mode === "measure") {
+      const stage = e.currentTarget || document.getElementById("xray-stage");
+      if (stage && measureLine) {
+        const pct = eventToPct(e, stage);
+        measureLine = { ...measureLine, x2: pct.x, y2: pct.y };
+      }
+      boxDrag = null;
+      render();
+      return;
+    }
     if (!boxDrag) return;
     const stage = e.currentTarget || document.getElementById("xray-stage");
     if (!stage) return;
@@ -869,6 +999,7 @@ export async function renderReviewPage({ target }) {
     };
     remarksDraft = localCase.remarks || fallback.remarks || "";
     remarksDirty = false;
+    reportDirty = false;
   }
 
   function findingsForSave(list, { includeDraft = false } = {}) {
@@ -885,7 +1016,6 @@ export async function renderReviewPage({ target }) {
   }
 
   function persistClinicianEdits({ includeDraft = false } = {}) {
-    clearTimeout(saveTimer);
     const run = async () => {
       if (signal.aborted || leaving) return;
       hintMongo("Saving to MongoDB…");
@@ -1100,6 +1230,7 @@ export async function renderReviewPage({ target }) {
     const generating = isGenerating(localCase);
     const awaitingAi = isAwaitingAi(localCase);
     const showProvenance = canEditReport(state.user) && localCase.status !== "finalized";
+    const showConfidence = canEditReport(state.user);
     const edit = !generating && canEditReport(state.user) && localCase.status !== "finalized";
     const canRemark = !generating && canEditReport(state.user);
     const canFlag = canEditReport(state.user);
@@ -1134,11 +1265,13 @@ export async function renderReviewPage({ target }) {
           el("div", { class: "flex flex-col items-end gap-2" },
             showProvenance && isManualFinding(f)
               ? el("b", { class: "rounded-full bg-slate-100 px-3 py-0.5 text-sm text-slate-600" }, "Manual")
-              : el("b", {
+              : showConfidence
+              ? el("b", {
                   class: "rounded-full bg-blue-50 px-3 py-0.5 text-ha-blue text-sm",
                   title: confidenceTitle(f),
-                }, `${Math.round((f.confidence ?? 0) * 100)}%`),
-            f.status === "accepted" && el("b", { class: "rounded-full bg-green-50 px-3 py-0.5 text-sm text-green-700" }, "Accepted"),
+                }, `${Math.round((f.confidence ?? 0) * 100)}%`)
+              : null,
+            showConfidence && f.status === "accepted" && el("b", { class: "rounded-full bg-green-50 px-3 py-0.5 text-sm text-green-700" }, "Accepted"),
             edit && isManualFinding(f) && el("button", {
               id: "delete-manual-finding",
               class: "rounded-lg border border-red-200 px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-50",
@@ -1148,7 +1281,7 @@ export async function renderReviewPage({ target }) {
         ),
         edit && el("p", { class: "mt-2 text-xs text-slate-500", dataset: { bboxHint: "1" } },
           hasBbox(f)
-            ? "Drag the yellow box to move it, a corner to resize, or elsewhere on the film to redraw."
+            ? `Drag the ${filmBoxColor(index, visible.filter(hasBbox).length).name} box to move it, a corner to resize, or elsewhere on the film to redraw.`
             : "Drag on the X-ray to draw a box for this finding."
         ),
         edit && isNew && el("p", { class: "mt-2 text-xs text-slate-400" },
@@ -1244,6 +1377,12 @@ export async function renderReviewPage({ target }) {
                 el("span", {
                   class: `mt-0.5 w-5 shrink-0 text-sm font-bold ${selected ? "text-ha-blue" : "text-slate-400"}`,
                 }, `${i + 1}.`),
+                items.filter(hasBbox).length > 1 && hasBbox(f)
+                  ? el("span", {
+                      class: `mt-1 h-2.5 w-2.5 shrink-0 rounded-sm ${filmBoxColor(i, items.filter(hasBbox).length).chip}`,
+                      title: filmBoxColor(i, items.filter(hasBbox).length).name,
+                    })
+                  : null,
                 el("span", { class: "min-w-0 flex-1" },
                   el("span", { class: "flex items-start justify-between gap-2" },
                     el("span", { class: "font-semibold text-slate-900" }, f.label || "Finding"),
@@ -1255,7 +1394,7 @@ export async function renderReviewPage({ target }) {
                         ? null
                         : el("b", { class: "rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-ha-blue" },
                             `${Math.round((f.confidence ?? 0) * 100)}%`),
-                      f.status === "accepted" && el("b", {
+                      showConfidence && f.status === "accepted" && el("b", {
                         class: "rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-semibold text-green-700",
                       }, "Accepted")
                     )
@@ -1303,8 +1442,8 @@ export async function renderReviewPage({ target }) {
           el("p", { class: "mt-1 text-sm text-slate-700" },
             "Modality: ", el("b", {}, "XRAY"),
             " · Procedure: ", el("b", {}, "Chest"),
-            localCase.createdAt
-              ? el("span", {}, " · Registered: ", new Date(localCase.createdAt).toLocaleString())
+            (localCase.registeredAt || localCase.imageId)
+              ? el("span", {}, " · Registered: ", new Date(localCase.registeredAt || localCase.createdAt).toLocaleString())
               : null
           ),
           el("p", { class: "mt-1 text-sm text-slate-500" },
@@ -1391,61 +1530,94 @@ export async function renderReviewPage({ target }) {
               el("b", {}, "Chest X-Ray"),
               el("span", { class: "text-xs text-slate-400" }, _imageSrc ? "· loaded from MongoDB GridFS" : "")
             ),
-            visible.length > 0 && el("button", {
-              id: "toggle-bboxes",
-              type: "button",
-              class: "rounded-lg border border-white/20 bg-white/10 px-2.5 py-1 text-xs font-semibold text-white hover:bg-white/20",
-              onClick: () => { showBoxes = !showBoxes; render(); },
-            }, showBoxes ? "Hide boxes" : "Show boxes")
+            el("div", { class: "flex flex-wrap gap-1" },
+              el("button", {
+                type: "button",
+                class: "rounded-lg border border-white/20 bg-white/10 px-2.5 py-1 text-xs font-semibold text-white hover:bg-white/20",
+                onClick: () => { zoom = Math.min(4, +(zoom + 0.25).toFixed(2)); render(); },
+              }, "Zoom in"),
+              el("button", {
+                type: "button",
+                class: "rounded-lg border border-white/20 bg-white/10 px-2.5 py-1 text-xs font-semibold text-white hover:bg-white/20",
+                onClick: () => { zoom = Math.max(1, +(zoom - 0.25).toFixed(2)); render(); },
+              }, "Zoom out"),
+              el("button", {
+                type: "button",
+                class: `rounded-lg border px-2.5 py-1 text-xs font-semibold ${filmTool === "measure" ? "border-cyan-300 bg-cyan-700 text-white" : "border-white/20 bg-white/10 text-white hover:bg-white/20"}`,
+                onClick: () => { filmTool = filmTool === "measure" ? "box" : "measure"; render(); },
+              }, filmTool === "measure" ? "Measuring" : "Measure"),
+              visible.length > 0 && el("button", {
+                id: "toggle-bboxes",
+                type: "button",
+                class: "rounded-lg border border-white/20 bg-white/10 px-2.5 py-1 text-xs font-semibold text-white hover:bg-white/20",
+                onClick: () => { showBoxes = !showBoxes; render(); },
+              }, showBoxes ? "Hide boxes" : "Show boxes")
+            )
           ),
-          el("div", { class: "mt-3 flex justify-center rounded-xl bg-gradient-to-b from-slate-500 to-slate-900" },
+          el("div", { class: "mt-3 max-h-[560px] overflow-auto rounded-xl bg-gradient-to-b from-slate-500 to-slate-900" },
             el("div", {
               id: "xray-stage",
-              class: `relative inline-block max-w-full touch-none ${canEditBox() ? "cursor-crosshair" : ""}`,
+              class: `relative touch-none ${filmTool === "measure" || canEditBox() ? "cursor-crosshair" : ""}`,
+              style: { width: `${Math.round(zoom * 100)}%` },
               onPointerdown: onFilmPointerDown,
               onPointermove: onFilmPointerMove,
               onPointerup: onFilmPointerUp,
               onPointercancel: onFilmPointerUp,
+              onWheel: onFilmWheel,
             },
               _imageSrc
-                ? el("img", { src: _imageSrc, class: "pointer-events-none block max-h-[560px] max-w-full h-auto w-auto", alt: "Chest X-ray" })
+                ? el("img", { id: "xray-film", src: _imageSrc, class: "pointer-events-none block h-auto w-full", alt: "Chest X-ray" })
                 : el("div", { class: "pointer-events-none flex h-[320px] w-full min-w-[240px] items-center justify-center text-slate-300 text-sm" }, localCase.imageId ? "Loading image…" : "No image"),
-              (() => {
-                const active = visible[selectedIndex];
-                if (!showBoxes || !hasBbox(active)) return null;
-                return el("div", {
-                  class: "pointer-events-none absolute border-2 border-yellow-300 bg-yellow-300/25",
-                  dataset: { bbox: "1" },
-                  style: {
-                    left: active.bbox[0] + "%",
-                    top: active.bbox[1] + "%",
-                    width: active.bbox[2] + "%",
-                    height: active.bbox[3] + "%",
+              measureLine && measureOverlay(measureLine),
+              ...(() => {
+                if (!showBoxes) return [];
+                const boxed = visible.filter(hasBbox);
+                const ordered = visible
+                  .map((finding, index) => ({ finding, index }))
+                  .filter(({ finding }) => hasBbox(finding))
+                  .sort((a, b) => Number(a.index === selectedIndex) - Number(b.index === selectedIndex));
+                return ordered.map(({ finding, index }) => {
+                  const color = filmBoxColor(index, boxed.length);
+                  const selected = index === selectedIndex;
+                  return el("div", {
+                    class: `pointer-events-none absolute border-2 ${color.border} ${color.fill} ${selected ? "z-10 border-[3px]" : "opacity-80"}`,
+                    dataset: { bbox: selected ? "selected" : "peer" },
+                    style: {
+                      left: finding.bbox[0] + "%",
+                      top: finding.bbox[1] + "%",
+                      width: finding.bbox[2] + "%",
+                      height: finding.bbox[3] + "%",
+                    },
+                    title: finding.label,
                   },
-                  title: active.label,
-                },
-                  el("span", {
-                    class: "absolute -top-5 left-0 bg-black px-1 text-xs text-white",
-                    dataset: { bboxLabel: "1" },
-                  }, `F${selectedIndex + 1}`),
-                  canEditBox() && ["nw", "ne", "sw", "se"].map((h) =>
                     el("span", {
-                      class: "absolute h-2.5 w-2.5 rounded-sm border border-yellow-200 bg-yellow-300",
-                      style: {
-                        left: h.includes("w") ? "-5px" : "auto",
-                        right: h.includes("e") ? "-5px" : "auto",
-                        top: h.includes("n") ? "-5px" : "auto",
-                        bottom: h.includes("s") ? "-5px" : "auto",
-                      },
-                    })
-                  )
-                );
+                      class: `absolute -top-5 left-0 px-1 text-xs font-bold text-black ${color.chip}`,
+                      dataset: { bboxLabel: "1" },
+                    }, `F${index + 1}`),
+                    selected && canEditBox() && ["nw", "ne", "sw", "se"].map((h) =>
+                      el("span", {
+                        class: `absolute h-2.5 w-2.5 rounded-sm border ${color.handle}`,
+                        style: {
+                          left: h.includes("w") ? "-5px" : "auto",
+                          right: h.includes("e") ? "-5px" : "auto",
+                          top: h.includes("n") ? "-5px" : "auto",
+                          bottom: h.includes("s") ? "-5px" : "auto",
+                        },
+                      })
+                    )
+                  );
+                });
               })()
             )
           ),
-          canEditBox() && el("p", { class: "mt-2 text-center text-xs text-slate-400" },
+          el("p", { class: "mt-2 text-center text-xs text-slate-300" },
+            filmTool === "measure"
+              ? (measureLine ? measureText(measureLine) : "Drag a line across the lesion. Centimetres use the DICOM pixel spacing.")
+              : `Zoom ${Math.round(zoom * 100)}%. Scroll the film to move around.`
+          ),
+          canEditBox() && filmTool !== "measure" && el("p", { class: "mt-1 text-center text-xs text-slate-400" },
             hasBbox((localCase.findings || [])[selectedIndex])
-              ? "Drag the box to move it, a corner to resize, or elsewhere to redraw."
+              ? `Drag the ${filmBoxColor(selectedIndex, visible.filter(hasBbox).length).name} box to move it, a corner to resize, or elsewhere to redraw.`
               : "Drag on the film to draw this finding's box."
           )
         ),
@@ -1485,12 +1657,12 @@ export async function renderReviewPage({ target }) {
               placeholder: localCase.status === "finalized"
                 ? "Notes stay on this case. They are not added to the finalized report…"
                 : "Notes or extra findings to add to the report…",
-              onInput: (e) => { remarksDraft = e.target.value; remarksDirty = true; queueReportSync(); },
+              onInput: (e) => { remarksDraft = e.target.value; remarksDirty = true; markUnsaved(); },
             }, remarksDraft),
             el("p", { class: "mt-2 text-xs text-slate-500" },
               localCase.status === "finalized"
                 ? "This case is finalized. Remarks are saved as notes only and are not written into the report, Word, or PDF."
-                : "Edits are written back to MongoDB (reportText on this case). Word and PDF always use that saved copy."
+                : "Nothing is written until you press Save draft or Save remarks."
             ),
             canRemark && el("p", { id: "mongo-report-status", class: "mt-1 text-xs font-medium text-ha-blue" })
           ),
@@ -1500,21 +1672,52 @@ export async function renderReviewPage({ target }) {
               "Shown while editing. The signed report the doctor sees has no source tags."
             ),
             el("ul", { class: "mt-3 space-y-2 text-sm" },
-              ...(localCase.editLog || []).slice(-12).reverse().map((row) =>
-                el("li", { class: "flex gap-2 border-b border-slate-100 pb-2 last:border-0" },
-                  el("b", {
-                    class: row.kind === "ai"
-                      ? "rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-semibold uppercase text-ha-blue"
-                      : "rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-semibold uppercase text-slate-700",
-                  }, row.kind === "ai" ? "AI" : "Manual"),
-                  el("span", { class: "min-w-0 text-slate-700" },
-                    row.summary || "",
-                    el("span", { class: "mt-0.5 block text-xs text-slate-400" },
-                      [row.userName, row.at && new Date(row.at).toLocaleString()].filter(Boolean).join(" · ")
+              ...(localCase.editLog || []).slice(-12).reverse().map((row, index) => {
+                const key = String(row._id || row.at || index);
+                const open = openLogKey === key;
+                const changes = Array.isArray(row.changes) ? row.changes : [];
+                return el("li", { class: "border-b border-slate-100 pb-2 last:border-0" },
+                  el("button", {
+                    type: "button",
+                    class: "flex w-full gap-2 text-left",
+                    onClick: () => {
+                      openLogKey = open ? "" : key;
+                      render();
+                    },
+                  },
+                    el("b", {
+                      class: row.kind === "ai"
+                        ? "rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-semibold uppercase text-ha-blue"
+                        : "rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-semibold uppercase text-slate-700",
+                    }, row.kind === "ai" ? "AI" : "Manual"),
+                    el("span", { class: "min-w-0 text-slate-700" },
+                      row.summary || "",
+                      el("span", { class: "mt-0.5 block text-xs text-slate-400" },
+                        [row.userName, row.at && new Date(row.at).toLocaleString(), open ? "Hide detail" : "Show what changed"].filter(Boolean).join(" · ")
+                      )
                     )
+                  ),
+                  open && el("div", { class: "mt-2 space-y-1 pl-2 text-xs" },
+                    changes.length
+                      ? changes.map((change) => {
+                          const title = change.action === "added" ? "Added" : change.action === "removed" ? "Removed" : "Edited";
+                          const tone = change.action === "added"
+                            ? "text-green-800"
+                            : change.action === "removed"
+                              ? "text-red-800"
+                              : "text-slate-800";
+                          const body = change.action === "edited"
+                            ? `${change.before || "—"} → ${change.after || "—"}`
+                            : (change.after || change.before || "");
+                          return el("p", { class: tone },
+                            el("b", {}, `${title}${change.label ? ` · ${change.label}` : ""}: `),
+                            body
+                          );
+                        })
+                      : el("p", { class: "text-slate-500" }, "This entry has no line-by-line detail.")
                   )
-                )
-              )
+                );
+              })
             )
           )
         )

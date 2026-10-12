@@ -90,7 +90,6 @@ function sidebar() {
     { page: "monitor", icon: "activity", label: "Sepsis Monitor" },
     ...(isTechnician(state.user) || roleOf(state.user) === "radiologist" ? [] : [
       { page: "labs", icon: "file-text", label: "Lab Orders & Results" },
-      { page: "meds", icon: "list", label: "Medication Chart" },
     ]),
     { page: "notes", icon: "edit", label: "Nursing / Care Notes" },
   ];
@@ -127,15 +126,15 @@ export function Shell({ onLogout }) {
   watchRequests();
   const user = state.user || {};
   const main = el("div", { class: "min-w-0 flex-1 overflow-auto" });
-  const root = el("div", { class: "flex min-h-screen flex-col bg-ha-bg font-sans text-sm text-slate-900" },
-    el("header", { class: "z-10 flex flex-wrap items-center justify-between gap-2 border-b-4 border-ha-light-blue bg-ha-blue p-2 text-white shadow-md" },
+  const root = el("div", { class: "flex min-h-screen flex-col bg-gray-200 font-sans text-sm text-slate-900" },
+    el("header", { class: "z-10 flex flex-wrap items-center justify-between gap-2 border-b-4 border-[#d9d3bc] bg-ha-paper p-2 text-stone-900 shadow-md" },
       el("div", { class: "flex min-w-0 items-center gap-2" },
         svgIcon("activity", { size: 20, class: "shrink-0" }),
         el("h1", { class: "truncate text-sm font-bold tracking-wide sm:text-lg" },
           "Clinical Management System ",
           el("span", { class: "hidden lg:inline" }, "· RadAssist")
         ),
-        el("span", { class: "ml-2 hidden rounded bg-white px-2 py-0.5 text-xs font-bold text-ha-blue sm:inline" }, "INPATIENT")
+        el("span", { class: "ml-2 hidden rounded border border-[#d9d3bc] bg-white px-2 py-0.5 text-xs font-bold text-stone-800 sm:inline" }, "INPATIENT")
       ),
       el("div", { class: "flex items-center gap-2 text-xs sm:gap-4 sm:pr-2" },
         el("span", { class: "hidden xl:inline" }, `User: ${user.name || "—"}`),
@@ -144,7 +143,7 @@ export function Shell({ onLogout }) {
         el("span", { class: "hidden xl:inline" }, "Workstation: Demo radiology"),
         el("button", {
           type: "button",
-          class: "flex items-center gap-1 rounded border border-white/40 bg-white/10 px-2 py-1 font-semibold hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-white/70",
+          class: "flex items-center gap-1 rounded border border-stone-400 bg-white px-2 py-1 font-semibold text-stone-800 hover:bg-[#e4dfcc] focus:outline-none focus:ring-2 focus:ring-stone-300",
           "aria-label": "Sign out",
           onClick: onLogout,
         }, svgIcon("log-out", { size: 13 }), el("span", { class: "hidden sm:inline" }, "Sign out"))

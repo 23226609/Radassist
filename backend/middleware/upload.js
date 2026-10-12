@@ -6,10 +6,14 @@ const multer = require('multer');
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
+  limits: { fileSize: 64 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (!/^image\/(jpe?g|png|webp)$/i.test(file.mimetype)) {
-      return cb(new Error('Only JPEG, PNG, or WebP images are allowed'));
+    const type = String(file.mimetype || '').toLowerCase();
+    const name = String(file.originalname || '');
+    const raster = /^image\/(jpe?g|png|webp)$/i.test(type);
+    const dicom = /\.dcm$/i.test(name) || type === 'application/dicom';
+    if (!raster && !dicom) {
+      return cb(new Error('Only DICOM, JPEG, PNG, or WebP films are allowed'));
     }
     cb(null, true);
   },

@@ -9,6 +9,8 @@ const ApiError = require('../utils/ApiError');
 const catchAsync = require('../utils/catchAsync');
 const addAuditLog = require('../utils/auditLogger');
 const { analyzeXray } = require('../utils/aiService');
+const { prepareFilm } = require('../utils/dicom');
+const { buildEditChanges } = require('../utils/editDiff');
 const azureFindings = require('../utils/azureFindings');
 const { mergeFindingsFromReport, dedupeFindings } = require('../utils/findingsMerge');
 const { bucket, downloadImage } = require('./_gridfs');
@@ -143,12 +145,19 @@ exports.createCase = catchAsync(async (req, res, next) => {
     return next(ApiError.badRequest('First name and last name are required.'));
   }
 
-  const up = bucket().openUploadStream(req.file.originalname, {
-    contentType: req.file.mimetype,
-    metadata: { patientId, uploader: req.user.userId },
+  let film;
+  try {
+    film = prepareFilm(req.file);
+  } catch (err) {
+    return next(ApiError.badRequest(err.message || 'Could not read that DICOM file.'));
+  }
+
+  const up = bucket().openUploadStream(film.filename, {
+    contentType: film.contentType,
+    metadata: { patientId, uploader: req.user.userId, sourceFilename: req.file.originalname },
   });
   await new Promise((resolve, reject) => {
-    up.end(req.file.buffer, (err) => (err ? reject(err) : resolve()));
+    up.end(film.buffer, (err) => (err ? reject(err) : resolve()));
   });
   const imageId = up.id;
 
@@ -160,13 +169,15 @@ exports.createCase = catchAsync(async (req, res, next) => {
     const open = await Case.findOne({ caseId: requestCaseId, status: 'requested' });
     if (!open) return next(ApiError.badRequest('That X-ray request is not open.'));
     open.imageId = imageId;
-    open.imageFilename = req.file.originalname;
-    open.imageContentType = req.file.mimetype;
-    open.imageSize = req.file.size;
+    open.registeredAt = new Date();
+    if (Array.isArray(film.pixelSpacingMm)) open.pixelSpacingMm = film.pixelSpacingMm;
+    open.imageFilename = film.filename;
+    open.imageContentType = film.contentType;
+    open.imageSize = film.size;
     open.createdBy = userId;
     open.createdByName = userName;
     if (history) open.history = history;
-    await queueAnalysis(open, userId, req.file.buffer);
+    await queueAnalysis(open, userId, film.buffer);
     await addAuditLog(userId, 'CASE_CREATED', `Registered film for request ${open.caseId}`, open.caseId, null, 'pending');
     return res.status(201).json({
       success: true,
@@ -207,10 +218,12 @@ exports.createCase = catchAsync(async (req, res, next) => {
     editLog: [],
     createdBy: userId,
     createdByName: userName,
+    registeredAt: new Date(),
+    pixelSpacingMm: Array.isArray(film.pixelSpacingMm) ? film.pixelSpacingMm : undefined,
     imageId,
-    imageFilename: req.file.originalname,
-    imageContentType: req.file.mimetype,
-    imageSize: req.file.size,
+    imageFilename: film.filename,
+    imageContentType: film.contentType,
+    imageSize: film.size,
     aiProvider: '',
     aiModel: '',
   });
@@ -223,7 +236,7 @@ exports.createCase = catchAsync(async (req, res, next) => {
     null,
     'pending'
   );
-  await queueAnalysis(doc, userId, req.file.buffer);
+  await queueAnalysis(doc, userId, film.buffer);
 
   res.status(201).json({
     success: true,
@@ -260,6 +273,12 @@ exports.requestExam = catchAsync(async (req, res, next) => {
   if (!patient) return next(ApiError.badRequest('Register the patient before requesting an X-ray.'));
   const open = await Case.findOne({ ...OWNED, patientId, status: 'requested' });
   if (open) return next(ApiError.badRequest('This patient already has an open X-ray request.'));
+  let scheduledAt = null;
+  if (req.body?.scheduledAt) {
+    const booked = new Date(req.body.scheduledAt);
+    if (Number.isNaN(booked.getTime())) return next(ApiError.badRequest('Choose a valid day on the calendar.'));
+    scheduledAt = booked;
+  }
 
   const doc = await Case.create({
     caseId: newCaseId(),
@@ -277,6 +296,7 @@ exports.requestExam = catchAsync(async (req, res, next) => {
     reportText: '',
     findings: [],
     editLog: [],
+    scheduledAt,
     requestedBy: req.user.userId,
     requestedByName: req.user.name,
     createdBy: req.user.userId,
@@ -466,8 +486,11 @@ exports.updateCase = catchAsync(async (req, res, next) => {
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
 
   const oldStatus = c.status;
-  const prevReport = c.reportText;
-  const prevFindings = JSON.stringify(c.findings || []);
+  const prevSnapshot = {
+    reportText: c.reportText,
+    remarks: c.remarks,
+    findings: (c.findings || []).map((row) => (row.toObject ? row.toObject() : { ...row })),
+  };
   const { diagnosis, reportText, findings, remarks, urgent } = req.body || {};
   if (c.analysisState === 'running' && (diagnosis !== undefined || reportText !== undefined || Array.isArray(findings))) {
     return next(ApiError.badRequest('The report is still generating.'));
@@ -482,18 +505,18 @@ exports.updateCase = catchAsync(async (req, res, next) => {
     if (reportText !== undefined) c.reportText = reportText;
     if (remarks !== undefined) c.remarks = remarks;
     if (Array.isArray(findings)) c.findings = sanitizeFindings(findings);
-    const reportChanged = reportText !== undefined && reportText !== prevReport;
-    const findingsChanged = Array.isArray(findings) && JSON.stringify(c.findings || []) !== prevFindings;
-    if (reportChanged || findingsChanged) {
+    const diff = buildEditChanges(prevSnapshot, {
+      reportText: c.reportText,
+      remarks: c.remarks,
+      findings: (c.findings || []).map((row) => (row.toObject ? row.toObject() : { ...row })),
+    });
+    if (diff.changes.length) {
       pushEditLog(c, {
         userId: req.user.userId,
         userName: req.user.name,
         kind: 'manual',
-        summary: reportChanged && findingsChanged
-          ? 'Radiologist edited the report text and findings.'
-          : reportChanged
-            ? 'Radiologist edited the report text.'
-            : 'Radiologist edited findings.',
+        summary: diff.summary,
+        changes: diff.changes,
       });
     }
   }

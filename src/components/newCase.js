@@ -59,8 +59,14 @@ export async function renderNewCasePage({ target }) {
     render();
   }
 
+  function isDicomFile(file) {
+    if (!file) return false;
+    return /\.dcm$/i.test(file.name || "") || /dicom/i.test(file.type || "");
+  }
+
   function isXrayFile(file) {
     if (!file) return false;
+    if (isDicomFile(file)) return true;
     const type = String(file.type || "").toLowerCase();
     if (type.startsWith("image/")) return true;
     return /\.(png|jpe?g|webp)$/i.test(file.name || "");
@@ -69,11 +75,11 @@ export async function renderNewCasePage({ target }) {
   function acceptFile(file) {
     if (!file) return;
     if (!isXrayFile(file)) {
-      toast("Please drop a PNG, JPG, JPEG, or WebP image.");
+      toast("Please drop a DICOM, PNG, JPG, JPEG, or WebP film.");
       return;
     }
     if (preview) URL.revokeObjectURL(preview);
-    preview = URL.createObjectURL(file);
+    preview = isDicomFile(file) ? "" : URL.createObjectURL(file);
     state.selectedFile = file;
     render();
   }
@@ -302,20 +308,24 @@ export async function renderNewCasePage({ target }) {
           onDrop,
         },
           svgIcon("image", { size: 32, class: "text-ha-blue" }),
-          el("b", { class: "mt-2" }, state.selectedFile ? state.selectedFile.name : "Drag an X-ray here, or choose PNG, JPG, JPEG, or WebP"),
+          el("b", { class: "mt-2" }, state.selectedFile ? state.selectedFile.name : "Drag an X-ray here, or choose DICOM, PNG, JPG, JPEG, or WebP"),
           el("span", { class: "text-xs text-slate-500 mt-1" },
             state.selectedFile
               ? "Remove the film below if you want a different image, or drop another file to replace it."
-              : "PNG, JPG, JPEG, or WebP · stored with the case · AI is started by the radiologist"
+              : "DICOM, PNG, JPG, JPEG, or WebP. A DICOM film is rendered before CURV sees it."
           ),
-          el("input", { type: "file", accept: ".png,.jpg,.jpeg,.webp,image/*", class: "hidden", onChange: onPickFile })
+          el("input", { type: "file", accept: ".dcm,.png,.jpg,.jpeg,.webp,image/*,application/dicom", class: "hidden", onChange: onPickFile })
         ),
-        preview
+        state.selectedFile
           ? el("div", { class: "mt-3 flex items-center gap-3" },
-              isTechnician(state.user) ? null : el("img", { src: preview, class: "h-28 rounded-lg grayscale" }),
+              preview && !isTechnician(state.user) ? el("img", { src: preview, class: "h-28 rounded-lg grayscale" }) : null,
               el("div", { class: "min-w-0 flex-1" },
                 el("p", { class: "truncate text-sm font-medium text-slate-800" }, state.selectedFile?.name || "Selected film"),
-                el("p", { class: "text-sm text-slate-500" }, "Preview only. The original file is stored when you upload.")
+                el("p", { class: "text-sm text-slate-500" },
+                  preview
+                    ? "Preview only. The original file is stored when you upload."
+                    : "DICOM selected. The pixels are rendered to a viewable film when you save, and that film is what CURV reads."
+                )
               ),
               el("button", {
                 type: "button",

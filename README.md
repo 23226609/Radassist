@@ -65,7 +65,7 @@ The UI is **not React**. Pages are plain modules that build DOM with `src/dom.js
 | See requested cases (no film, no report) | yes | on the work list | yes | yes |
 | Save the film on a request | yes | no | no | yes |
 | See draft / pending-approve cases and films | no | yes | no | yes |
-| Order labs / prescribe on the chart | no | no | yes | yes |
+| Order labs on the chart | no | no | yes | yes |
 | Edit the rest of the patient chart | yes | yes | no | yes |
 | Edit findings, re-run AI, endorse | no | yes | no | yes |
 | Mark or remove **Urgent** | no | yes | no | yes |
@@ -75,7 +75,7 @@ The UI is **not React**. Pages are plain modules that build DOM with `src/dom.js
 | Add, enable, disable, or delete users | no | no | no | yes |
 | Delete cases, patients, audit rows | no | no | no | yes |
 
-Lab Orders and the Medication Chart are hidden from technicians and radiologists. The audit log is admin-only. Legacy `nurse` accounts are treated as **technician**.
+Lab Orders are hidden from technicians and radiologists. The medication chart is not part of this system. The audit log is admin-only. Legacy `nurse` accounts are treated as **technician**.
 
 Public `POST /api/auth/register` exists for demo signup. Treat that as demo-only.
 
@@ -149,7 +149,7 @@ Press `/` on list pages to focus search.
 
 **Patient Master** lists patients. **New patient** (technician, radiologist, admin) is a demo shortcut: required first name, last name, age, and sex. Middle name and patient ID are optional. Empty ID → next `PT-{year}-{nnnn}`.
 
-The chart shows prior medicines, heart rate, and lab results, plus Sepsis Monitor, labs, eMAR, and care notes where that role can open them. A referring doctor can order labs and prescribe. A technician or radiologist cannot.
+The chart shows prior medicines, heart rate, and lab results, plus Sepsis Monitor, labs, and care notes where that role can open them. A referring doctor can order labs. A technician or radiologist cannot.
 
 ### 3. Doctor: request the exam
 
@@ -164,10 +164,11 @@ Saving the film posts `FormData` to `POST /api/cases` with `requestCaseId`. The 
 Backend:
 
 1. Require the image and an open request (or, for a direct admin upload, patient identity).
-2. Stream the file into GridFS.
-3. Set `analysisState: running` and return immediately.
-4. In the background, resize the whole frame to the CURV pixel budget, call the middleware, then set `pending_approve` on success. The review page keeps the original film.
-5. Write `CASE_CREATED` / `AI_ANALYZED` as appropriate.
+2. A DICOM (`.dcm`) film is rendered to a PNG first. CURV cannot read the DICOM container. Uncompressed grayscale or RGB films are accepted; compressed DICOM needs to be exported as an uncompressed film or a PNG.
+3. Stream that film into GridFS.
+4. Set `analysisState: running` and return immediately.
+5. In the background, resize the whole frame to the CURV pixel budget, call the middleware, then set `pending_approve` on success. The review page shows that rendered film.
+6. Write `CASE_CREATED` / `AI_ANALYZED` as appropriate.
 
 ### 5. Radiologist: work list and endorse
 
@@ -233,7 +234,7 @@ Filterable log of logins, case and patient mutations, AI runs, endorsements, del
 | `dashboard` | `dashboard.js` | RIS-style X-ray work list / examination enquiry |
 | `requests` | `cases.js` | Technician requested-case queue |
 | `patients` / `patient` / `new-patient` | `patients.js`, `newPatient.js` | Patient Master and exam request |
-| `monitor` / `labs` / `meds` / `notes` | `clinical.js` | Sepsis, labs, eMAR, care notes |
+| `monitor` / `labs` / `notes` | `clinical.js` | Sepsis, labs, care notes |
 | `cases` / `case` | `cases.js` | Study records |
 | `new` | `newCase.js` | Save the film for a request (starts CURV) |
 | `review` | `review.js` | Film, draft, re-run AI, endorse |
@@ -309,7 +310,7 @@ The Express process is **plain `node server.js`** unless you use `npm run dev` (
 1. `mlx_vlm.server --model ~/CURV-mlx --port 8080`
 2. `uvicorn middleware:app --port 8001` from this repo
 
-`backend/utils/aiService.js` posts the image to `POST {AI_BASE_URL}/analyze`. The middleware resizes the **whole frame** (no crop) to the CURV preprocessor budget (`max_pixels` 50176, about 224×224) and sends the official CURV conversation from `CURV-main`: the system prompt in `training/prompts/prompt_cxr.txt`, the user line “Please analyze this chest X-ray image and generate a detailed radiology report following the specified format.”, and that resized film. Patient age, sex, and history stay on the chart. CURV answers with `<findings>`, `<thinking>`, and `<impression>`. Those are saved as Findings, Thinking, and Impression. The review page parses finding cards from the Findings section and still displays the original image.
+`backend/utils/aiService.js` posts the image to `POST {AI_BASE_URL}/analyze`. A `.dcm` upload is rendered to PNG before that call, and the middleware can render a DICOM file itself if one is posted directly. The middleware resizes the **whole frame** (no crop) to the CURV preprocessor budget (`max_pixels` 50176, about 224×224) and sends the official CURV conversation from `CURV-main`: the system prompt in `training/prompts/prompt_cxr.txt`, the user line “Please analyze this chest X-ray image and generate a detailed radiology report following the specified format.”, and that resized film. Patient age, sex, and history stay on the chart. CURV answers with `<findings>`, `<thinking>`, and `<impression>`. Those are saved as Findings, Thinking, and Impression. The review page parses finding cards from the Findings section and still displays the original image.
 
 Calling the model with an image and no user text makes this checkpoint say it cannot see an image. The official prompt is required.
 
@@ -418,7 +419,7 @@ Dry-run by default; pass `--apply` to write.
 1. Start backend, Vite, and `start_server.sh` before the session. Confirm `/api/health` says `mongo: "up"` and `:8001/health` is OK. Wait until the model has finished loading.
 2. Restart Express after any backend edit (`node server.js` does not hot-reload). Restart `start_server.sh` after any `middleware.py` edit.
 3. Walk: doctor **Request chest X-ray** → technician **Requested case** → save the film (draft generates on its own) → radiologist work list moves from **Generating** to **Pending approve** → edit a card → **Endorse report** → doctor login reads the clean report → Share copies a public link.
-4. Show Patient Master, an X-ray request on the chart, and Sepsis / labs / eMAR / notes for a doctor. Show that a technician and a radiologist do not have labs, medicines, or the audit log.
+4. Show Patient Master, an X-ray request on the chart, and Sepsis / labs / notes for a doctor. Show that a technician and a radiologist do not have labs or the audit log.
 5. Show admin **Users** (add by email, temporary password once) and bulk-delete on a throwaway row, not on the last demo case.
 
 ### Product / clinical
