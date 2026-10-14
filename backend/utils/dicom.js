@@ -3,8 +3,10 @@
 
 const { PNG } = require('pngjs');
 const dcmjs = require('dcmjs');
+const { shrinkForDisplay } = require('./displayFilm');
 
 const COMPRESSED = /^1\.2\.840\.10008\.1\.2\.[45]/;
+const MAX_EDGE = 1600;
 
 function isDicomBuffer(buffer, filename = '', mimetype = '') {
   if (/\.dcm$/i.test(filename) || /dicom/i.test(mimetype)) return true;
@@ -121,30 +123,50 @@ function pixelSpacingMm(buffer) {
   }
 }
 
+function fittedSize(cols, rows) {
+  const edge = Math.max(cols, rows);
+  if (edge <= MAX_EDGE) return { cols, rows };
+  const scale = MAX_EDGE / edge;
+  return {
+    cols: Math.max(1, Math.round(cols * scale)),
+    rows: Math.max(1, Math.round(rows * scale)),
+  };
+}
+
+function sampleAt(values, channels, cols, rows, x, y, channel) {
+  const sx = Math.min(cols - 1, Math.max(0, x));
+  const sy = Math.min(rows - 1, Math.max(0, y));
+  return values[(sy * cols + sx) * channels + channel];
+}
+
 function dicomToPng(buffer) {
   const dataset = readDataset(buffer);
   const raw = pixelBytes(dataset.PixelData);
-  const { rows, cols, channels, values } = samples(dataset, raw);
-  const png = new PNG({ width: cols, height: rows });
-  if (channels === 3) {
-    for (let i = 0; i < rows * cols; i += 1) {
-      const o = i * 4;
-      png.data[o] = values[i * 3];
-      png.data[o + 1] = values[i * 3 + 1];
-      png.data[o + 2] = values[i * 3 + 2];
-      png.data[o + 3] = 255;
-    }
-  } else if (channels === 1) {
-    const gray = toGray(dataset, values);
-    for (let i = 0; i < gray.length; i += 1) {
-      const o = i * 4;
-      png.data[o] = gray[i];
-      png.data[o + 1] = gray[i];
-      png.data[o + 2] = gray[i];
-      png.data[o + 3] = 255;
-    }
-  } else {
+  const frame = samples(dataset, raw);
+  const { channels, values } = frame;
+  const fit = fittedSize(frame.cols, frame.rows);
+  const png = new PNG({ width: fit.cols, height: fit.rows, colorType: 6 });
+  if (channels !== 1 && channels !== 3) {
     throw new Error('This DICOM pixel layout is not a chest-film grayscale or RGB image.');
+  }
+  const gray = channels === 1 ? toGray(dataset, values) : null;
+  for (let y = 0; y < fit.rows; y += 1) {
+    const sy = Math.floor(((y + 0.5) * frame.rows) / fit.rows);
+    for (let x = 0; x < fit.cols; x += 1) {
+      const sx = Math.floor(((x + 0.5) * frame.cols) / fit.cols);
+      const o = (y * fit.cols + x) * 4;
+      if (gray) {
+        const g = gray[Math.min(gray.length - 1, sy * frame.cols + sx)];
+        png.data[o] = g;
+        png.data[o + 1] = g;
+        png.data[o + 2] = g;
+      } else {
+        png.data[o] = sampleAt(values, 3, frame.cols, frame.rows, sx, sy, 0);
+        png.data[o + 1] = sampleAt(values, 3, frame.cols, frame.rows, sx, sy, 1);
+        png.data[o + 2] = sampleAt(values, 3, frame.cols, frame.rows, sx, sy, 2);
+      }
+      png.data[o + 3] = 255;
+    }
   }
   return PNG.sync.write(png);
 }
@@ -162,14 +184,30 @@ function prepareFilm(file) {
     };
   }
   const png = dicomToPng(buffer);
-  const base = name.replace(/\.dcm$/i, '') || 'xray';
+  const display = shrinkForDisplay(png, 'image/png');
+  const stored = display.shrunk ? display.buffer : png;
+  const asJpeg = display.shrunk;
+  const base = (name.replace(/\.dcm$/i, '') || 'xray').replace(/\.(png|jpe?g)$/i, '');
+  let spacing = pixelSpacingMm(buffer);
+  if (spacing) {
+    const dataset = readDataset(buffer);
+    const rows = firstNumber(dataset.Rows, 0);
+    const cols = firstNumber(dataset.Columns, 0);
+    const fit = fittedSize(cols, rows);
+    if (fit.cols !== cols || fit.rows !== rows) {
+      spacing = [
+        spacing[0] * (rows / fit.rows),
+        spacing[1] * (cols / fit.cols),
+      ];
+    }
+  }
   return {
-    buffer: png,
-    filename: base.toLowerCase().endsWith('.png') ? base : `${base}.png`,
-    contentType: 'image/png',
-    size: png.length,
-    pixelSpacingMm: pixelSpacingMm(buffer),
+    buffer: stored,
+    filename: `${base}.${asJpeg ? 'jpg' : 'png'}`,
+    contentType: asJpeg ? 'image/jpeg' : 'image/png',
+    size: stored.length,
+    pixelSpacingMm: spacing,
   };
 }
 
-module.exports = { isDicomBuffer, dicomToPng, prepareFilm };
+module.exports = { isDicomBuffer, dicomToPng, prepareFilm, fittedSize };

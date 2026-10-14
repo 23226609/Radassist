@@ -4,7 +4,8 @@ import { createRequire } from "node:module";
 
 const require = createRequire(new URL("../backend/package.json", import.meta.url));
 const { PNG } = require("pngjs");
-const { prepareFilm, dicomToPng } = require("./utils/dicom.js");
+const { prepareFilm, dicomToPng, fittedSize } = require("./utils/dicom.js");
+const { shrinkForDisplay } = require("./utils/displayFilm.js");
 
 const DICOM = Buffer.from(
   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABESUNNAgAAAFVMBADOAAAAAgABAE9CAAACAAAAAAECAAIAVUkaADEuMi44NDAuMTAwMDguNS4xLjQuMS4xLjEAAgADAFVJQAAxLjIuODI2LjAuMS4zNjgwMDQzLjguNDk4Ljg0NTc5MDQ0ODEzMjQzMzQ4Nzg5Mjk0MjUxNTg4NDY0MjA3NzExAgAQAFVJFAAxLjIuODQwLjEwMDA4LjEuMi4xAAIAEgBVSRwAMS4yLjgyNi4wLjEuMzY4MDA0My44LjQ5OC4xAAIAEwBTSA4AUFlESUNPTSAzLjAuMiAIABYAVUkaADEuMi44NDAuMTAwMDguNS4xLjQuMS4xLjEACAAYAFVJQAAxLjIuODI2LjAuMS4zNjgwMDQzLjguNDk4Ljg0NTc5MDQ0ODEzMjQzMzQ4Nzg5Mjk0MjUxNTg4NDY0MjA3NzExCABgAENTAgBDUigAAgBVUwIAAQAoAAQAQ1MMAE1PTk9DSFJPTUUyICgAEABVUwIAAgAoABEAVVMCAAIAKAAAAVVTAgAQACgAAQFVUwIADAAoAAIBVVMCAAsAKAADAVVTAgAAACgAUBBEUwYAMjAwMC4wKABREERTBgA0MDAwLjAoAFIQRFMEADAuMCAoAFMQRFMEADEuMCDgfxAAT1cAAAgAAAAAAOgDuAugDw==",
@@ -35,6 +36,34 @@ test("renders an uncompressed DICOM to a 2x2 PNG", () => {
   assert.equal(image.data[0], 0);
   assert.ok(image.data[4] > 40 && image.data[4] < 90);
   assert.ok(image.data[12] > 250);
+});
+
+test("a large film is stored at most 1600 pixels on the long edge", () => {
+  const fit = fittedSize(3000, 2000);
+  assert.equal(Math.max(fit.cols, fit.rows), 1600);
+  assert.equal(fit.cols, 1600);
+  assert.equal(fit.rows, 1067);
+  assert.deepEqual(fittedSize(2, 2), { cols: 2, rows: 2 });
+});
+
+test("a large film is stored as a smaller jpeg", () => {
+  const { PNG } = require("pngjs");
+  const jpeg = require("jpeg-js");
+  const png = new PNG({ width: 1800, height: 40 });
+  for (let i = 0; i < png.data.length; i += 4) {
+    png.data[i] = i % 255;
+    png.data[i + 1] = i % 255;
+    png.data[i + 2] = i % 255;
+    png.data[i + 3] = 255;
+  }
+  const raw = PNG.sync.write(png);
+  const display = shrinkForDisplay(raw, "image/png");
+  assert.equal(display.shrunk, true);
+  assert.equal(display.contentType, "image/jpeg");
+  assert.ok(display.buffer.length < raw.length);
+  const decoded = jpeg.decode(display.buffer);
+  assert.equal(decoded.width, 1600);
+  assert.ok(display.colScale > 1);
 });
 
 test("prepareFilm stores a png and leaves a jpeg alone", () => {

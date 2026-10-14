@@ -4,7 +4,7 @@ import { el, mount } from "../dom.js";
 import { api } from "../api.js";
 import { state } from "../state.js";
 import { svgIcon } from "./icons.js";
-import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, reportSignOff, withoutThinking } from "../lib/reportExport.js";
+import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, reportSignOff, withoutThinking, normalizeReportShape } from "../lib/reportExport.js";
 import { patientDisplayName, doctorInCharge } from "../lib/tags.js";
 
 function findingDetail(f) {
@@ -122,7 +122,7 @@ export async function renderSharePage({ target }) {
   }
 
   function paint() {
-    const body = withoutThinking(splitReportAndRemarks(stored?.reportText || "").body);
+    const body = withoutThinking(normalizeReportShape(splitReportAndRemarks(stored?.reportText || "").body));
     const findings = (stored?.findings || []).filter((f) => f.status !== "rejected");
     const root = el("main", { class: "mx-auto max-w-5xl px-5 py-8" },
       el("p", { class: "text-xs font-semibold uppercase tracking-wider text-ha-blue" }, "Shared report"),

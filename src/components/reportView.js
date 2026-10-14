@@ -7,7 +7,7 @@ import { el, mount } from "../dom.js";
 import { api } from "../api.js";
 import { state, toast } from "../state.js";
 import { unwrapLegacyReport, resyncMachineFindings } from "./review.js";
-import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, applyRemarksToReport, reportSignOff, withoutThinking } from "../lib/reportExport.js";
+import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, applyRemarksToReport, reportSignOff, withoutThinking, normalizeReportShape } from "../lib/reportExport.js";
 import { svgIcon } from "./icons.js";
 import { canEditReport } from "../lib/roles.js";
 import { isGenerating } from "../lib/caseStatus.js";
@@ -39,7 +39,7 @@ export async function renderReportViewPage({ target }) {
     const data = await api.getCase(caseId);
     stored = unwrapLegacyReport(data.case || data);
     const split = splitReportAndRemarks(stored.reportText || "");
-    draftBody = split.body;
+    draftBody = normalizeReportShape(split.body);
     remarks = (stored.remarks || "").trim() || split.remarks;
     error = "";
   }
@@ -98,16 +98,16 @@ export async function renderReportViewPage({ target }) {
         const updated = await api.updateCase(caseId, next);
         stored = unwrapLegacyReport(updated.case || { ...stored, ...next });
         if (!silent && canEdit()) {
-          hintMongo("Updating finding cards…");
+          hintMongo("Placing film boxes…");
           stored = await resyncMachineFindings(caseId, stored);
         }
         const split = splitReportAndRemarks(stored.reportText || "");
-        if (draftBody === typedBody) draftBody = split.body;
+        if (draftBody === typedBody) draftBody = normalizeReportShape(split.body);
         if (remarks === typedRemarks) remarks = stored.remarks || next.remarks || remarks;
         hintMongo(canEdit() ? "Report saved in MongoDB." : "Notes saved in MongoDB.");
         if (!silent) {
           toast(canEdit()
-            ? "Report saved. Finding cards now match this draft."
+            ? "Report saved. Film boxes now match this draft."
             : "Remarks saved. The finalized report was not changed.");
           notifyOpener();
         }

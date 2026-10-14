@@ -1,6 +1,6 @@
 // scripts/test-report-export.mjs
 import assert from "node:assert";
-import { buildReportSections, buildReportPdfBytes, applyRemarksToReport, splitReportAndRemarks, composeReportText, MANUAL_FINDINGS_HEADING, parseImageMeta, fitImageBox, removeFindingFromReport, applyFindingChangeToReport, withoutThinking } from "../src/lib/reportExport.js";
+import { buildReportSections, buildReportPdfBytes, applyRemarksToReport, splitReportAndRemarks, composeReportText, MANUAL_FINDINGS_HEADING, parseImageMeta, fitImageBox, removeFindingFromReport, applyFindingChangeToReport, withoutThinking, normalizeReportShape } from "../src/lib/reportExport.js";
 
 let passed = 0;
 let failed = 0;
@@ -225,6 +225,35 @@ test("PDF export embeds the uploaded X-ray", () => {
     reportText: "The lungs are clear.",
   }));
   assert.ok(!plain.includes("/DCTDecode"), "text-only PDF should not embed an image");
+});
+
+test("a free-form CURV reply downloads as Findings and Impression", () => {
+  const raw = [
+    "Radiology Report",
+    "Patient ID: PT-2026-0072",
+    "Age: 63",
+    "Sex: Male",
+    "Clinical History",
+    "Fever and productive cough for four days.",
+    "Imaging Findings: Chest X-Ray (PA View)",
+    "1. Lungs:",
+    "- The lungs appear clear.",
+    "Conclusion:",
+    "No acute cardiopulmonary process.",
+    "This report provides a comprehensive analysis based solely on the provided imaging data.",
+  ].join("\n");
+  const body = normalizeReportShape(raw);
+  assert.ok(body.startsWith("Findings:"));
+  assert.ok(body.includes("Impression:"));
+  assert.ok(body.includes("The lungs appear clear."));
+  assert.ok(!body.includes("Radiology Report"));
+  assert.ok(!body.includes("Patient ID"));
+  assert.ok(!body.includes("comprehensive analysis"));
+  const tagged = "Findings:\nThe lungs are clear.\n\nThinking:\nCompared both sides.\n\nImpression:\nNo acute findings.";
+  assert.equal(normalizeReportShape(tagged), tagged);
+  const sections = buildReportSections({ reportText: raw, patientId: "PT-2026-0072", history: "Fever and productive cough for four days." });
+  assert.ok(sections.body.startsWith("Findings:"));
+  assert.equal(sections.history, "Fever and productive cough for four days.");
 });
 
 test("an endorsed report drops Thinking and keeps the signature", () => {

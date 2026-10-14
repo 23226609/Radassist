@@ -71,24 +71,13 @@ export async function renderDashboardPage({ target }) {
   const isAdmin = () => roleIsAdmin(state.user);
   const caseIdOf = (c) => c.caseId || c._id;
 
-  let genPoll = null;
-  function watchGenerating() {
-    const waiting = cases.some((row) => isGenerating(row));
-    if (waiting && !genPoll) {
-      genPoll = setInterval(() => refresh({ quiet: true }), 3000);
-    }
-    if (!waiting && genPoll) {
-      clearInterval(genPoll);
-      genPoll = null;
-    }
-  }
-  signal.addEventListener("abort", () => {
-    if (genPoll) clearInterval(genPoll);
-    genPoll = null;
-  });
+  let refreshing = false;
+  const listPoll = setInterval(() => refresh({ quiet: true }), 3000);
+  signal.addEventListener("abort", () => clearInterval(listPoll));
 
   async function refresh({ quiet = false } = {}) {
-    if (signal.aborted) return;
+    if (signal.aborted || refreshing) return;
+    refreshing = true;
     if (!quiet) {
       loading = true;
       error = "";
@@ -106,12 +95,12 @@ export async function renderDashboardPage({ target }) {
       try { stats = (await api.stats({ signal })).stats; } catch { stats = null; }
       if (signal.aborted) return;
       online = true;
-      watchGenerating();
       fillDiagnoses(cases);
     } catch (err) {
       if (signal.aborted || isAbortError(err)) return;
       error = err.message; online = false;
     } finally {
+      refreshing = false;
       if (signal.aborted) return;
       loading = false;
       render();

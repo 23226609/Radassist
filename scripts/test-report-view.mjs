@@ -111,10 +111,9 @@ test("saving writes the edited report and remarks to MongoDB", () => {
   assert.equal(saved.remarks, "No old films available.");
 });
 
-test("Save report rebuilds finding cards from the draft", () => {
-  assert.ok(Array.isArray(saved.findings), "Save report should write rebuilt finding cards");
-  assert.ok(saved.findings.some((f) => /heart size/i.test(f.label) || /heart size/i.test(f.sentence || "")),
-    `expected a heart-size card, got ${JSON.stringify(saved.findings)}`);
+test("Save report asks Azure to re-place the film boxes", () => {
+  assert.equal(summarised, 1, "Azure should place boxes for the edited report");
+  assert.equal(saved.findings, undefined, "the popup must not write locally parsed findings");
 });
 
 state.user = { role: "radiologist", userId: "u1", name: "Dr Test" };

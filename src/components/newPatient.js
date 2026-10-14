@@ -29,6 +29,7 @@ export async function renderNewPatientPage({ target }) {
     lastName: "",
     age: "",
     sex: "",
+    history: "",
     medicines: "",
     heartRate: "",
     labResults: "",
@@ -64,16 +65,16 @@ export async function renderNewPatientPage({ target }) {
     try {
       const names = nameFieldsFrom(f);
       const data = await api.createPatient({
-        patientId: f.patientId.trim(),
+        patientId: String(f.patientId || "").trim(),
         firstName: names.firstName,
         middleName: names.middleName,
         lastName: names.lastName,
         age: String(f.age).trim(),
         sex: f.sex,
-        history: f.history.trim(),
-        medicines: f.medicines.trim(),
-        heartRate: f.heartRate.trim(),
-        labResults: f.labResults.trim(),
+        history: String(f.history || "").trim(),
+        medicines: String(f.medicines || "").trim(),
+        heartRate: String(f.heartRate || "").trim(),
+        labResults: String(f.labResults || "").trim(),
       });
       const created = data.patient || {};
       toast(`Added ${composePatientName(created) || names.name}.`);

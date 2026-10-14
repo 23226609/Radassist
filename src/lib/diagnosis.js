@@ -5,6 +5,7 @@ import { isGenerating } from "./caseStatus.js";
 
 export function needsAzureDiagnosis(c = {}) {
   if (isGenerating(c)) return false;
+  if (!c.clinicianEdited) return false;
   if (!String(c.reportText || "").trim()) return false;
   const d = String(c.diagnosis || "").trim();
   const impression = String(c.reportText || "").match(/\b(?:impression|conclusion)\s*[:.\-]\s*([^\n]+)/i)?.[1] || "";

@@ -6,7 +6,11 @@ export default defineConfig({
     proxy: {
       // Proxy /api → Node backend so the frontend can use relative URLs
       // in production builds too.
-      "/api": "http://localhost:5002",
+      "/api": {
+        target: "http://127.0.0.1:5002",
+        timeout: 180000,
+        proxyTimeout: 180000,
+      },
     },
   },
 });

@@ -1,7 +1,7 @@
 // scripts/test-auto-summarise.mjs
 //
-// Azure findings are written during generate (before pending_approve).
-// Opening Review must show those cards and must not call Azure again.
+// Azure film boxes are written after CURV stores its draft. Opening Review
+// shows the report and those boxes, and must not call Azure again.
 //
 //   node scripts/test-auto-summarise.mjs
 
@@ -123,7 +123,7 @@ async function runScenario({ role, testCase }) {
 
 console.log("\n=== findings are ready before pending approve ===");
 
-await testAsync("opening Review shows stored Azure cards and does not call Azure", async () => {
+await testAsync("opening Review shows stored Azure boxes and does not call Azure", async () => {
   const testCase = makeCase({
     findings: [azureFinding("Clear lung fields"), azureFinding("Normal heart size")],
   });
@@ -133,11 +133,38 @@ await testAsync("opening Review shows stored Azure cards and does not call Azure
   assert.ok(!root.textContent.includes("Summarising findings"), "must not start a summarise spinner on open");
 });
 
-await testAsync("a pending_approve case with no cards falls back to the local parser only", async () => {
+await testAsync("a case with no boxes shows the CURV report and no finding cards", async () => {
   const testCase = makeCase();
   const { root, azureCalls } = await runScenario({ role: "radiologist", testCase });
-  assert.equal(azureCalls, 0, "empty cards must not trigger Azure on Review");
-  assert.ok(root.querySelector("article"), `expected a local-parser card, got: ${root.textContent.slice(0, 200)}`);
+  assert.equal(azureCalls, 0, "no boxes must not trigger Azure on Review");
+  assert.equal(root.querySelector("article"), null, "finding cards should be gone");
+  assert.equal(root.querySelectorAll("[data-bbox]").length, 0, "no local-parser boxes on the film");
+  assert.ok(root.querySelector("#report-text")?.textContent.includes("The heart size is within normal limits."));
+});
+
+await testAsync("normal statements are not boxed on the film", async () => {
+  const testCase = makeCase({
+    findings: [{ ...azureFinding("Clear lung fields"), severity: "normal" }, azureFinding("Cardiomegaly")],
+  });
+  const { root } = await runScenario({ role: "radiologist", testCase });
+  const labels = [...root.querySelectorAll("[data-bbox-label]")].map((n) => n.textContent);
+  assert.deepEqual(labels, ["Cardiomegaly"]);
+});
+
+await testAsync("Hide boxes and Show boxes toggle the film overlays", async () => {
+  const testCase = makeCase({ findings: [azureFinding("Cardiomegaly")] });
+  const { root } = await runScenario({ role: "radiologist", testCase });
+  assert.equal(root.querySelectorAll("[data-bbox]").length, 1);
+  root.querySelector("#toggle-bboxes").dispatchEvent(new window.Event("click"));
+  assert.equal(root.querySelectorAll("[data-bbox]").length, 0);
+  root.querySelector("#toggle-bboxes").dispatchEvent(new window.Event("click"));
+  assert.equal(root.querySelectorAll("[data-bbox]").length, 1);
+});
+
+await testAsync("Review says when Azure is still placing boxes", async () => {
+  const testCase = makeCase({ boxesState: "running" });
+  const { root } = await runScenario({ role: "radiologist", testCase });
+  assert.ok(root.querySelector("#box-status")?.textContent.includes("placing boxes"));
 });
 
 await testAsync("technicians do not trigger Azure on Review", async () => {

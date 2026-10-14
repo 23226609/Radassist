@@ -36,6 +36,7 @@ export async function renderNewCasePage({ target }) {
   let busy = false;
   let progress = 0;
   let statusMsg = "";
+  let uploadError = "";
   let found = null;
   const search = createPatientSearch({
     onHits: (hits) => paintMatchList(hits, { onPick: applyPerson }),
@@ -151,7 +152,8 @@ export async function renderNewCasePage({ target }) {
   async function analyze() {
     const file = state.selectedFile;
     if (!f.patientId || !f.firstName.trim() || !f.lastName.trim() || !f.age || !f.sex || !file) {
-      toast("Complete patient details and choose an X-Ray image.");
+      uploadError = "Complete the patient details and choose an X-ray image before saving.";
+      render();
       return;
     }
     busy = true;
@@ -191,8 +193,8 @@ export async function renderNewCasePage({ target }) {
       setPage(isTechnician(state.user) ? "requests" : "dashboard");
     } catch (err) {
       busy = false; progress = 0; statusMsg = "";
+      uploadError = err.message || "The film was not saved. Check the image and try again.";
       render();
-      toast(err.message || "Upload failed");
     }
   }
 
@@ -355,6 +357,25 @@ export async function renderNewCasePage({ target }) {
           disabled: busy,
           onClick: analyze,
         }, busy ? "Saving…" : "Save with film")
+      ),
+      uploadError && el("div", {
+        class: "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4",
+        role: "alertdialog",
+        "aria-modal": "true",
+        "aria-labelledby": "upload-error-title",
+      },
+        el("div", { class: "w-full max-w-md rounded-xl bg-white p-5 shadow-xl" },
+          el("h2", { id: "upload-error-title", class: "text-lg font-bold text-slate-900" }, "The film was not saved"),
+          el("p", { class: "mt-2 text-sm leading-6 text-slate-700" }, uploadError),
+          f.requestCaseId
+            ? el("p", { class: "mt-2 text-sm leading-6 text-slate-700" }, "This request is still in Requested case. You can choose the film and save it again.")
+            : null,
+          el("button", {
+            type: "button",
+            class: "mt-4 rounded-xl bg-ha-blue px-4 py-2 text-sm font-semibold text-white",
+            onClick: () => { uploadError = ""; render(); },
+          }, "Close")
+        )
       )
     );
 

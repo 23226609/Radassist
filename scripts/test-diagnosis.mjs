@@ -36,6 +36,7 @@ test("rewrites a cut-off sentence on the worklist", () => {
   assert.equal(needsAzureDiagnosis({
     diagnosis: "The chest X-ray demonstrates normal lung volumes, a normal cardiac silhouette, a",
     diagnosisSource: "azure",
+    clinicianEdited: true,
     reportText: "The chest X-ray demonstrates normal lung volumes.\nIMPRESSION: Normal study.",
   }), true);
 });
@@ -60,6 +61,7 @@ test("re-labels a stock Azure normal when the impression names a finding", () =>
   assert.equal(needsAzureDiagnosis({
     diagnosis: "No acute cardiopulmonary findings",
     diagnosisSource: "azure",
+    clinicianEdited: true,
     reportText: "The lungs are clear.\nIMPRESSION: Mild cardiomegaly.",
   }), true);
 });
@@ -100,6 +102,7 @@ test("upgrades the first-sentence fallback", () => {
   assert.equal(needsAzureDiagnosis({
     diagnosis: "Chest X-Ray Report",
     diagnosisSource: "local",
+    clinicianEdited: true,
     reportText: "Chest X-Ray Report\n\nThe lungs are clear.",
   }), true);
 });
@@ -114,8 +117,17 @@ test("leaves a short seeded diagnosis alone", () => {
 test("fills an empty diagnosis when a report exists", () => {
   assert.equal(needsAzureDiagnosis({
     diagnosis: "",
+    clinicianEdited: true,
     reportText: "The lungs are clear.",
   }), true);
+});
+
+test("leaves a fresh CURV draft to CURV", () => {
+  assert.equal(needsAzureDiagnosis({
+    diagnosis: "AI report",
+    diagnosisSource: "local",
+    reportText: "Findings:\nThe lungs are clear.\n\nImpression:\nNo acute process.",
+  }), false);
 });
 
 test("skips Azure while the report is still generating", () => {
@@ -161,6 +173,7 @@ const leftover = {
   createdAt: "2026-09-13T00:00:00.000Z",
   diagnosis: "Chest X-Ray Report",
   diagnosisSource: "local",
+  clinicianEdited: true,
   reportText: "Chest X-Ray Report\n\nThe lungs are clear.",
 };
 

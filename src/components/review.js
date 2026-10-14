@@ -1,29 +1,23 @@
 // src/components/review.js
-// Single-case review page.
+// Single-case review page: the film and the report, as a reading room shows them.
 //
-// Workflow mirrors the original Radassist design:
-//   1. AI gives us a free-text radiology report (markdown) in `reportText`
-//      plus optional pre-structured findings in `findings`.
-//   2. Finding cards are stored on the case during generate (Azure when
-//      configured). Opening Review only shows them — it does not call Azure.
-//      If a case has no cards, a local parse of the report fills the list.
-//   3. The X-ray is mandatory — it always renders, with bbox overlays from
-//      the findings.
-//   4. The generated report lives in MongoDB (used by Azure to build
-//      findings). It is not shown on this page — Download pulls it from
-//      the server when someone wants a Word or PDF copy.
+//   1. CURV writes the report. It is shown here as written; edits happen in
+//      the Report popup.
+//   2. After the draft is stored, Azure reads the report and the film and
+//      places labelled boxes on the film. It does not change the report.
+//      `boxesState` is "running" while that happens.
 //
 // Older cases persisted with `reportText` accidentally JSON-stringified
 // (`{"report":"..."}`) are unwrapped once on load so the rest of this
-// file can assume a clean markdown report.
+// file can assume a clean report.
 
 import { el, mount } from "../dom.js";
 import { state, setPage, toast } from "../state.js";
-import { api } from "../api.js";
+import { api, clearFilmSpacingAdjust, filmSpacingAdjust } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { reportPopupUrl } from "../lib/reportPopup.js";
-import { downloadReportDocx, downloadReportPdf, composeReportText, splitReportAndRemarks, splitManualFindings, removeFindingFromReport, applyFindingChangeToReport } from "../lib/reportExport.js";
-import { mergeFindingsFromReport, overlayAzureOnParsed, dedupeFindings } from "../lib/findingsSync.js";
+import { downloadReportDocx, downloadReportPdf, composeReportText, splitReportAndRemarks, withoutThinking, normalizeReportShape } from "../lib/reportExport.js";
+import { dedupeFindings } from "../lib/findingsSync.js";
 import { urgentBadge, patientDisplayName, doctorInCharge } from "../lib/tags.js";
 import { isGenerating, isAwaitingApprove, isAwaitingAi, statusLabel } from "../lib/caseStatus.js";
 import { forgetCases } from "../lib/records.js";
@@ -57,41 +51,6 @@ try {
   });
 } catch { /* tests */ }
 
-const PATTERNS = ["Nodular", "Diffuse", "Linear", "Ground-glass", "Consolidation", "Other"];
-
-function confidenceTitle(f) {
-  const parts = [];
-  if (f?.languageScore != null) parts.push(`report wording ${Math.round(f.languageScore * 100)}%`);
-  if (f?.imageSupport != null) parts.push(`image ${Math.round(f.imageSupport * 100)}%`);
-  if (!parts.length) return "Clinician-adjustable confidence";
-  return `From ${parts.join(" + ")}`;
-}
-
-function isManualFinding(f) {
-  if (!f) return false;
-  if (f.source === "manual") return true;
-  return String(f._id || f.id || "").startsWith("tmp-");
-}
-
-function isUnsavedManual(f) {
-  if (!isManualFinding(f)) return false;
-  if (f.draft === true) return true;
-  return String(f._id || f.id || "").startsWith("tmp-");
-}
-
-function findingPointMeta(f) {
-  const bits = [];
-  if (f?.location) bits.push(String(f.location).trim());
-  if (f?.size) bits.push(String(f.size).trim());
-  if (f?.pattern && f.pattern !== "Other") bits.push(f.pattern);
-  const cleaned = bits.filter(Boolean);
-  if (cleaned.length) return cleaned.join(" · ");
-  const extra = String(f?.sentence || f?.detail || "").replace(/\s+/g, " ").trim();
-  if (!extra) return "";
-  if (extra.toLowerCase() === String(f?.label || "").trim().toLowerCase()) return "";
-  return extra.length > 90 ? extra.slice(0, 87).trim() + "…" : extra;
-}
-
 const FILM_BOX_COLORS = [
   { border: "border-yellow-300", fill: "bg-yellow-300/30", handle: "border-yellow-100 bg-yellow-300", chip: "bg-yellow-400", name: "yellow" },
   { border: "border-cyan-300", fill: "bg-cyan-300/30", handle: "border-cyan-100 bg-cyan-300", chip: "bg-cyan-400", name: "cyan" },
@@ -121,76 +80,14 @@ function eventToPct(e, el) {
   };
 }
 
-function boxFromCorners(a, b) {
-  const left = Math.min(a.x, b.x);
-  const top = Math.min(a.y, b.y);
-  return [
-    Number(left.toFixed(2)),
-    Number(top.toFixed(2)),
-    Number(Math.max(1, Math.abs(a.x - b.x)).toFixed(2)),
-    Number(Math.max(1, Math.abs(a.y - b.y)).toFixed(2)),
-  ];
-}
-
-function clampBox(left, top, width, height) {
-  let w = Math.max(3, Number(width) || 3);
-  let h = Math.max(3, Number(height) || 3);
-  let l = Number(left) || 0;
-  let t = Number(top) || 0;
-  l = Math.min(97, Math.max(0, l));
-  t = Math.min(97, Math.max(0, t));
-  w = Math.min(100 - l, w);
-  h = Math.min(100 - t, h);
-  return [Number(l.toFixed(2)), Number(t.toFixed(2)), Number(w.toFixed(2)), Number(h.toFixed(2))];
-}
-
-function movedBox(origin, start, pct) {
-  const [l, t, w, h] = (origin || []).map(Number);
-  return clampBox(l + (pct.x - start.x), t + (pct.y - start.y), w, h);
-}
-
-function resizedBox(origin, handle, pct) {
-  const [l0, t0, w0, h0] = (origin || []).map(Number);
-  let l = l0;
-  let t = t0;
-  let r = l0 + w0;
-  let b = t0 + h0;
-  if (handle.includes("e")) r = pct.x;
-  if (handle.includes("w")) l = pct.x;
-  if (handle.includes("s")) b = pct.y;
-  if (handle.includes("n")) t = pct.y;
-  return clampBox(Math.min(l, r), Math.min(t, b), Math.abs(r - l), Math.abs(b - t));
-}
-
-function hitBoxHandle(pct, bbox) {
-  if (!hasBbox({ bbox })) return null;
-  const [l, t, w, h] = bbox.map(Number);
-  const r = l + w;
-  const b = t + h;
-  const pad = 4;
-  const corners = [
-    ["nw", l, t],
-    ["ne", r, t],
-    ["sw", l, b],
-    ["se", r, b],
-  ];
-  for (const [name, x, y] of corners) {
-    if (Math.abs(pct.x - x) <= pad && Math.abs(pct.y - y) <= pad) return name;
-  }
-  if (pct.x >= l && pct.x <= r && pct.y >= t && pct.y <= b) return "move";
-  return null;
-}
-
-function cursorForHandle(hit) {
-  if (hit === "move") return "move";
-  if (hit === "nw" || hit === "se") return "nwse-resize";
-  if (hit === "ne" || hit === "sw") return "nesw-resize";
-  return "crosshair";
+// Azure boxes for abnormal findings. Normal statements ("clear lungs") and
+// older locally parsed findings have no real position, so they are not drawn.
+function filmBoxes(findings) {
+  return (findings || []).filter((f) => f?.source === "Azure" && f.severity !== "normal" && hasBbox(f));
 }
 
 // ---------------------------------------------------------------------------
-// AI report parser — converts the markdown report produced by the AI into
-// a list of finding cards the clinician can review. Best-effort heuristics:
+// AI report parser — splits a report into finding statements. Best-effort heuristics:
 //   1. Split on explicit numbered findings:  "Finding 1:",  "1." headers,
 //      or markdown headings ("## 1. ...")
 //   2. Fall back to splitting on section boundaries  ("**Finding**", "Impression")
@@ -429,40 +326,37 @@ export function unwrapLegacyReport(raw) {
 
 // Cache of imageId -> object URL so we don't re-fetch on every render().
 const _imageCache = new Map();
+const _imageFlights = new Map();
 export async function resyncMachineFindings(caseId, stored) {
   if (!caseId || !stored || stored.status === "finalized") return stored;
-  const previous = stored.findings || [];
-  const body = splitManualFindings(splitReportAndRemarks(stored.reportText || "").body).body;
-  let parsed = parseFindingsFromReport(body, 0);
   try {
     const data = await api.summariseFindings(caseId);
-    const next = unwrapLegacyReport(data.case || stored);
-    const azure = (next.findings || []).filter((f) => !isManualFinding(f));
-    parsed = overlayAzureOnParsed(parsed, azure, stored.reportText || next.reportText);
+    return unwrapLegacyReport(data.case || stored);
   } catch {
-    // Local parse is the source of truth for add / edit / delete in the draft.
-  }
-  const findings = mergeFindingsFromReport(previous, parsed, stored.reportText);
-  try {
-    const updated = await api.updateCase(caseId, { findings });
-    return unwrapLegacyReport(updated.case || { ...stored, findings });
-  } catch {
-    return { ...stored, findings };
+    return stored;
   }
 }
 
 async function getImageObjectUrl(imageId) {
   if (!imageId) return null;
-  if (_imageCache.has(imageId)) return _imageCache.get(imageId);
-  try {
-    const blob = await api.fetchImage(imageId);
-    const objUrl = URL.createObjectURL(blob);
-    _imageCache.set(imageId, objUrl);
-    return objUrl;
-  } catch (err) {
-    console.warn("[review] image load failed:", err.message);
-    return null;
-  }
+  const key = String(imageId);
+  if (_imageCache.has(key)) return _imageCache.get(key);
+  if (_imageFlights.has(key)) return _imageFlights.get(key);
+  const job = (async () => {
+    try {
+      const blob = await api.fetchImage(key);
+      const objUrl = URL.createObjectURL(blob);
+      _imageCache.set(key, objUrl);
+      return objUrl;
+    } catch (err) {
+      console.warn("[review] image load failed:", err.message);
+      return null;
+    } finally {
+      _imageFlights.delete(key);
+    }
+  })();
+  _imageFlights.set(key, job);
+  return job;
 }
 
 export async function renderReviewPage({ target }) {
@@ -478,15 +372,16 @@ export async function renderReviewPage({ target }) {
   let busy = false;
   let msg = "";
   let imageSrc = null; // resolved object URL once the blob is fetched
-  let selectedIndex = 0; // which finding is selected in the list / editor
   let showBoxes = true;
   let boxDrag = null;
   let zoom = 1;
-  let filmTool = "box";
+  let filmTool = "view";
   let measureLine = null;
   let remarksDraft = "";
   let remarksDirty = false;
   let reportDirty = false;
+  let bodyDraft = "";
+  let bodyDirty = false;
   let openLogKey = "";
   let genPoll = null;
 
@@ -507,19 +402,12 @@ export async function renderReviewPage({ target }) {
     const split = splitReportAndRemarks(localCase?.reportText || "");
     remarksDraft = (localCase?.remarks || "").trim() || split.remarks;
     remarksDirty = false;
+    bodyDraft = normalizeReportShape(split.body);
+    bodyDirty = false;
   }
 
-  // If Azure already wrote cards during generate, show them. Otherwise parse
-  // the stored report locally — do not call Azure on page open.
-  function fillFromLocalParser() {
-    if (!localCase) return;
-    const report = localCase.reportText || "";
-    if (!report.trim()) return;
-    const existing = localCase.findings || [];
-    if (existing.length) return;
-    const parsed = parseFindingsFromReport(report, 0);
-    if (parsed.length === 0) return;
-    localCase = { ...localCase, findings: parsed };
+  function placingBoxes(c) {
+    return c?.boxesState === "running";
   }
 
   function stopGeneratingWatch() {
@@ -528,7 +416,7 @@ export async function renderReviewPage({ target }) {
   }
 
   function watchGenerating() {
-    if (genPoll || signal.aborted || leaving || !isGenerating(localCase)) return;
+    if (genPoll || signal.aborted || leaving || !(isGenerating(localCase) || placingBoxes(localCase))) return;
     genPoll = setInterval(() => {
       if (signal.aborted || leaving) {
         stopGeneratingWatch();
@@ -539,6 +427,38 @@ export async function renderReviewPage({ target }) {
   }
 
   signal.addEventListener("abort", stopGeneratingWatch);
+
+  let loadedFilmId = "";
+
+  function loadFilm() {
+    const id = localCase?.imageId;
+    if (!id) {
+      imageSrc = null;
+      loadedFilmId = "";
+      return;
+    }
+    if (loadedFilmId === String(id) && imageSrc) return;
+    getImageObjectUrl(id).then(async (url) => {
+      if (signal.aborted || leaving || String(localCase?.imageId || "") !== String(id)) return;
+      if (!url) localCase = { ...localCase, imageId: null };
+      else loadedFilmId = String(id);
+      imageSrc = url;
+      const caseId = getEffectiveCaseId();
+      if (caseId && !reportDirty && !remarksDirty) {
+        try {
+          const data = await api.getCase(caseId);
+          const next = data.case || data;
+          const before = JSON.stringify(localCase?.pixelSpacingMm || null);
+          const after = JSON.stringify(next?.pixelSpacingMm || null);
+          if (before !== after && Array.isArray(next?.pixelSpacingMm)) {
+            clearFilmSpacingAdjust(id);
+            localCase = { ...localCase, pixelSpacingMm: next.pixelSpacingMm };
+          }
+        } catch { /* the film is already on screen */ }
+      }
+      render();
+    });
+  }
 
   async function refreshFromServer() {
     const caseId = getEffectiveCaseId();
@@ -551,34 +471,19 @@ export async function renderReviewPage({ target }) {
       localCase = data.case || data;
       // One-shot fixup: unwrap the legacy `{"report":"..."}` string shape.
       localCase = unwrapLegacyReport(localCase);
-      const tidy = dedupeFindings(localCase.findings || []);
-      if (tidy.length !== (localCase.findings || []).length) {
-        localCase = { ...localCase, findings: tidy };
-        if (canEditReport(state.user) && localCase.status !== "finalized") {
-          persistClinicianEdits().catch(() => {});
-        }
-      }
+      localCase = { ...localCase, findings: dedupeFindings(localCase.findings || []) };
       syncRemarksFromCase();
-      if (wasGenerating && !isGenerating(localCase)) {
-        stopGeneratingWatch();
-        toast("Draft ready — pending approve.");
-      } else {
-        watchGenerating();
-      }
+      if (wasGenerating && !isGenerating(localCase)) toast("Draft ready — pending approve.");
+      if (isGenerating(localCase) || placingBoxes(localCase)) watchGenerating();
+      else stopGeneratingWatch();
       // Sync the cache so the rest of the app sees the same case.
       const idx = state.cases.findIndex(
         (c) => c.caseId === (localCase.caseId || localCase._id) || c._id === localCase._id
       );
       if (idx >= 0) state.cases[idx] = localCase;
-      // Resolve image to a blob URL the <img> tag can use (auth header handled by fetch).
-      if (localCase.imageId) {
-        imageSrc = await getImageObjectUrl(localCase.imageId);
-        // If GridFS returned 404 (orphan imageId), drop the imageId so the
-        // X-ray panel falls back to "No image" instead of "Loading image…".
-        if (!imageSrc) localCase = { ...localCase, imageId: null };
-      } else {
-        imageSrc = null;
-      }
+      // Draw the examination before the film arrives. A slow GridFS
+      // download must not leave this page blank.
+      loadFilm();
       render();
     } catch (err) {
       if (signal.aborted || leaving || isAbortError(err)) return;
@@ -651,152 +556,11 @@ export async function renderReviewPage({ target }) {
     hintMongo("Unsaved changes. Press Save draft or Save remarks.");
   }
 
-  function isDraftFindingId(id) {
-    return String(id || "").startsWith("tmp-");
-  }
-
-  function patchFinding(id, patch, { refresh = false } = {}) {
-    const prev = (localCase.findings || []).find((f) => String(f._id || f.id) === String(id));
-    if (!prev) return;
-    const next = { ...prev, ...patch };
-    const clinicalKeys = ["label", "location", "size", "pattern", "sentence"];
-    const clinicalChanged = clinicalKeys.some((k) => (
-      Object.prototype.hasOwnProperty.call(patch, k) && String(patch[k] ?? "") !== String(prev[k] ?? "")
-    ));
-
-    let reportText = localCase.reportText;
-    if (clinicalChanged && !isDraftFindingId(id)) {
-      if (isManualFinding(next)) {
-        const findings = (localCase.findings || []).map((f) => (
-          String(f._id || f.id) === String(id) ? next : f
-        ));
-        reportText = applyLocalEdits(reportText, { findings }).reportText;
-      } else {
-        const applied = applyFindingChangeToReport(reportText, prev, next);
-        reportText = applied.reportText;
-        next.sentence = applied.sentence;
-      }
-    }
-
-    localCase = {
-      ...localCase,
-      reportText,
-      findings: (localCase.findings || []).map((f) => (
-        String(f._id || f.id) === String(id) ? next : f
-      )),
-    };
-    // Text fields keep their own caret — remounting on every keystroke made
-    // the remarks box and finding inputs feel like they wouldn't accept typing.
-    if (refresh) render();
-    if (!isDraftFindingId(id)) markUnsaved();
-  }
-
-  function addFinding() {
-    // Generate a stable-ish temp id so the in-memory list works before save.
-    const tempId = "tmp-" + Date.now() + "-" + Math.random().toString(16).slice(2, 8);
-    const newFinding = {
-      _id: tempId,
-      id: tempId,
-      label: "New finding",
-      confidence: 0.5,
-      bbox: [],
-      location: "",
-      size: "",
-      pattern: "Other",
-      sentence: "",
-      status: "pending",
-      source: "manual",
-      bboxSource: "manual",
-      draft: true,
-    };
-    const next = [...(localCase.findings || []), newFinding];
-    localCase = { ...localCase, findings: next };
-    selectedIndex = next.length - 1;
-    render();
-  }
-
-  function removeFinding(id, index = selectedIndex) {
-    const findings = [...(localCase.findings || [])];
-    const idx = findings.findIndex((f, i) => {
-      const fid = String(f._id || f.id || "");
-      if (id != null && id !== "" && fid && fid === String(id)) return true;
-      return (id == null || id === "" || !fid) && i === index;
-    });
-    const removed = idx >= 0 ? findings[idx] : null;
-    if (!removed) return;
-    findings.splice(idx, 1);
-    const stripped = isDraftFindingId(removed._id || removed.id)
-      ? { reportText: localCase.reportText, remarks: remarksDraft }
-      : removeFindingFromReport(localCase.reportText, removed);
-    const composed = applyLocalEdits(stripped.reportText, { remarks: remarksDraft, findings });
-    localCase = {
-      ...localCase,
-      findings,
-      reportText: composed.reportText,
-      remarks: composed.remarks,
-    };
-    if (selectedIndex >= findings.length) selectedIndex = Math.max(0, findings.length - 1);
-    render();
-    if (!isDraftFindingId(removed._id || removed.id)) {
-      markUnsaved();
-      toast("Finding removed. That sentence is taken out of the report. The rest stays. Press Save draft to keep it.");
-    }
-  }
-
-  function acceptFinding(id) {
-    patchFinding(id, { status: "accepted" }, { refresh: true });
-    toast("Finding accepted.");
-  }
-
-  async function finishManualFinding() {
-    if (!localCase || busy) return;
-    busy = true;
-    render();
-    try {
-      await persistClinicianEdits({ includeDraft: true });
-      toast("Finding saved.");
-      hintMongo("Finding saved in MongoDB.");
-    } catch (err) {
-      toast(err.message || "Could not save this finding.");
-    } finally {
-      busy = false;
-      render();
-    }
-  }
-
-  function canEditBox() {
-    if (!localCase || isGenerating(localCase)) return false;
-    if (!canEditReport(state.user) || localCase.status === "finalized") return false;
-    return Boolean((localCase.findings || [])[selectedIndex]);
-  }
-
-  function paintLiveBox(stage, bbox) {
-    if (!stage || !bbox) return;
-    let node = stage.querySelector("[data-draw-box]");
-    if (!node) {
-      node = document.createElement("div");
-      node.setAttribute("data-draw-box", "1");
-      node.className = "pointer-events-none absolute border-2 border-yellow-300 bg-yellow-300/25";
-      stage.appendChild(node);
-    }
-    node.style.left = bbox[0] + "%";
-    node.style.top = bbox[1] + "%";
-    node.style.width = bbox[2] + "%";
-    node.style.height = bbox[3] + "%";
-  }
-
-  function liveBboxFromDrag(pct) {
-    if (!boxDrag) return null;
-    if (boxDrag.mode === "move") return movedBox(boxDrag.origin, boxDrag.start, pct);
-    if (boxDrag.mode === "resize") return resizedBox(boxDrag.origin, boxDrag.handle, pct);
-    return boxFromCorners(boxDrag.start, pct);
-  }
-
   function measureOverlay(line) {
     const NS = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(NS, "svg");
     svg.setAttribute("data-measure", "1");
-    svg.setAttribute("class", "pointer-events-none absolute inset-0 h-full w-full");
+    svg.setAttribute("class", "pointer-events-none absolute inset-0 z-20 h-full w-full");
     svg.setAttribute("viewBox", "0 0 100 100");
     svg.setAttribute("preserveAspectRatio", "none");
     const ln = document.createElementNS(NS, "line");
@@ -810,6 +574,44 @@ export async function renderReviewPage({ target }) {
     return svg;
   }
 
+  function measureLength(line) {
+    const text = measureText(line);
+    const match = String(text).match(/([0-9]+(?:\.[0-9]+)?)\s*(cm|px)/i);
+    return match ? `${match[1]} ${match[2].toLowerCase()}` : "";
+  }
+
+  function measureLabelEl(line) {
+    const label = measureLength(line);
+    if (!label) return null;
+    const x = Math.min(94, Math.max(6, (Number(line.x1) + Number(line.x2)) / 2));
+    const y = Math.min(92, Math.max(8, (Number(line.y1) + Number(line.y2)) / 2));
+    return el("span", {
+      class: "pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded bg-black/80 px-1.5 py-0.5 text-xs font-semibold text-cyan-100",
+      style: { left: `${x}%`, top: `${y}%` },
+      dataset: { measureLabel: "1" },
+    }, label);
+  }
+
+  function placeMeasureLabel(stage, line) {
+    const label = measureLength(line);
+    let node = stage.querySelector("[data-measure-label]");
+    if (!label) {
+      node?.remove();
+      return;
+    }
+    if (!node) {
+      node = document.createElement("span");
+      node.setAttribute("data-measure-label", "1");
+      node.className = "pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded bg-black/80 px-1.5 py-0.5 text-xs font-semibold text-cyan-100";
+      stage.appendChild(node);
+    }
+    const x = Math.min(94, Math.max(6, (Number(line.x1) + Number(line.x2)) / 2));
+    const y = Math.min(92, Math.max(8, (Number(line.y1) + Number(line.y2)) / 2));
+    node.style.left = `${x}%`;
+    node.style.top = `${y}%`;
+    node.textContent = label;
+  }
+
   function paintMeasure(stage, line) {
     if (!stage || !line) return;
     const NS = "http://www.w3.org/2000/svg";
@@ -817,7 +619,7 @@ export async function renderReviewPage({ target }) {
     if (!svg) {
       svg = document.createElementNS(NS, "svg");
       svg.setAttribute("data-measure", "1");
-      svg.setAttribute("class", "pointer-events-none absolute inset-0 h-full w-full");
+      svg.setAttribute("class", "pointer-events-none absolute inset-0 z-20 h-full w-full");
       svg.setAttribute("viewBox", "0 0 100 100");
       svg.setAttribute("preserveAspectRatio", "none");
       stage.appendChild(svg);
@@ -833,6 +635,7 @@ export async function renderReviewPage({ target }) {
     ln.setAttribute("y1", line.y1);
     ln.setAttribute("x2", line.x2);
     ln.setAttribute("y2", line.y2);
+    placeMeasureLabel(stage, line);
   }
 
   function measureText(line) {
@@ -840,8 +643,12 @@ export async function renderReviewPage({ target }) {
     const img = document.getElementById("xray-film");
     const width = img?.naturalWidth || 0;
     const height = img?.naturalHeight || 0;
+    const adjust = filmSpacingAdjust(localCase?.imageId);
     const spacing = Array.isArray(localCase?.pixelSpacingMm) && localCase.pixelSpacingMm.length === 2
-      ? localCase.pixelSpacingMm
+      ? [
+          Number(localCase.pixelSpacingMm[0]) * (adjust?.row || 1),
+          Number(localCase.pixelSpacingMm[1]) * (adjust?.col || 1),
+        ]
       : null;
     if (!width || !height) return "Drag across the area you want to measure.";
     const dx = ((line.x2 - line.x1) / 100) * width;
@@ -861,161 +668,55 @@ export async function renderReviewPage({ target }) {
   }
 
   function onFilmPointerDown(e) {
-    if (filmTool === "measure") {
-      if (e.button != null && e.button !== 0) return;
-      const stage = e.currentTarget || document.getElementById("xray-stage");
-      if (!stage) return;
-      const pct = eventToPct(e, stage);
-      measureLine = { x1: pct.x, y1: pct.y, x2: pct.x, y2: pct.y };
-      boxDrag = { mode: "measure" };
-      try { stage.setPointerCapture?.(e.pointerId); } catch { /* tests */ }
-      paintMeasure(stage, measureLine);
-      e.preventDefault();
-      return;
-    }
-    if (!canEditBox()) return;
+    if (filmTool !== "measure") return;
     if (e.button != null && e.button !== 0) return;
     const stage = e.currentTarget || document.getElementById("xray-stage");
     if (!stage) return;
     const pct = eventToPct(e, stage);
-    const f = (localCase.findings || [])[selectedIndex];
-    const hit = hasBbox(f) ? hitBoxHandle(pct, f.bbox) : null;
-    showBoxes = true;
-    if (hit === "move") {
-      boxDrag = { mode: "move", start: pct, origin: f.bbox.slice() };
-    } else if (hit) {
-      boxDrag = { mode: "resize", handle: hit, start: pct, origin: f.bbox.slice() };
-    } else {
-      boxDrag = { mode: "draw", start: pct };
-    }
+    measureLine = { x1: pct.x, y1: pct.y, x2: pct.x, y2: pct.y };
+    boxDrag = { mode: "measure" };
     try { stage.setPointerCapture?.(e.pointerId); } catch { /* tests */ }
-    paintLiveBox(stage, liveBboxFromDrag(pct));
+    paintMeasure(stage, measureLine);
     e.preventDefault();
   }
 
   function onFilmPointerMove(e) {
+    if (boxDrag?.mode !== "measure" || !measureLine) return;
     const stage = e.currentTarget || document.getElementById("xray-stage");
     if (!stage) return;
     const pct = eventToPct(e, stage);
-    if (boxDrag?.mode === "measure" && measureLine) {
-      measureLine = { ...measureLine, x2: pct.x, y2: pct.y };
-      paintMeasure(stage, measureLine);
-      return;
-    }
-    if (!boxDrag) {
-      if (!canEditBox()) return;
-      const f = (localCase.findings || [])[selectedIndex];
-      stage.style.cursor = cursorForHandle(hasBbox(f) ? hitBoxHandle(pct, f.bbox) : null);
-      return;
-    }
-    paintLiveBox(stage, liveBboxFromDrag(pct));
-  }
-
-  function commitDrawnBox(stage, bbox) {
-    if (!stage || !bbox) return;
-    stage.querySelector("[data-draw-box]")?.remove();
-    let node = stage.querySelector("[data-bbox='selected']");
-    if (!node) {
-      node = document.createElement("div");
-      node.setAttribute("data-bbox", "selected");
-      node.className = "pointer-events-none absolute border-2 border-yellow-300 bg-yellow-300/25";
-      stage.appendChild(node);
-    }
-    node.style.left = bbox[0] + "%";
-    node.style.top = bbox[1] + "%";
-    node.style.width = bbox[2] + "%";
-    node.style.height = bbox[3] + "%";
-    let tag = node.querySelector("[data-bbox-label]");
-    if (!tag) {
-      tag = document.createElement("span");
-      tag.setAttribute("data-bbox-label", "1");
-      tag.className = "absolute -top-5 left-0 bg-black px-1 text-xs text-white";
-      node.appendChild(tag);
-    }
-    tag.textContent = `F${selectedIndex + 1}`;
-    const hint = document.querySelector("[data-bbox-hint]");
-    if (hint) {
-      hint.textContent = "Drag the yellow box to move it, a corner to resize, or elsewhere on the film to redraw.";
-    }
+    measureLine = { ...measureLine, x2: pct.x, y2: pct.y };
+    paintMeasure(stage, measureLine);
   }
 
   function onFilmPointerUp(e) {
-    if (boxDrag?.mode === "measure") {
-      const stage = e.currentTarget || document.getElementById("xray-stage");
-      if (stage && measureLine) {
-        const pct = eventToPct(e, stage);
-        measureLine = { ...measureLine, x2: pct.x, y2: pct.y };
-      }
-      boxDrag = null;
-      render();
-      return;
-    }
-    if (!boxDrag) return;
+    if (boxDrag?.mode !== "measure") return;
     const stage = e.currentTarget || document.getElementById("xray-stage");
-    if (!stage) return;
-    const pct = eventToPct(e, stage);
-    const bbox = liveBboxFromDrag(pct);
-    const wasDraw = boxDrag.mode === "draw";
+    if (stage && measureLine) {
+      const pct = eventToPct(e, stage);
+      measureLine = { ...measureLine, x2: pct.x, y2: pct.y };
+    }
     boxDrag = null;
-    e.preventDefault?.();
-    // A click without a drag should not replace an existing box with a 1% stub.
-    if (wasDraw && bbox[2] < 3 && bbox[3] < 3) {
-      stage.querySelector("[data-draw-box]")?.remove();
-      return;
-    }
-    const f = (localCase.findings || [])[selectedIndex];
-    if (f) {
-      // Do not remount the page here. Replacing the DOM on pointerup makes the
-      // following click land on Finish this finding and the button vanishes.
-      patchFinding(f._id || f.id, { bbox, bboxSource: "manual" });
-    }
-    commitDrawnBox(stage, bbox);
-    const swallow = (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      document.removeEventListener("click", swallow, true);
-    };
-    document.addEventListener("click", swallow, true);
-    setTimeout(() => document.removeEventListener("click", swallow, true), 400);
+    render();
   }
 
-  function applyLocalEdits(reportText, { remarks = remarksDraft, findings } = {}) {
-    return composeReportText(reportText, {
-      remarks,
-      findings: findings ?? localCase.findings,
-    });
-  }
-
-  function syncFromPersisted(stored, fallback = {}, { keepDrafts = true } = {}) {
-    const drafts = keepDrafts
-      ? (localCase.findings || []).filter((f) => isDraftFindingId(f._id || f.id))
-      : [];
+  function syncFromPersisted(stored, fallback = {}) {
     localCase = {
       ...localCase,
       ...stored,
-      findings: stored.findings ? [...stored.findings, ...drafts] : localCase.findings,
-      reportText: stored.reportText ?? localCase.reportText,
       remarks: stored.remarks ?? fallback.remarks ?? localCase.remarks,
     };
     remarksDraft = localCase.remarks || fallback.remarks || "";
     remarksDirty = false;
     reportDirty = false;
+    bodyDraft = normalizeReportShape(splitReportAndRemarks(localCase.reportText || "").body);
+    bodyDirty = false;
   }
 
-  function findingsForSave(list, { includeDraft = false } = {}) {
-    return (list || [])
-      .filter((f) => includeDraft || !isDraftFindingId(f._id || f.id))
-      .map((f) => {
-        const o = { ...f };
-        if (isDraftFindingId(o._id)) delete o._id;
-        if (isDraftFindingId(o.id)) delete o.id;
-        delete o.draft;
-        if (!hasBbox(o)) o.bbox = [];
-        return o;
-      });
-  }
-
-  function persistClinicianEdits({ includeDraft = false } = {}) {
+  // The report body is sent only when the radiologist typed in it; otherwise
+  // the stored text is kept so a stale copy here cannot overwrite the popup.
+  // Film boxes are never sent: Azure re-places them after a report edit.
+  function persistClinicianEdits() {
     const run = async () => {
       if (signal.aborted || leaving) return;
       hintMongo("Saving to MongoDB…");
@@ -1043,18 +744,29 @@ export async function renderReviewPage({ target }) {
         hintMongo("");
         return stored;
       }
-      const findings = findingsForSave(localCase.findings, { includeDraft });
-      const composed = applyLocalEdits(localCase.reportText || stored.reportText, { remarks: note, findings });
+      const typedBody = bodyDirty ? bodyDraft : null;
+      const composed = composeReportText(typedBody ?? stored.reportText, { remarks: note, findings: stored.findings });
       const payload = {
-        diagnosis: localCase.diagnosis,
         reportText: composed.reportText,
         remarks: composed.remarks,
-        findings,
       };
+      const reportChanged = splitReportAndRemarks(composed.reportText).body.trim()
+        !== splitReportAndRemarks(stored.reportText || "").body.trim();
       const updated = await api.updateCase(getEffectiveCaseId(), payload);
-      const next = unwrapLegacyReport(updated.case || { ...stored, ...payload });
-      syncFromPersisted(next, composed, { keepDrafts: !includeDraft });
-      hintMongo("Report saved in MongoDB.");
+      let next = unwrapLegacyReport(updated.case || { ...stored, ...payload });
+      const typedSince = bodyDirty && bodyDraft !== typedBody;
+      const neverBoxed = !stored.boxesState && !filmBoxes(stored.findings).length;
+      if (reportChanged || neverBoxed) {
+        hintMongo("Placing film boxes…");
+        next = await resyncMachineFindings(getEffectiveCaseId(), next);
+      }
+      if (typedSince) {
+        localCase = { ...localCase, ...next };
+        hintMongo("Unsaved changes. Press Save draft.");
+        return next;
+      }
+      syncFromPersisted(next, composed);
+      hintMongo(reportChanged ? "Report saved. Film boxes now match this draft." : "Report saved in MongoDB.");
       return next;
     };
     const pending = persistChain.then(run, run);
@@ -1065,7 +777,7 @@ export async function renderReviewPage({ target }) {
   async function saveDraft() {
     busy = true; render();
     try {
-      await persistClinicianEdits({ includeDraft: true });
+      await persistClinicianEdits();
       msg = "Draft saved.";
       toast(msg);
     } catch (err) {
@@ -1089,6 +801,7 @@ export async function renderReviewPage({ target }) {
       });
     } catch (err) {
       toast(err.message || "Could not start AI.");
+    } finally {
       busy = false;
       render();
     }
@@ -1102,7 +815,7 @@ export async function renderReviewPage({ target }) {
     if (!confirm("Endorse this report? The ward will see the clean report, without the draft log.")) return;
     busy = true; render();
     try {
-      await persistClinicianEdits({ includeDraft: true });
+      await persistClinicianEdits();
       const data = await api.finalizeCase(getEffectiveCaseId());
       localCase = data.case || data;
       msg = "Report finalized and approved.";
@@ -1121,7 +834,7 @@ export async function renderReviewPage({ target }) {
     }
     if (canEditReport(state.user)) {
       try {
-        await persistClinicianEdits({ includeDraft: true });
+        await persistClinicianEdits();
       } catch (err) {
         toast(err.message || "Could not save before opening the report.");
       }
@@ -1138,7 +851,7 @@ export async function renderReviewPage({ target }) {
     busy = true;
     render();
     try {
-      const stored = await persistClinicianEdits({ includeDraft: true });
+      const stored = await persistClinicianEdits();
       msg = stored.status === "finalized"
         ? "Remarks saved. The finalized report was not changed."
         : "Remarks saved and added to the report.";
@@ -1210,7 +923,7 @@ export async function renderReviewPage({ target }) {
         const data = await api.getCase(getEffectiveCaseId());
         stored = unwrapLegacyReport(data.case || data);
       } else {
-        stored = await persistClinicianEdits({ includeDraft: true });
+        stored = await persistClinicianEdits();
       }
       if (!(stored.reportText || "").trim()) {
         toast("No report has been saved for this case yet.");
@@ -1230,184 +943,27 @@ export async function renderReviewPage({ target }) {
     const generating = isGenerating(localCase);
     const awaitingAi = isAwaitingAi(localCase);
     const showProvenance = canEditReport(state.user) && localCase.status !== "finalized";
-    const showConfidence = canEditReport(state.user);
     const edit = !generating && canEditReport(state.user) && localCase.status !== "finalized";
     const canRemark = !generating && canEditReport(state.user);
     const canFlag = canEditReport(state.user);
-    const findings = localCase.findings || [];
-    const visible = findings;
+    const boxes = filmBoxes(localCase.findings);
+    const placing = placingBoxes(localCase);
     const patientName = patientDisplayName(localCase);
+    const reportBody = (() => {
+      const body = normalizeReportShape(splitReportAndRemarks(localCase.reportText || "").body);
+      return localCase.status === "finalized" ? withoutThinking(body) : body;
+    })();
 
-    function findingCard(f, index) {
-      const isNew = isUnsavedManual(f);
-      return el("article", {
-        class: "rounded-xl border border-slate-200 bg-slate-50 p-4",
-        dataset: { id: f._id || f.id, findingIndex: String(index) },
-      },
-        el("div", { class: "flex justify-between items-start gap-2" },
-          el("div", { class: "flex-1" },
-            el("div", { class: "flex items-center gap-2" },
-              el("small", { class: "font-bold text-ha-blue text-xs" },
-                showProvenance && isManualFinding(f)
-                  ? (isNew ? "NEW FINDING (unsaved)" : "MANUAL FINDING")
-                  : `FINDING ${index + 1}`
-              ),
-            ),
-            edit
-              ? el("input", {
-                  id: `finding-label-${f._id || f.id}`,
-                  class: "mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1 outline-none focus:border-ha-blue font-bold text-slate-900",
-                  value: f.label || "",
-                  onInput: (e) => patchFinding(f._id || f.id, { label: e.target.value }),
-                })
-              : el("h3", { class: "font-bold text-slate-900" }, f.label)
-          ),
-          el("div", { class: "flex flex-col items-end gap-2" },
-            showProvenance && isManualFinding(f)
-              ? el("b", { class: "rounded-full bg-slate-100 px-3 py-0.5 text-sm text-slate-600" }, "Manual")
-              : showConfidence
-              ? el("b", {
-                  class: "rounded-full bg-blue-50 px-3 py-0.5 text-ha-blue text-sm",
-                  title: confidenceTitle(f),
-                }, `${Math.round((f.confidence ?? 0) * 100)}%`)
-              : null,
-            showConfidence && f.status === "accepted" && el("b", { class: "rounded-full bg-green-50 px-3 py-0.5 text-sm text-green-700" }, "Accepted"),
-            edit && isManualFinding(f) && el("button", {
-              id: "delete-manual-finding",
-              class: "rounded-lg border border-red-200 px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-50",
-              onClick: () => removeFinding(f._id || f.id, selectedIndex),
-            }, "Delete")
-          )
-        ),
-        edit && el("p", { class: "mt-2 text-xs text-slate-500", dataset: { bboxHint: "1" } },
-          hasBbox(f)
-            ? `Drag the ${filmBoxColor(index, visible.filter(hasBbox).length).name} box to move it, a corner to resize, or elsewhere on the film to redraw.`
-            : "Drag on the X-ray to draw a box for this finding."
-        ),
-        edit && isNew && el("p", { class: "mt-2 text-xs text-slate-400" },
-          "Add the details and/or draw the box, in either order, then finish this finding."
-        ),
-        !edit ? null : el("div", { class: "mt-3 grid grid-cols-2 gap-2" },
-          ...["location", "size"].map((k) =>
-            el("label", { class: "block" },
-              el("span", { class: "text-xs font-semibold text-slate-500 capitalize" }, k),
-              el("input", {
-                id: `finding-${k}-${f._id || f.id}`,
-                class: "mt-1 w-full rounded-xl border border-slate-300 bg-white px-2 py-1.5 outline-none focus:border-ha-blue",
-                value: f[k] || "",
-                onInput: (e) => patchFinding(f._id || f.id, { [k]: e.target.value }),
-              })
-            )
-          )
-        ),
-        el("label", { class: "block mt-3" },
-          el("span", { class: "text-xs font-semibold text-slate-500 capitalize" }, "Pattern"),
-          el("select", {
-            disabled: !edit,
-            class: "mt-1 w-full rounded-xl border border-slate-300 bg-white px-2 py-1.5 outline-none focus:border-ha-blue disabled:bg-slate-100",
-            value: f.pattern || "Other",
-            onChange: (e) => patchFinding(f._id || f.id, { pattern: e.target.value }, { refresh: true }),
-          },
-            ...PATTERNS.map((p) => el("option", { value: p }, p))
-          ),
-          el("p", { class: "mt-1 text-xs text-slate-400" },
-            "How the opacity looks on the film (nodule, consolidation, ground-glass…). Used in the saved finding and in Word/PDF."
-          )
-        ),
-        edit && isNew && el("button", {
-          id: "finish-manual-finding",
-          class: "mt-3 w-full rounded-xl bg-ha-blue px-3 py-2 text-sm font-semibold text-white hover:bg-[#074f85] disabled:opacity-50",
-          disabled: busy,
-          onClick: finishManualFinding,
-        }, "Finish this finding"),
-        edit && !isManualFinding(f) && el("div", { class: "mt-3 flex justify-center gap-2" },
-          f.status !== "accepted" && el("button", {
-            id: `accept-finding-${f._id || f.id}`,
-            class: "min-w-[7.5rem] rounded-xl bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700",
-            onClick: () => acceptFinding(f._id || f.id),
-          }, "Accept"),
-          el("button", {
-            id: `reject-finding-${f._id || f.id}`,
-            class: "min-w-[7.5rem] rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50",
-            onClick: () => removeFinding(f._id || f.id, selectedIndex),
-          }, "Reject")
-        )
-      );
-    }
-
-    // Point-form list of every finding, with the selected row opened as the
-    // editable card so the film box, Accept/Reject, and fields stay bound.
-    function findingsPanel(items) {
-      if (selectedIndex > items.length - 1) selectedIndex = items.length - 1;
-      if (selectedIndex < 0) selectedIndex = 0;
-
-      const select = (i) => {
-        selectedIndex = i;
-        render();
-      };
-
-      const active = items[selectedIndex];
-
-      return el("div", {},
-        el("div", { class: "flex items-center justify-between gap-2" },
-          el("b", { class: "text-slate-900" }, "Findings"),
-          el("span", { class: "text-xs font-semibold text-slate-500" },
-            `${items.length} ${items.length === 1 ? "finding" : "findings"}`
-          )
-        ),
-
-        el("ul", {
-          id: "findings-list",
-          class: "mt-3 max-h-64 overflow-y-auto divide-y divide-slate-100 rounded-xl border border-slate-200",
-        },
-          ...items.map((f, i) => {
-            const selected = i === selectedIndex;
-            const isNew = isUnsavedManual(f);
-            const meta = findingPointMeta(f);
-            return el("li", {},
-              el("button", {
-                type: "button",
-                class: `flex w-full items-start gap-2 px-3 py-2.5 text-left transition-colors ${
-                  selected ? "bg-blue-50" : "bg-white hover:bg-slate-50"
-                }`,
-                title: `${i + 1}. ${f.label || "Finding"}`,
-                "aria-current": selected ? "true" : "false",
-                onClick: () => select(i),
-              },
-                el("span", {
-                  class: `mt-0.5 w-5 shrink-0 text-sm font-bold ${selected ? "text-ha-blue" : "text-slate-400"}`,
-                }, `${i + 1}.`),
-                items.filter(hasBbox).length > 1 && hasBbox(f)
-                  ? el("span", {
-                      class: `mt-1 h-2.5 w-2.5 shrink-0 rounded-sm ${filmBoxColor(i, items.filter(hasBbox).length).chip}`,
-                      title: filmBoxColor(i, items.filter(hasBbox).length).name,
-                    })
-                  : null,
-                el("span", { class: "min-w-0 flex-1" },
-                  el("span", { class: "flex items-start justify-between gap-2" },
-                    el("span", { class: "font-semibold text-slate-900" }, f.label || "Finding"),
-                    el("span", { class: "flex shrink-0 flex-wrap justify-end gap-1" },
-                      showProvenance && isManualFinding(f)
-                        ? el("b", { class: "rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600" },
-                            isNew ? "New" : "Manual")
-                        : !showProvenance
-                        ? null
-                        : el("b", { class: "rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-ha-blue" },
-                            `${Math.round((f.confidence ?? 0) * 100)}%`),
-                      showConfidence && f.status === "accepted" && el("b", {
-                        class: "rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-semibold text-green-700",
-                      }, "Accepted")
-                    )
-                  ),
-                  meta ? el("span", { class: "mt-0.5 block text-sm text-slate-500" }, meta) : null
-                )
-              )
-            );
-          })
-        ),
-
-        active && el("div", { class: "mt-3" }, findingCard(active, selectedIndex))
-      );
+    function boxStatus() {
+      if (generating || awaitingAi) return "";
+      if (placing) return "Azure is placing boxes on the film from the report…";
+      if (localCase.boxesState === "failed") return "Azure could not place boxes for this report.";
+      if (localCase.boxesState === "done" && !boxes.length) return "Azure found nothing to box on this film.";
+      if (boxes.length) return "Boxes are placed by Azure from the report wording. They are approximate, not drawn by CURV.";
+      if (String(localCase.reportText || "").trim() && !localCase.boxesState) {
+        return "This report has no film boxes yet. Press Re-run AI for a fresh CURV report with boxes, or Save draft to box this one.";
+      }
+      return "";
     }
 
     const _imageSrc = imageSrc;
@@ -1520,10 +1076,9 @@ export async function renderReviewPage({ target }) {
         "."
       ),
 
-      // Image + findings — the report itself stays in MongoDB and is only
-      // pulled out when someone downloads it.
+      // Film and report side by side.
       el("div", { class: "mt-5 grid gap-5 xl:grid-cols-2" },
-        // X-ray image w/ bbox overlays
+        // X-ray with the Azure boxes
         el("section", { class: "rounded-2xl bg-slate-950 p-4 text-white" },
           el("div", { class: "flex flex-wrap items-center justify-between gap-2" },
             el("div", { class: "flex items-baseline gap-2" },
@@ -1546,7 +1101,7 @@ export async function renderReviewPage({ target }) {
                 class: `rounded-lg border px-2.5 py-1 text-xs font-semibold ${filmTool === "measure" ? "border-cyan-300 bg-cyan-700 text-white" : "border-white/20 bg-white/10 text-white hover:bg-white/20"}`,
                 onClick: () => { filmTool = filmTool === "measure" ? "box" : "measure"; render(); },
               }, filmTool === "measure" ? "Measuring" : "Measure"),
-              visible.length > 0 && el("button", {
+              boxes.length > 0 && el("button", {
                 id: "toggle-bboxes",
                 type: "button",
                 class: "rounded-lg border border-white/20 bg-white/10 px-2.5 py-1 text-xs font-semibold text-white hover:bg-white/20",
@@ -1557,7 +1112,7 @@ export async function renderReviewPage({ target }) {
           el("div", { class: "mt-3 max-h-[560px] overflow-auto rounded-xl bg-gradient-to-b from-slate-500 to-slate-900" },
             el("div", {
               id: "xray-stage",
-              class: `relative touch-none ${filmTool === "measure" || canEditBox() ? "cursor-crosshair" : ""}`,
+              class: `relative touch-none ${filmTool === "measure" ? "cursor-crosshair" : ""}`,
               style: { width: `${Math.round(zoom * 100)}%` },
               onPointerdown: onFilmPointerDown,
               onPointermove: onFilmPointerMove,
@@ -1569,45 +1124,26 @@ export async function renderReviewPage({ target }) {
                 ? el("img", { id: "xray-film", src: _imageSrc, class: "pointer-events-none block h-auto w-full", alt: "Chest X-ray" })
                 : el("div", { class: "pointer-events-none flex h-[320px] w-full min-w-[240px] items-center justify-center text-slate-300 text-sm" }, localCase.imageId ? "Loading image…" : "No image"),
               measureLine && measureOverlay(measureLine),
-              ...(() => {
-                if (!showBoxes) return [];
-                const boxed = visible.filter(hasBbox);
-                const ordered = visible
-                  .map((finding, index) => ({ finding, index }))
-                  .filter(({ finding }) => hasBbox(finding))
-                  .sort((a, b) => Number(a.index === selectedIndex) - Number(b.index === selectedIndex));
-                return ordered.map(({ finding, index }) => {
-                  const color = filmBoxColor(index, boxed.length);
-                  const selected = index === selectedIndex;
-                  return el("div", {
-                    class: `pointer-events-none absolute border-2 ${color.border} ${color.fill} ${selected ? "z-10 border-[3px]" : "opacity-80"}`,
-                    dataset: { bbox: selected ? "selected" : "peer" },
-                    style: {
-                      left: finding.bbox[0] + "%",
-                      top: finding.bbox[1] + "%",
-                      width: finding.bbox[2] + "%",
-                      height: finding.bbox[3] + "%",
-                    },
-                    title: finding.label,
+              measureLine && measureLabelEl(measureLine),
+              ...(!showBoxes ? [] : boxes.map((finding, index) => {
+                const color = filmBoxColor(index, boxes.length);
+                return el("div", {
+                  class: `pointer-events-none absolute border-2 ${color.border} ${color.fill}`,
+                  dataset: { bbox: String(index + 1) },
+                  style: {
+                    left: finding.bbox[0] + "%",
+                    top: finding.bbox[1] + "%",
+                    width: finding.bbox[2] + "%",
+                    height: finding.bbox[3] + "%",
                   },
-                    el("span", {
-                      class: `absolute -top-5 left-0 px-1 text-xs font-bold text-black ${color.chip}`,
-                      dataset: { bboxLabel: "1" },
-                    }, `F${index + 1}`),
-                    selected && canEditBox() && ["nw", "ne", "sw", "se"].map((h) =>
-                      el("span", {
-                        class: `absolute h-2.5 w-2.5 rounded-sm border ${color.handle}`,
-                        style: {
-                          left: h.includes("w") ? "-5px" : "auto",
-                          right: h.includes("e") ? "-5px" : "auto",
-                          top: h.includes("n") ? "-5px" : "auto",
-                          bottom: h.includes("s") ? "-5px" : "auto",
-                        },
-                      })
-                    )
-                  );
-                });
-              })()
+                  title: finding.sentence || finding.label,
+                },
+                  el("span", {
+                    class: `absolute -top-5 left-0 max-w-[16rem] truncate px-1 text-xs font-bold text-black ${color.chip}`,
+                    dataset: { bboxLabel: "1" },
+                  }, finding.label)
+                );
+              }))
             )
           ),
           el("p", { class: "mt-2 text-center text-xs text-slate-300" },
@@ -1615,31 +1151,38 @@ export async function renderReviewPage({ target }) {
               ? (measureLine ? measureText(measureLine) : "Drag a line across the lesion. Centimetres use the DICOM pixel spacing.")
               : `Zoom ${Math.round(zoom * 100)}%. Scroll the film to move around.`
           ),
-          canEditBox() && filmTool !== "measure" && el("p", { class: "mt-1 text-center text-xs text-slate-400" },
-            hasBbox((localCase.findings || [])[selectedIndex])
-              ? `Drag the ${filmBoxColor(selectedIndex, visible.filter(hasBbox).length).name} box to move it, a corner to resize, or elsewhere to redraw.`
-              : "Drag on the film to draw this finding's box."
-          )
+          boxStatus() && el("p", { id: "box-status", class: "mt-1 text-center text-xs text-slate-400" }, boxStatus())
         ),
 
         el("section", { class: "flex flex-col gap-5" },
-          findings.length === 0
-            ? el("div", { class: "card text-center text-slate-500" },
-                el("p", {}, "No findings yet — add one by hand."),
-                edit && !busy && el("div", { class: "mt-3 flex flex-wrap items-center justify-center gap-2" },
-                  el("button", {
-                    class: "inline-flex items-center gap-1 rounded-xl border border-ha-blue px-4 py-2 text-sm font-semibold text-ha-blue hover:bg-blue-50",
-                    onClick: addFinding,
-                  }, "+ Add manually"),
-                )
-              )
-            : el("div", { class: "card" },
-                findingsPanel(visible),
-                edit && el("button", {
-                  class: "mt-2 w-full rounded-xl border border-ha-blue px-3 py-2 text-sm font-semibold text-ha-blue hover:bg-blue-50",
-                  onClick: addFinding,
-                }, "+ Add manually")
-              ),
+          el("div", { class: "card", id: "report-panel" },
+            el("div", { class: "flex flex-wrap items-center justify-between gap-2" },
+              el("h2", { class: "text-lg font-bold text-slate-900" }, "Report"),
+              canExport(state.user) && !generating && !awaitingAi && el("button", {
+                class: "rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
+                disabled: busy,
+                onClick: openReport,
+              }, "Open report")
+            ),
+            edit && el("p", { class: "mt-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950" },
+              "Thinking is on this draft so you can check the model’s reasoning. It is not included in the endorsed report, or in the Word and PDF files after you endorse."
+            ),
+            edit
+              ? el("textarea", {
+                  id: "report-text",
+                  class: "input mt-3 min-h-[420px] font-sans text-sm leading-6",
+                  rows: 18,
+                  onInput: (e) => { bodyDraft = e.target.value; bodyDirty = true; markUnsaved(); },
+                }, bodyDraft)
+              : el("pre", { id: "report-text", class: "mt-3 max-h-[560px] overflow-y-auto whitespace-pre-wrap font-sans text-sm leading-6 text-slate-800" },
+                  generating
+                    ? "The report is still generating."
+                    : reportBody || "No report has been saved for this case yet."
+                ),
+            edit && el("p", { class: "mt-2 text-xs text-slate-500" },
+              "Edit the report here. Save draft keeps it and Azure moves the film boxes to match."
+            )
+          ),
           el("div", { class: "card flex-1" },
             el("div", { class: "flex flex-wrap items-center justify-between gap-2" },
               el("h2", { class: "text-lg font-bold text-slate-900" }, "Remarks"),
@@ -1662,7 +1205,7 @@ export async function renderReviewPage({ target }) {
             el("p", { class: "mt-2 text-xs text-slate-500" },
               localCase.status === "finalized"
                 ? "This case is finalized. Remarks are saved as notes only and are not written into the report, Word, or PDF."
-                : "Nothing is written until you press Save draft or Save remarks."
+                : "Nothing is written until you press Save draft or Save remarks. Both save the report and the remarks."
             ),
             canRemark && el("p", { id: "mongo-report-status", class: "mt-1 text-xs font-medium text-ha-blue" })
           ),
@@ -1727,9 +1270,9 @@ export async function renderReviewPage({ target }) {
     mount(target, root);
   }
 
+  mount(target, el("p", { class: "p-8 text-slate-500" }, "Loading examination…"));
   await refreshFromServer();
   if (signal.aborted || leaving) return;
-  if (localCase && !isGenerating(localCase)) fillFromLocalParser();
   window.addEventListener("focus", () => {
     if (!signal.aborted) refreshFromServer();
   }, { signal });

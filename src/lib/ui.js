@@ -129,10 +129,18 @@ export function bindListHotkeys() {
   });
 }
 
+function uploadedAt(c = {}) {
+  const value = c.registeredAt || ((c.imageId || c.imageUrl) ? c.createdAt : null);
+  const time = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(time) ? time : 0;
+}
+
 export function sortWorklist(cases) {
   return [...(cases || [])].sort((a, b) => {
     const urgent = Number(Boolean(b.urgent)) - Number(Boolean(a.urgent));
     if (urgent) return urgent;
+    const recent = uploadedAt(b) - uploadedAt(a);
+    if (recent) return recent;
     return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
   });
 }

@@ -15,10 +15,17 @@ function analysisStateOf(doc = {}) {
   return 'done';
 }
 
+// Azure only labels a report after a clinician has changed it; the first
+// CURV draft is shown as CURV wrote it.
+function clinicianEdited(doc = {}) {
+  return (Array.isArray(doc.editLog) ? doc.editLog : []).some((row) => row?.kind === 'manual');
+}
+
 function toPublicCase(doc, extra = {}) {
   const o = doc && typeof doc.toObject === 'function' ? doc.toObject() : { ...(doc || {}) };
   o.status = publicStatus(o.status);
   o.analysisState = analysisStateOf(o);
+  o.clinicianEdited = clinicianEdited(o);
   if (o.imageId && o.imageUrl === undefined) {
     o.imageUrl = `/api/images/${o.imageId}`;
   }
@@ -52,4 +59,4 @@ function statusFilter(status) {
   return status;
 }
 
-module.exports = { publicStatus, analysisStateOf, toPublicCase, statusFilter };
+module.exports = { publicStatus, analysisStateOf, clinicianEdited, toPublicCase, statusFilter };

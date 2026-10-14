@@ -12,10 +12,10 @@ const { analyzeXray } = require('../utils/aiService');
 const { prepareFilm } = require('../utils/dicom');
 const { buildEditChanges } = require('../utils/editDiff');
 const azureFindings = require('../utils/azureFindings');
-const { mergeFindingsFromReport, dedupeFindings } = require('../utils/findingsMerge');
+const { dedupeFindings } = require('../utils/findingsMerge');
 const { bucket, downloadImage } = require('./_gridfs');
 const { nameFieldsFrom } = require('../utils/patientName');
-const { toPublicCase, statusFilter, publicStatus } = require('../utils/caseStatus');
+const { toPublicCase, statusFilter, publicStatus, clinicianEdited } = require('../utils/caseStatus');
 const { upsertPatientFromCase, removeCaseRecord } = require('../utils/recordSync');
 const { normalizeRole, isReferringDoctor, isTechnician } = require('../utils/roles');
 const { OWNED } = Case;
@@ -168,17 +168,29 @@ exports.createCase = catchAsync(async (req, res, next) => {
   if (requestCaseId) {
     const open = await Case.findOne({ caseId: requestCaseId, status: 'requested' });
     if (!open) return next(ApiError.badRequest('That X-ray request is not open.'));
-    open.imageId = imageId;
-    open.registeredAt = new Date();
-    if (Array.isArray(film.pixelSpacingMm)) open.pixelSpacingMm = film.pixelSpacingMm;
-    open.imageFilename = film.filename;
-    open.imageContentType = film.contentType;
-    open.imageSize = film.size;
-    open.createdBy = userId;
-    open.createdByName = userName;
-    if (history) open.history = history;
-    await queueAnalysis(open, userId, film.buffer);
-    await addAuditLog(userId, 'CASE_CREATED', `Registered film for request ${open.caseId}`, open.caseId, null, 'pending');
+    let tmpPath = '';
+    try {
+      open.imageId = imageId;
+      open.registeredAt = new Date();
+      if (Array.isArray(film.pixelSpacingMm)) open.pixelSpacingMm = film.pixelSpacingMm;
+      open.imageFilename = film.filename;
+      open.imageContentType = film.contentType;
+      open.imageSize = film.size;
+      open.createdBy = userId;
+      open.createdByName = userName;
+      if (history) open.history = history;
+      markGenerating(open);
+      tmpPath = writeAnalysisFile(open, film.buffer);
+      await open.save();
+      await addAuditLog(userId, 'CASE_CREATED', `Registered film for request ${open.caseId}`, open.caseId, null, 'pending');
+      enqueueAnalysis(open, userId, tmpPath);
+    } catch (err) {
+      if (tmpPath) {
+        try { fs.unlinkSync(tmpPath); } catch (_) { /* ignore */ }
+      }
+      await restoreOpenRequest(requestCaseId);
+      return next(ApiError.badRequest(err.message || 'The film was not saved. The request is still open.'));
+    }
     return res.status(201).json({
       success: true,
       analysing: true,
@@ -245,25 +257,55 @@ exports.createCase = catchAsync(async (req, res, next) => {
   });
 });
 
-function queueAnalysis(doc, userId, fileBuffer) {
-  const ext = path.extname(doc.imageFilename || '') || '.jpg';
-  const tmpPath = path.join(UPLOAD_DIR, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
-  fs.writeFileSync(tmpPath, fileBuffer);
+function markGenerating(doc) {
   doc.status = 'pending';
   doc.analysisState = 'running';
   doc.diagnosis = 'Generating report…';
+}
+
+function writeAnalysisFile(doc, fileBuffer) {
+  const ext = path.extname(doc.imageFilename || '') || '.jpg';
+  const tmpPath = path.join(UPLOAD_DIR, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
+  fs.writeFileSync(tmpPath, fileBuffer);
+  return tmpPath;
+}
+
+function enqueueAnalysis(doc, userId, tmpPath) {
   const caseId = doc.caseId;
   const patientId = doc.patientId;
   const age = doc.age;
   const sex = doc.sex;
   const history = doc.history;
   const aiModel = process.env.AI_MODEL_PATH || '/Users/PHY/CURV-mlx';
-  return doc.save().then(() => {
-    setImmediate(() => {
-      finishAnalysis({ caseId, tmpPath, patientId, age, sex, history, userId, aiModel })
-        .catch((err) => console.error('[createCase] background analysis failed:', err));
-    });
+  setImmediate(() => {
+    finishAnalysis({ caseId, tmpPath, patientId, age, sex, history, userId, aiModel })
+      .catch((err) => console.error('[createCase] background analysis failed:', err));
   });
+}
+
+async function restoreOpenRequest(requestCaseId) {
+  await Case.updateOne({ caseId: requestCaseId }, {
+    $set: {
+      status: 'requested',
+      analysisState: 'none',
+      diagnosis: 'Chest X-ray requested',
+      diagnosisSource: '',
+      reportText: '',
+      findings: [],
+      imageId: null,
+      imageFilename: '',
+      imageContentType: '',
+      imageSize: 0,
+      registeredAt: null,
+    },
+    $unset: { pixelSpacingMm: '' },
+  });
+}
+
+function queueAnalysis(doc, userId, fileBuffer) {
+  markGenerating(doc);
+  const tmpPath = writeAnalysisFile(doc, fileBuffer);
+  return doc.save().then(() => enqueueAnalysis(doc, userId, tmpPath));
 }
 
 exports.requestExam = catchAsync(async (req, res, next) => {
@@ -315,25 +357,28 @@ exports.analyzeCase = catchAsync(async (req, res, next) => {
   if (c.status === 'finalized') {
     return next(ApiError.badRequest('This case is finalized and cannot be analysed again.'));
   }
-  if (c.analysisState === 'running') {
+  const runningFor = c.updatedAt ? Date.now() - new Date(c.updatedAt).getTime() : 0;
+  if (c.analysisState === 'running' && runningFor < 3 * 60 * 1000) {
     return res.json({ success: true, analysing: true, case: toPublicCase(c, publicCaseOpts(req, c)) });
   }
   if (!c.imageId) return next(ApiError.badRequest('This case has no X-ray image.'));
 
-  const image = await downloadImage(c.imageId);
-  if (!image?.buffer) return next(ApiError.badRequest('Could not load the stored X-ray.'));
-
-  const ext = path.extname(c.imageFilename || '') || '.jpg';
-  const tmpName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
-  const tmpPath = path.join(UPLOAD_DIR, tmpName);
-  fs.writeFileSync(tmpPath, image.buffer);
-
+  // Answer before reading the film. A 10 MB GridFS download was holding this
+  // request open, so Re-run AI looked like it did nothing.
   c.status = 'pending';
   c.analysisState = 'running';
+  c.boxesState = '';
+  c.findings = [];
   c.diagnosis = 'Generating report…';
   await c.save();
 
   const caseId = c.caseId;
+  const imageId = c.imageId;
+  const imageFilename = c.imageFilename;
+  const patientId = c.patientId;
+  const age = c.age;
+  const sex = c.sex;
+  const history = c.history;
   const userId = req.user.userId;
   const aiModel = process.env.AI_MODEL_PATH || '/Users/PHY/CURV-mlx';
 
@@ -344,18 +389,50 @@ exports.analyzeCase = catchAsync(async (req, res, next) => {
   });
 
   setImmediate(() => {
-    finishAnalysis({
+    runStoredAnalysis({
       caseId,
-      tmpPath,
-      patientId: c.patientId,
-      age: c.age,
-      sex: c.sex,
-      history: c.history,
+      imageId,
+      imageFilename,
+      patientId,
+      age,
+      sex,
+      history,
       userId,
       aiModel,
     }).catch((err) => console.error('[analyzeCase] background analysis failed:', err));
   });
 });
+
+async function runStoredAnalysis({ caseId, imageId, imageFilename, patientId, age, sex, history, userId, aiModel }) {
+  let tmpPath = '';
+  try {
+    const image = await downloadImage(imageId);
+    if (!image?.buffer) throw new Error('Could not load the stored X-ray.');
+    const ext = path.extname(imageFilename || '') || '.png';
+    tmpPath = path.join(UPLOAD_DIR, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
+    fs.writeFileSync(tmpPath, image.buffer);
+    await finishAnalysis({
+      caseId,
+      tmpPath,
+      patientId,
+      age,
+      sex,
+      history,
+      userId,
+      aiModel,
+    });
+  } catch (err) {
+    console.error('[analyzeCase] could not start from the stored film:', err.message);
+    try { if (tmpPath) fs.unlinkSync(tmpPath); } catch (_) { /* ignore */ }
+    const doc = await Case.findOne({ caseId });
+    if (!doc || doc.status === 'finalized') return;
+    doc.reportText = `[AI analysis unavailable: ${err.message}]\n\nA clinician should review the uploaded image and complete this report.`;
+    doc.diagnosis = 'Report needs a manual draft';
+    doc.status = 'pending_approve';
+    doc.analysisState = 'done';
+    await doc.save().catch((err2) => console.error('[analyzeCase] could not clear the stuck run:', err2.message));
+  }
+}
 
 function mapAiFindings(aiFindings, reportText) {
   return (aiFindings || []).map((f, idx) => ({
@@ -399,45 +476,20 @@ async function finishAnalysis({ caseId, tmpPath, patientId, age, sex, history, u
   const c = await Case.findOne({ caseId });
   if (!c || c.status === 'finalized') return;
 
-  let findings = mapAiFindings(aiFindings, reportText);
-  let diagnosis = azureFindings.pickDiagnosis('', [], reportText) || 'AI report';
-  let diagnosisSource = 'local';
+  let findings = dedupeFindings(mapAiFindings(aiFindings, reportText));
+  let diagnosis = azureFindings.pickDiagnosis('', [], reportText) || (aiError ? 'Report needs a manual draft' : 'AI report');
 
-  // Pending approve means the draft AND the finding cards are ready, so
-  // Review does not have to call Azure when the clinician opens the case.
-  if (azureFindings.isConfigured() && (reportText || '').trim() && !aiError) {
-    try {
-      const image = await downloadImage(c.imageId);
-      const summarised = await azureFindings.summariseFindings(reportText, image);
-      if (summarised.findings?.length) {
-        findings = dedupeFindings(summarised.findings);
-        await addAuditLog(
-          userId,
-          'CASE_UPDATED',
-          `Azure AI summarised ${findings.length} findings for ${caseId}`
-        );
-      }
-      if (summarised.diagnosis) {
-        diagnosis = summarised.diagnosis;
-        diagnosisSource = 'azure';
-      }
-    } catch (err) {
-      console.warn('[createCase] Azure findings skipped:', err.message);
-      try {
-        diagnosis = await azureFindings.summariseDiagnosis(reportText);
-        diagnosisSource = 'azure';
-      } catch (err2) {
-        console.warn('[createCase] Azure diagnosis skipped:', err2.message);
-      }
-    }
-  }
-
+  // Store the CURV draft before any slower labelling step. The model log
+  // already says OK at this point; leaving analysisState running made the
+  // work list stay on Generating.
+  const wantBoxes = !aiError && Boolean((reportText || '').trim()) && azureFindings.isConfigured();
   c.reportText = reportText;
-  c.findings = dedupeFindings(findings);
+  c.findings = findings;
   c.diagnosis = diagnosis;
-  c.diagnosisSource = diagnosisSource;
+  c.diagnosisSource = 'local';
   c.status = 'pending_approve';
   c.analysisState = 'done';
+  c.boxesState = wantBoxes ? 'running' : '';
   c.aiProvider = aiError ? '' : 'mlx_vlm';
   c.aiModel = aiError ? '' : aiModel;
   pushEditLog(c, {
@@ -446,9 +498,47 @@ async function finishAnalysis({ caseId, tmpPath, patientId, age, sex, history, u
     kind: 'ai',
     summary: aiError
       ? `AI unavailable (${aiError}). Radiologist can complete the report by hand.`
-      : `AI generated draft report (${(c.findings || []).length} findings).`,
+      : 'AI generated draft report.',
   });
+  try {
+    await c.save();
+  } catch (err) {
+    console.error('[finishAnalysis] could not store the draft:', err.message);
+    c.findings = [];
+    c.diagnosis = 'Report needs a manual draft';
+    c.reportText = reportText || `The draft could not be stored: ${err.message}`;
+    c.status = 'pending_approve';
+    c.analysisState = 'done';
+    c.boxesState = '';
+    await c.save().catch((err2) => console.error('[finishAnalysis] fallback save failed:', err2.message));
+    return;
+  }
+
+  if (wantBoxes) await placeFilmBoxes(c, userId);
+}
+
+// Azure reads the stored CURV report and the film, and only places boxes.
+// The report text and the diagnosis label stay as CURV produced them.
+async function placeFilmBoxes(c, userId) {
+  const { caseId, reportText } = c;
+  let boxes = [];
+  let failed = false;
+  try {
+    const image = await downloadImage(c.imageId);
+    boxes = dedupeFindings((await azureFindings.summariseFindings(reportText, image)).findings || []);
+  } catch (err) {
+    failed = true;
+    console.warn('[placeFilmBoxes] Azure boxes skipped:', err.message);
+  }
+  c = await Case.findOne({ caseId });
+  if (!c) return;
+  const stale = c.status === 'finalized' || c.reportText !== reportText;
+  if (boxes.length && !stale) c.findings = boxes;
+  c.boxesState = failed ? 'failed' : 'done';
   await c.save();
+  if (boxes.length && !stale) {
+    await addAuditLog(userId, 'CASE_UPDATED', `Azure AI placed ${boxes.length} film boxes for ${caseId}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -676,11 +766,16 @@ exports.streamImage = catchAsync(async (req, res, next) => {
   for (const name of ['images', 'fs']) {
     const file = await db.collection(`${name}.files`).findOne({ _id: oid });
     if (!file) continue;
-    const cursor = bucket(name).openDownloadStream(oid);
-    cursor.on('error', (err) => next(ApiError.notFound(err.message)));
-    res.set('Content-Type', file.contentType || 'image/jpeg');
-    if (file.length) res.set('Content-Length', file.length);
-    return cursor.pipe(res);
+    const image = await downloadImage(req.params.id);
+    if (!image?.buffer) continue;
+    res.set('Content-Type', image.contentType || file.contentType || 'image/jpeg');
+    res.set('Content-Length', image.buffer.length);
+    res.set('Cache-Control', 'private, max-age=86400');
+    if ((image.rowScale && image.rowScale !== 1) || (image.colScale && image.colScale !== 1)) {
+      res.set('X-Pixel-Scale', `${image.rowScale},${image.colScale}`);
+      res.set('Access-Control-Expose-Headers', 'X-Pixel-Scale');
+    }
+    return res.end(image.buffer);
   }
   return next(ApiError.notFound('Image not found.'));
 });
@@ -720,8 +815,9 @@ exports.summariseFindings = catchAsync(async (req, res, next) => {
     return next(ApiError.badRequest('Azure AI did not return any findings for this report.'));
   }
 
-  c.findings = dedupeFindings(mergeFindingsFromReport(c.findings, findings));
-  if (summarised.diagnosis) {
+  c.findings = dedupeFindings(findings);
+  c.boxesState = 'done';
+  if (summarised.diagnosis && clinicianEdited(c)) {
     c.diagnosis = summarised.diagnosis;
     c.diagnosisSource = 'azure';
   }
@@ -753,6 +849,9 @@ exports.summariseDiagnosis = catchAsync(async (req, res, next) => {
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
   if (c.status === 'pending') {
     return next(ApiError.badRequest('The report is still generating.'));
+  }
+  if (!clinicianEdited(c)) {
+    return res.json({ success: true, reused: true, case: toPublicCase(c) });
   }
   if (c.diagnosisSource === 'azure' && String(c.diagnosis || '').trim() && !azureFindings.needsAzureDiagnosis(c)) {
     return res.json({ success: true, reused: true, case: toPublicCase(c) });

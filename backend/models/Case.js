@@ -61,6 +61,8 @@ const caseSchema = new mongoose.Schema(
     findings: { type: [findingSchema], default: [] },
     // none = film stored, AI not started; running = CURV in progress; done = draft ready.
     analysisState: { type: String, enum: ['none', 'running', 'done'], default: 'none' },
+    // Azure film boxes, placed after the CURV draft is stored. '' = not requested.
+    boxesState: { type: String, enum: ['', 'running', 'done', 'failed'], default: '' },
     editLog: {
       type: [{
         at: { type: Date, default: Date.now },

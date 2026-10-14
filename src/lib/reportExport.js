@@ -28,6 +28,63 @@ export function splitReportAndRemarks(reportText) {
   return { body, remarks: section };
 }
 
+const SCAFFOLD_LINE = /^(?:radiology report|header|frontal chest x-?ray)\s*:?\s*$/i;
+const COVER_LINE = /^(?:patient\s*id|patient|age|sex|name)\s*:/i;
+const HISTORY_LINE = /^clinical history\s*:?\s*(.*)$/i;
+const FINDINGS_LINE = /^(?:imaging findings|findings)\b\s*:?\s*.*$/i;
+const IMPRESSION_LINE = /^(?:impression|conclusion)\s*:?\s*$/i;
+const BOILER_LINE = /^this report provides a comprehensive analysis\b/i;
+
+// CURV sometimes ignores the Findings / Thinking / Impression tags and writes
+// a second cover ("Radiology Report", patient id, "Imaging Findings", "Conclusion").
+// The download already has that cover, so fold the body back into one shape.
+export function normalizeReportShape(reportText) {
+  const src = String(reportText || "").replace(/\r\n/g, "\n").trim();
+  if (!src) return "";
+  const alternate = /^(?:radiology report|imaging findings)\b/im.test(src)
+    || /^patient id\s*:/im.test(src)
+    || /^conclusion\s*:?\s*$/im.test(src);
+  if (!alternate) return src;
+
+  const lines = src.split("\n");
+  const out = [];
+  let seenFindings = false;
+  let skipHistory = false;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!seenFindings) {
+      if (!line || SCAFFOLD_LINE.test(line) || COVER_LINE.test(line)) continue;
+      const history = line.match(HISTORY_LINE);
+      if (history) {
+        skipHistory = !history[1];
+        continue;
+      }
+      if (skipHistory) {
+        skipHistory = false;
+        continue;
+      }
+      if (FINDINGS_LINE.test(line)) {
+        seenFindings = true;
+        out.push("Findings:");
+        continue;
+      }
+      seenFindings = true;
+    }
+    if (!line && out.length && !out[out.length - 1]) continue;
+    if (IMPRESSION_LINE.test(line)) {
+      out.push("Impression:");
+      continue;
+    }
+    if (FINDINGS_LINE.test(line) && /^imaging findings\b/i.test(line)) {
+      out.push("Findings:");
+      continue;
+    }
+    if (BOILER_LINE.test(line)) break;
+    out.push(raw.replace(/[ \t]+$/g, ""));
+  }
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 // The model's reasoning stays on the draft. Endorsed reports and downloads omit it.
 export function withoutThinking(reportText) {
   const src = String(reportText || "").replace(/\r\n/g, "\n");
@@ -344,6 +401,16 @@ export function reportSignOff(c = {}, signerName = "") {
   return { doctor, date };
 }
 
+function reportBody(c = {}) {
+  const split = splitReportAndRemarks(c.reportText);
+  const manual = splitManualFindings(split.body);
+  let body = normalizeReportShape(manual.body);
+  if (c.status === "finalized") body = withoutThinking(body);
+  if (manual.manual) body = `${body}\n\n${MANUAL_FINDINGS_HEADING}\n${manual.manual}`.trim();
+  if (split.remarks) body = `${body}\n\n${REMARKS_HEADING}\n${split.remarks}`.trim();
+  return body;
+}
+
 export function buildReportSections(c = {}) {
   const findings = Array.isArray(c.findings) ? c.findings : [];
   return {
@@ -353,9 +420,7 @@ export function buildReportSections(c = {}) {
     age: c.age || "",
     sex: c.sex || "",
     history: c.history || "",
-    body: (c.status === "finalized"
-      ? withoutThinking(c.reportText)
-      : String(c.reportText || "").replace(/\r\n/g, "\n").trim()),
+    body: reportBody(c),
     signOff: reportSignOff(c),
     findings: findings.map((f, i) => ({
       n: i + 1,
@@ -380,9 +445,16 @@ function triggerDownload(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function filmForReport(c) {
+  return Promise.race([
+    loadCaseFilm(c),
+    new Promise((resolve) => setTimeout(() => resolve(null), 20000)),
+  ]);
+}
+
 export async function downloadReportDocx(c) {
   const s = buildReportSections(c);
-  const film = await loadCaseFilm(c);
+  const film = await filmForReport(c);
   const children = [
     new Paragraph({ text: s.title, heading: HeadingLevel.HEADING_1 }),
     new Paragraph({
@@ -579,7 +651,7 @@ export function buildReportPdfBytes(c, film = null) {
 
 export async function downloadReportPdf(c) {
   const s = buildReportSections(c);
-  const film = await loadCaseFilm(c);
+  const film = await filmForReport(c);
   const bytes = buildReportPdfBytes(c, film?.type === "jpg" ? film : null);
   triggerDownload(new Blob([bytes], { type: "application/pdf" }), `${s.fileBase}.pdf`);
 }

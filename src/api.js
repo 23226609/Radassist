@@ -96,6 +96,16 @@ async function request(method, path, body, { raw, headers, signal } = {}) {
   return data;
 }
 
+const filmScales = new Map();
+
+export function filmSpacingAdjust(imageId) {
+  return filmScales.get(String(imageId)) || null;
+}
+
+export function clearFilmSpacingAdjust(imageId) {
+  filmScales.delete(String(imageId));
+}
+
 export const api = {
   // Auth
   login: (username, password) => request("POST", "/auth/login", { username, password }),
@@ -137,8 +147,16 @@ export const api = {
   deleteCases: (ids) => request("POST", "/cases/bulk-delete", { ids }),
   imageUrl: (imageId) => `${BASE}/images/${imageId}`,
   fetchImage: async (imageId) => {
-    const res = await request("GET", `/images/${imageId}`, undefined, { raw: true });
+    const res = await request("GET", `/images/${imageId}`, undefined, {
+      raw: true,
+      signal: AbortSignal.timeout(120000),
+    });
     if (!res.ok) throw new Error(`Image fetch failed: HTTP ${res.status}`);
+    const raw = res.headers.get("X-Pixel-Scale") || "";
+    const [row, col] = raw.split(",").map(Number);
+    if (row > 0 && col > 0 && (row !== 1 || col !== 1)) {
+      filmScales.set(String(imageId), { row, col });
+    }
     return res.blob();
   },
 
