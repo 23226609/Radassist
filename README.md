@@ -18,7 +18,7 @@ The shell has a beige title bar (`#ece9da`) and a gray **MODULES** column. The X
 | API | Express 4, Mongoose 8, JWT | http://localhost:5002 |
 | Database | Azure Cosmos DB (Mongo API) + GridFS | `MONGODB_URI` |
 | Local vision model | FastAPI middleware → `mlx_vlm` (CURV) | http://localhost:8001 → :8080 |
-| Optional NLP | Azure OpenAI for diagnosis labels + finding cards | env flags |
+| Optional | Azure OpenAI: film boxes after the CURV draft, work-list label after a manual edit | env flags |
 
 The UI is **not React**. Pages are plain modules that build DOM with `src/dom.js` and re-render through a small pub/sub store in `src/state.js`.
 
@@ -45,14 +45,16 @@ The UI is **not React**. Pages are plain modules that build DOM with `src/dom.js
         │                 mlx_vlm CURV server (:8080)
         │
         └──────────────► Azure OpenAI (optional)
-                         diagnosis + finding boxes
+                         boxes on the film (never edits the report)
 ```
 
 **On booking** (`POST /api/cases/request`), the referring doctor drops **Chest X-ray** on a calendar day. The case is `status: requested`, with `scheduledAt` and no film. The chart button stays **Requested** until a technician saves the film.
 
 **On registration of the film** (`POST /api/cases`), the image is stored in GridFS and CURV starts in the background. There is no Use AI click. The API returns immediately; the radiologist work list shows **Generating**, then **Pending approve**. If CURV is down, the case stays stored so the radiologist can write the report by hand. **Re-run AI** is available after a draft exists.
 
-**On review**, the page shows stored findings as a **point-form list**, with the selected row opened as an editable card. Every finding with a box is drawn on the film; when there is more than one box, each has its own colour. The film can be zoomed, and **Measure** draws a line. Centimetres are shown only when the DICOM file included pixel spacing. While the report is still a draft, an **AI vs manual** log is visible. Click a log row to see what was added, removed, or edited. Nothing is written until **Save draft** or **Save remarks**. **Endorse** locks the report. After that, **Thinking** is omitted from the report the ward sees and from Word and PDF. The date, reporting doctor, and signature stay on the report and in both downloads.
+**After the draft is stored**, Azure reads the CURV report and places boxes on the film (`boxesState: running` → `done` / `failed`). Azure does not rewrite the report or the work-list label at this step; the report text is CURV’s alone.
+
+**On review**, the page shows the report and the film side by side, the way a hospital viewer does. There are no finding cards. The report box is directly editable. The radiologist can draw, move, resize, and delete boxes, and **Measure** lines are saved with the report. **Save draft** stores everything; if the report wording changed, Azure re-places boxes for the new wording and keeps the boxes the radiologist drew, adjusted, or deleted. **Thinking** (the model’s reasoning) is kept in the stored draft but never shown to anyone and never exported. **Endorse** locks the report. The date, reporting doctor, and signature stay on the report and in both downloads.
 
 ---
 
@@ -67,7 +69,7 @@ The UI is **not React**. Pages are plain modules that build DOM with `src/dom.js
 | See draft / pending-approve cases and films | no | yes | no | yes |
 | Order labs on the chart | no | no | yes | yes |
 | Edit the rest of the patient chart | yes | yes | no | yes |
-| Edit findings, re-run AI, endorse | no | yes | no | yes |
+| Edit report, boxes, measurements; re-run AI; endorse | no | yes | no | yes |
 | Mark or remove **Urgent** | no | yes | no | yes |
 | Share an endorsed report (public link) | no | yes | no | yes |
 | Read an endorsed report / export Word or PDF | no | yes | yes | yes |
@@ -103,9 +105,9 @@ Stored in `cases`. One study / one film.
 
 - Identity: `caseId`, `patientId`, name parts + `patientName`
 - Clinical: `age`, `sex`, `history`, `diagnosis`, `diagnosisSource` (`azure` or `local`)
-- Report: `reportText`, `remarks`, `findings[]`
-- AI: `analysisState` (`none` \| `running` \| `done`)
-- Draft provenance: `editLog[]` (`kind`: `ai` \| `manual`). Shown on Review while drafting; **not** included in endorsed / shared / exported report text
+- Report: `reportText`, `remarks`, `findings[]` (the film boxes), `measurements[]`
+- AI: `analysisState` (`none` \| `running` \| `done`), `boxesState` (`''` not requested \| `running` \| `done` \| `failed`)
+- Draft provenance: `editLog[]` (`kind`: `ai` \| `manual`). Shown on Review while drafting; **not** included in endorsed / shared / exported report text. API responses add `clinicianEdited` (true once a `manual` row exists)
 - Workflow: `status` (`requested` no film yet \| `pending` outstanding or generating \| `pending_approve` draft ready \| `finalized` endorsed) and `urgent`. Old documents may still say `completed` — the UI treats that as pending approve
 - Image: `imageId` (GridFS), filename / type / size. Hidden from technician responses. `registeredAt` is the day the technician saved the film; the work list **Reg. Date** uses that, not the request day. `pixelSpacingMm` is `[row, column]` in millimetres when the DICOM file had it
 - Booking: `scheduledAt`
@@ -114,9 +116,15 @@ Stored in `cases`. One study / one film.
 
 Work-list labels: **Requested**, **Outstanding**, **Generating**, **Pending approve**, **Endorsed**. The left queue calls a draft **Partially endorsed** and a locked report **Fully endorsed**, matching the RIS slide. Stored status for an endorsed report is still `finalized`.
 
-A **finding** has `label`, `confidence`, `bbox` `[left, top, width, height]` in percent, `location`, `size`, `pattern`, `sentence`, `status`, `source` (`AI` / `Azure` / `manual`), plus optional calibration fields.
+A **finding** is one box on the film: `label`, `bbox` `[left, top, width, height]` in percent, `sentence`, `severity` (`normal` boxes are not drawn), `status`, `source` (`Azure` or `manual`), and `bboxSource`:
 
-**Locking:** after endorse, diagnosis, report text, and findings cannot change. Remarks and the urgent flag still can. Referring doctors never receive `editLog` or source tags, and they do not see confidence or the **Accepted** tag. Technicians never receive the film, report, or findings.
+- `vision` / `zone` — Azure placed it from the image or from an anatomical zone
+- `manual` — a box the radiologist drew (`source: manual`), or an Azure box they moved or resized
+- `status: rejected` — an Azure box the radiologist deleted. It stays stored, hidden, so the next Azure pass does not bring it back. A deleted drawn box is removed outright
+
+A **measurement** is `x1`, `y1`, `x2`, `y2` (percent of the film), `text` (e.g. `14.29 cm`, or pixels when the film has no spacing), and an optional `label`.
+
+**Locking:** after endorse, diagnosis, report text, boxes, and measurements cannot change. Remarks and the urgent flag still can. Referring doctors never receive `editLog` or source tags. Technicians never receive the film, report, or findings.
 
 ### Other collections
 
@@ -169,7 +177,8 @@ Backend:
 3. Stream that film into GridFS.
 4. Set `analysisState: running` and return immediately.
 5. In the background, resize the whole frame to the CURV pixel budget, call the middleware, then set `pending_approve` on success. The review page shows that rendered film.
-6. Write `CASE_CREATED` / `AI_ANALYZED` as appropriate.
+6. If Azure is configured, ask it to place boxes for that draft (`boxesState: running`). The result is dropped if the report was edited or endorsed in the meantime.
+7. Write `CASE_CREATED` / `AI_ANALYZED` as appropriate.
 
 ### 5. Radiologist: work list and endorse
 
@@ -188,28 +197,36 @@ Admins can tick rows and bulk-delete.
 
 ### 6. Report review
 
-Left: the film, with **Zoom in**, **Zoom out**, and **Measure**. **Measure** draws a line. The length is in centimetres only when `pixelSpacingMm` came from the DICOM file; otherwise it stays in pixels. Right: findings list, selected editable card, remarks. When more than one finding has a box, each box has its own colour.
+Left: the film. Right: the report box (editable while drafting), remarks, and the draft log.
 
-The draft report body is Findings, Thinking, and Impression. Thinking is the model’s reasoning. The radiologist’s report window says that Thinking is **not** included after endorse. **Reject** removes that finding’s sentence from the report and leaves the rest. Edits stay on the page until **Save draft** or **Save remarks**.
+**Film toolbar**
 
-While drafting, the page shows an **attribution log** (AI vs manual). Open a row to see the added, removed, and edited lines. **Endorse report** issues a clean report: no Thinking section, no source badges, and no confidence or **Accepted** tags for the referring doctor. Word and PDF include the date, reporting doctor, and signature.
+- **Zoom in** / **Zoom out** (or the mouse wheel)
+- **Measure** — drag a line. Centimetres need `pixelSpacingMm` from the DICOM file; otherwise the length is in pixels. For a radiologist on a draft, each line is kept on the film in white, numbered, and listed under **Measurements (in the report)** with an optional name and **Delete**. A click without a drag adds nothing. Boxes fade while measuring
+- **Draw box** — drag on the film. The new box is called “Marked area” and can be renamed in **Boxes on the film**
+- **Hide boxes** / **Hide lines** — show the boxes and the measurements separately
+
+**Editing boxes.** Click a box to select it (it fills and shows four corner handles). Drag inside to move it, or drag a corner to resize it. Unselected boxes are outlines only. Each box has its own colour; measurements are always white so they never match a box. The list tags each box **AI**, **AI · adjusted**, or **Manual**. Box editing is closed while Azure is placing boxes and after endorse.
+
+**Report text.** The report box shows Findings and Impression. Thinking is hidden; saving an edit puts the stored Thinking back, so it is not lost and does not show up in the draft log. Edits stay on the page until **Save draft** or **Save remarks**. A Save draft that changes the report wording asks Azure to re-place boxes (`POST /summarise-findings`); the merge in `backend/utils/findingsMerge.js` keeps drawn boxes, adjusted boxes, and deleted boxes as the radiologist left them. Saving only boxes, measurements, or remarks does not call Azure. An older report with no boxes says so and gets boxes on the next Save draft.
+
+While drafting, the page shows an **attribution log** (AI vs manual). Open a row to see the added, removed, and edited lines, boxes, and measurements. **Endorse report** issues a clean report: no Thinking section and no source tags for the referring doctor. Word and PDF include the date, reporting doctor, and signature.
 
 Radiologist / admin can:
 
-- Edit label / location / size / pattern on non-endorsed cases
-- **+ Add manually** — new card (`source: "manual"`)
-- **Re-run AI** — after a draft exists
+- Edit the report text, boxes, and measurements on non-endorsed cases
+- **Re-run AI** — after a draft exists (clears the old boxes; Azure places new ones)
 - **Save draft** / **Endorse report**
 - **Share** / **Copy share link** — after endorse
 - **Mark urgent** / **Remove urgent** (allowed after endorse)
 - Save remarks (allowed after endorse; does **not** rewrite an endorsed report)
 - **Report** / **Word** / **PDF**
 
-Export composition (`src/lib/reportExport.js`) is the endorsed report without Thinking, plus the sign-off.
+Export composition (`src/lib/reportExport.js`): the report without Thinking, any **Measurements** section (`1. length: 14.29 cm`), remarks, and the sign-off. The film image in Word and PDF has the measurement lines and their numbered tags drawn on it. Downloads save unsaved edits first.
 
 ### 7. Endorse
 
-`POST /api/cases/:id/finalize` sets `status: finalized` and records who signed. The screen calls this **Endorse**. It is refused while AI is still `running`. After endorse, findings and the stored report stay locked.
+`POST /api/cases/:id/finalize` sets `status: finalized` and records who signed. The screen calls this **Endorse**. It is refused while AI is still `running`. After endorse, boxes, measurements, and the stored report stay locked.
 
 ### 8. Share (public link)
 
@@ -217,7 +234,7 @@ After endorse, Review shows **Share**. That creates a token (`POST /api/cases/:i
 
 ### 9. Referring doctor
 
-Sees requested exams and endorsed reports. Enquiry, share, and export of an endorsed report are read-only. The endorsed report has Findings and Impression, the signature, and no Thinking section. Finding cards do not show confidence or **Accepted**. No re-run, no draft log, no save, no endorse.
+Sees requested exams and endorsed reports. Enquiry, share, and export of an endorsed report are read-only. The endorsed report has Findings, Impression, any measurements, the signature, and no Thinking section. The film shows the boxes and measurements; **Measure** works but nothing is saved. No re-run, no draft log, no save, no endorse.
 
 ### 10. Users (admin)
 
@@ -240,7 +257,7 @@ Filterable log of logins, case and patient mutations, AI runs, endorsements, del
 | `monitor` / `labs` / `notes` | `clinical.js` | Sepsis, labs, care notes |
 | `cases` / `case` | `cases.js` | Study records |
 | `new` | `newCase.js` | Save the film for a request (starts CURV) |
-| `review` | `review.js` | Film, draft, re-run AI, endorse |
+| `review` | `review.js` | Film (boxes, measurements), editable draft, re-run AI, endorse |
 | `share` | `shareView.js` | Public endorsed report (`#/share/<token>`) |
 | `audit` | `audit.js` | Admin trail |
 | `users` | `users.js` | Admin add / enable / disable / delete |
@@ -252,7 +269,10 @@ Shared pieces:
 - `src/lib/roles.js` — technician / radiologist / doctor / admin
 - `src/lib/patientName.js` — first / middle / last
 - `src/lib/tags.js` — urgent chip, patient name
-- `src/lib/findingsSync.js` — merge Azure / parsed / manual cards
+- `src/lib/reportExport.js` — Word / PDF, hide and restore Thinking, measurements section
+- `src/lib/diagnosis.js` — when the work-list label may be refreshed by Azure
+- `backend/utils/findingsMerge.js` — merge a fresh Azure pass with the radiologist’s box edits
+- `backend/utils/editDiff.js` — draft-log lines for report, box, remark, and measurement changes
 - `src/lib/ui.js` — search, chips, empty states, urgent sort
 - `src/lib/caseStatus.js` — requested / outstanding / generating / pending approve / endorsed
 - `src/lib/analysisJob.js` — poll while a report is generating
@@ -276,13 +296,13 @@ Shared pieces:
 | `POST` | `/api/cases/request` | doctor, admin | book a chest X-ray; optional `scheduledAt`, no film |
 | `POST` | `/api/cases` | technician, admin | multipart PNG, JPG, WebP, or uncompressed DICOM; **starts CURV** |
 | `GET` | `/api/cases/:id` | any | Doctors: requested or endorsed. Technicians: requested only |
-| `PUT` | `/api/cases/:id` | radiologist, admin | findings / report / remarks / urgent |
+| `PUT` | `/api/cases/:id` | radiologist, admin | report / remarks / urgent; `findings` (boxes) and `measurements` only when sent |
 | `POST` | `/api/cases/:id/analyze` | radiologist, admin | re-run AI after a draft exists |
 | `POST` | `/api/cases/:id/finalize` | radiologist, admin | endorse; stores `status: finalized` |
 | `POST` | `/api/cases/:id/share` | radiologist, admin | public token for an endorsed report |
 | `DELETE` | `/api/cases/:id/share` | radiologist, admin | revoke the share link |
-| `POST` | `/api/cases/:id/summarise-findings` | radiologist, admin | Azure cards |
-| `POST` | `/api/cases/:id/summarise-diagnosis` | radiologist, admin | Worklist label |
+| `POST` | `/api/cases/:id/summarise-findings` | radiologist, admin | Azure re-places boxes for the stored report, keeping manual edits |
+| `POST` | `/api/cases/:id/summarise-diagnosis` | radiologist, admin | Work-list label; no-op until the radiologist has edited the draft |
 | `POST` | `/api/cases/bulk-delete` | admin | |
 | `DELETE` | `/api/cases/:id` | admin | |
 | `GET` | `/api/share/:token` | public | endorsed case for a share link |
@@ -300,7 +320,7 @@ Shared pieces:
 | `PUT` | `/api/users/:id/active` | admin | enable / disable |
 | `DELETE` | `/api/users/:id` | admin | not self, not the last active admin |
 
-The Express process is **plain `node server.js`** unless you use `npm run dev` (nodemon). After changing controllers or routes, restart it. `./start_server.sh` does not reload `middleware.py` either.
+On the dev Mac the API runs under the `com.radassist.nodebackend` LaunchAgent (nodemon), so backend edits reload on their own. Do **not** also start `node server.js` by hand: it grabs port 5002 and keeps serving the old code, and the LaunchAgent cannot take the port. If you run without the LaunchAgent, use `npm run dev` or restart `node server.js` after backend edits. `./start_server.sh` does not reload `middleware.py`.
 
 ---
 
@@ -313,7 +333,9 @@ The Express process is **plain `node server.js`** unless you use `npm run dev` (
 1. `mlx_vlm.server --model ~/CURV-mlx --port 8080`
 2. `uvicorn middleware:app --port 8001` from this repo
 
-`backend/utils/aiService.js` posts the image to `POST {AI_BASE_URL}/analyze`. A `.dcm` upload is rendered to PNG before that call. If the file has pixel spacing, that spacing is kept so **Measure** can report centimetres. The middleware can render a DICOM file itself if one is posted directly. It resizes the **whole frame** (no crop) to the CURV preprocessor budget (`max_pixels` 50176, about 224×224). The call matches `CURV-main`: the system text in `training/prompts/prompt_cxr.txt`, then one user turn with the film and the line “Please analyze this chest X-ray image and generate a detailed radiology report following the specified format.” No file path is sent as text. Decoding follows `~/CURV-mlx/generation_config.json` (greedy, repetition penalty 1.05) with up to 1536 tokens, the CURV-main completion length. Patient age, sex, and history stay on the chart. CURV answers with `<findings>`, `<thinking>`, and `<impression>`. The text inside each tag is saved as Findings, Thinking, and Impression without rewording; a reply with no tags is saved as written. Thinking stays on the radiologist’s draft and is removed from the endorsed report and from Word and PDF. The review page parses finding cards from the Findings section and still displays the original image.
+`backend/utils/aiService.js` posts the image to `POST {AI_BASE_URL}/analyze`. A `.dcm` upload is rendered to PNG before that call. If the file has pixel spacing, that spacing is kept so **Measure** can report centimetres. The middleware can render a DICOM file itself if one is posted directly. It resizes the **whole frame** (no crop) to the CURV preprocessor budget (`max_pixels` 50176, about 224×224). The call matches `CURV-main`: the system text in `training/prompts/prompt_cxr.txt`, then one user turn with the film and the line “Please analyze this chest X-ray image and generate a detailed radiology report following the specified format.” No file path is sent as text. Decoding follows `~/CURV-mlx/generation_config.json` (greedy, repetition penalty 1.05) with up to 1536 tokens, the CURV-main completion length. Patient age, sex, and history stay on the chart. CURV answers with `<findings>`, `<thinking>`, and `<impression>`. The text inside each tag is saved as Findings, Thinking, and Impression without rewording; a reply with no tags is saved as written. Thinking is stored with the draft but hidden on every page and in Word and PDF. No extra prompt or guidance is added on top of the training prompt, so CURV runs as it was trained. The review page shows the original image, not the resized one.
+
+The middleware LaunchAgent (`com.radassist.middleware`) must point at this repo. An older copy elsewhere (for example `~/Desktop/fyp`) carries a different prompt and will silently change the reports.
 
 ### Azure OpenAI (optional)
 
@@ -324,12 +346,12 @@ Set in `backend/.env`:
 - `AZURE_OPENAI_DEPLOYMENT`
 - optional `AZURE_OPENAI_API_VERSION` (default `2024-10-21`)
 
-Used for:
+Used for (`backend/utils/azureFindings.js`):
 
-- A short **diagnosis** on the work list after a report exists
-- **Finding cards** during generate: groups the report, scores wording vs image support, clamps boxes. If vision boxes are missing, anatomical **zones** are used.
+- **Film boxes** after CURV stores the draft, and again when a Save draft changes the report wording. Azure gets the report text and the film, and returns boxes with a severity; `normal` findings are not drawn. If vision boxes are missing, anatomical **zones** are used and the page says the boxes are approximate.
+- A short **diagnosis** on the work list, but only after the radiologist has edited the draft. Until then the label is picked locally from CURV’s report text, with no Azure call (`diagnosisSource: local`).
 
-If those env vars are absent, the app runs on CURV + the local parser only.
+Azure never writes `reportText`. If those env vars are absent, the app runs on CURV alone and the film has only the boxes the radiologist draws.
 
 ### Confidence
 
@@ -348,9 +370,10 @@ cd backend
 npm install
 cp .env.example .env   # if you have an example; otherwise edit .env
 npm run seed           # users + demo cases (idempotent)
-node server.js         # :5002
-# or: npm run dev      # nodemon
+npm run dev            # nodemon on :5002 (or: node server.js)
 ```
+
+If the `com.radassist.*` LaunchAgents are installed, they already run the backend, frontend, middleware, and model server. Restart one with `launchctl kickstart -k gui/$(id -u)/com.radassist.nodebackend` instead of starting a second copy.
 
 `backend/.env` needs at least `PORT`, `MONGODB_URI`, `MONGODB_DB`, `JWT_SECRET`, `FRONTEND_URL`, `AI_BASE_URL` (usually `http://localhost:8001`). Never commit it.
 
@@ -390,7 +413,9 @@ Frontend (jsdom via linkedom, no browser):
 npm test
 ```
 
-That runs the suite in `scripts/test-*.mjs`: report unwrap/parse, findings list, Azure bbox, confidence, export, review popup, diagnosis, patients, new patient, cases, pagination, new-case drop zone, audit bulk-delete, users page, share page, analysis job, shell menu.
+That runs the suite in `scripts/test-*.mjs`: report unwrap/parse, the review page, automatic box placement, Azure bbox, confidence, export, report popup, diagnosis, patients, new patient, cases, pagination, new-case drop zone, DICOM, audit bulk-delete, users page, share page, analysis job, shell menu.
+
+`scripts/test-review-page.mjs` clicks every control on the review page against a mocked API. That covers inline report edits, hidden Thinking, drawing, moving, resizing, and deleting boxes, the Azure merge after a report edit, measurements (saved, named, deleted, in the PDF), Endorse, Share, Word, PDF, and read-only roles.
 
 Against a **running** backend:
 
@@ -418,8 +443,8 @@ Dry-run by default; pass `--apply` to write.
 ### For the demo / viva
 
 1. Start backend, Vite, and `start_server.sh` before the session. Confirm `/api/health` says `mongo: "up"` and `:8001/health` is OK. Wait until the model has finished loading.
-2. Restart Express after any backend edit (`node server.js` does not hot-reload). Restart `start_server.sh` after any `middleware.py` edit.
-3. Walk: doctor **Book chest X-ray** on the calendar → technician **Requested case** → save the film (draft generates on its own) → radiologist work list moves from **Generating** to **Pending approve** → edit a card → **Endorse report** → doctor login reads the report without Thinking, with the signature → Share copies a public link.
+2. Make sure only one backend owns port 5002 (`lsof -ti:5002`) and that it started after your last backend edit. Restart `start_server.sh` (or the middleware LaunchAgent) after any `middleware.py` edit.
+3. Walk: doctor **Book chest X-ray** on the calendar → technician **Requested case** → save the film (draft generates on its own) → radiologist work list moves from **Generating** to **Pending approve** → Azure boxes appear on the film → edit the report, resize a box, draw one, measure a lesion → **Save draft** → download the PDF to show the measurement → **Endorse report** → doctor login reads the report without Thinking, with the signature → Share copies a public link.
 4. Show Patient Master, an X-ray request on the chart, and Sepsis / labs / notes for a doctor. Show that a technician and a radiologist do not have labs or the audit log.
 5. Show admin **Users** (add by email, temporary password once) and bulk-delete on a throwaway row, not on the last demo case.
 
@@ -455,7 +480,7 @@ Dry-run by default; pass `--apply` to write.
 
 ### What this project is *not*
 
-It is not a PACS, not a CE/FDA device, and not a substitute for a radiologist. Bounding boxes are approximate. Confidence is a UI hint, not a calibrated probability.
+It is not a PACS, not a CE/FDA device, and not a substitute for a radiologist. Azure’s boxes are approximate and come from the report wording, not from CURV. Measurements are only as accurate as the DICOM pixel spacing.
 
 ---
 
