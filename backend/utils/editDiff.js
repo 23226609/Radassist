@@ -23,6 +23,7 @@ function findingBrief(finding = {}) {
   if (Array.isArray(finding.bbox) && finding.bbox.length === 4) {
     parts.push(`box ${finding.bbox.map((n) => Math.round(Number(n) || 0)).join(',')}`);
   }
+  if (finding.status === 'rejected') parts.push('box deleted');
   return parts.join(' · ');
 }
 
@@ -97,6 +98,36 @@ function remarkChange(before, after) {
   return [{ action: 'edited', field: 'remarks', label: 'Remarks', before: clip(prev), after: clip(next) }];
 }
 
+function measurementBrief(m = {}) {
+  const label = String(m.label || '').trim();
+  const text = String(m.text || '').trim();
+  return [label, text].filter(Boolean).join(': ') || 'Measurement';
+}
+
+function measurementKey(m = {}) {
+  return ['x1', 'y1', 'x2', 'y2'].map((k) => Math.round((Number(m[k]) || 0) * 10)).join(',');
+}
+
+function measurementChanges(prev = [], next = []) {
+  const before = new Map(prev.map((m) => [measurementKey(m), m]));
+  const after = new Map(next.map((m) => [measurementKey(m), m]));
+  const changes = [];
+  for (const [key, m] of before) {
+    const match = after.get(key);
+    if (!match) {
+      changes.push({ action: 'removed', field: 'measurement', label: 'Measurement', before: clip(measurementBrief(m)), after: '' });
+    } else if (measurementBrief(m) !== measurementBrief(match)) {
+      changes.push({ action: 'edited', field: 'measurement', label: 'Measurement', before: clip(measurementBrief(m)), after: clip(measurementBrief(match)) });
+    }
+  }
+  for (const [key, m] of after) {
+    if (!before.has(key)) {
+      changes.push({ action: 'added', field: 'measurement', label: 'Measurement', before: '', after: clip(measurementBrief(m)) });
+    }
+  }
+  return changes;
+}
+
 function summarize(changes) {
   const count = (action) => changes.filter((row) => row.action === action).length;
   const parts = [];
@@ -111,6 +142,7 @@ function buildEditChanges(prev = {}, next = {}) {
     ...textChanges(reportBody(prev.reportText), reportBody(next.reportText), 'Report'),
     ...findingChanges(prev.findings || [], next.findings || []),
     ...remarkChange(prev.remarks, next.remarks),
+    ...measurementChanges(prev.measurements || [], next.measurements || []),
   ].slice(0, 30);
   return { summary: summarize(changes), changes };
 }

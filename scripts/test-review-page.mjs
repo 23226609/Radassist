@@ -1,13 +1,18 @@
 // scripts/test-review-page.mjs
 //
-// Every control on the review page: inline report editing, Save draft,
+// Every control on the review page: inline report editing, box drawing,
+// moving, resizing and deleting, Save draft,
 // Save remarks, Endorse, Mark urgent, Re-run AI, Report popup, Word, PDF,
 // Share, zoom, measure, Hide/Show boxes, draft log, patient link, back.
 //
 //   node scripts/test-review-page.mjs
 
 import assert from "node:assert";
+import { createRequire } from "node:module";
 import { parseHTML } from "linkedom";
+
+const require = createRequire(import.meta.url);
+const { mergeFindingsFromReport } = require("../backend/utils/findingsMerge.js");
 
 const { window, document } = parseHTML(
   "<!doctype html><html><body><div id='root'></div></body></html>"
@@ -115,10 +120,21 @@ api.updateCase = async (_id, payload) => {
   }
   return { case: structuredClone(server) };
 };
+let serverIds = 0;
+api.updateCase = ((inner) => async (id, payload) => {
+  if (Array.isArray(payload.findings)) {
+    payload = {
+      ...payload,
+      findings: payload.findings.map((f) => (f._id ? f : { ...f, _id: `srv-${++serverIds}` })),
+    };
+  }
+  return inner(id, payload);
+})(api.updateCase);
 api.summariseFindings = async () => {
   calls.push(["summarise"]);
   const extra = /effusion/i.test(server.reportText) ? [box("Right pleural effusion")] : [];
-  server = { ...server, findings: [box("Bibasilar atelectasis"), ...extra], boxesState: "done" };
+  const fresh = [box("Bibasilar atelectasis"), ...extra].map((f) => ({ ...f, _id: `fresh-${++serverIds}` }));
+  server = { ...server, findings: mergeFindingsFromReport(server.findings, fresh), boxesState: "done" };
   return { case: structuredClone(server) };
 };
 api.analyzeCase = async () => {
@@ -198,6 +214,7 @@ await test("Zoom in and Zoom out change the film size", async () => {
 await test("Measure draws a line and shows its length", async () => {
   await click(button("Measure"));
   assert.ok(button("Measuring"), "measure mode not on");
+  filmSize();
   const stage = root.querySelector("#xray-stage");
   stage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 100 });
   const ev = (name, x, y) => {
@@ -211,7 +228,8 @@ await test("Measure draws a line and shows its length", async () => {
   ev("pointermove", 40, 50);
   ev("pointerup", 40, 50);
   await tick();
-  assert.ok(root.querySelector("[data-measure] line"), "no measure line");
+  assert.ok(root.querySelector("[data-saved-measures] line"), "no measure line");
+  assert.ok(root.querySelector("[data-saved-measure-label='1']").textContent.endsWith("px"));
   await click(button("Measuring"));
   assert.ok(button("Measure"));
 });
@@ -335,6 +353,221 @@ await test("remarks still save on an endorsed report without changing it", async
   assert.equal(server.reportText, before);
 });
 
+console.log("\n=== drawing, resizing and deleting boxes ===");
+
+function pointer(stage, name, x, y) {
+  const e = new window.Event(name);
+  e.clientX = x;
+  e.clientY = y;
+  e.button = 0;
+  stage.dispatchEvent(e);
+}
+function stage() {
+  const node = root.querySelector("#xray-stage");
+  node.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 100 });
+  return node;
+}
+const rows = () => [...root.querySelectorAll("[data-box-row]")].map((li) => li.textContent.replace(/\s+/g, " ").trim());
+const lastUpdate = () => [...calls].reverse().find((c) => c[0] === "update")[1];
+
+await open();
+
+await test("Draw box adds a named manual box", async () => {
+  await click(root.querySelector("#draw-box"));
+  assert.ok(button("Drawing…"), "draw mode not on");
+  pointer(stage(), "pointerdown", 20, 20);
+  pointer(stage(), "pointermove", 35, 40);
+  pointer(stage(), "pointerup", 35, 40);
+  await tick();
+  assert.deepEqual(boxLabels(), ["Bibasilar atelectasis", "Marked area"]);
+  assert.ok(button("Draw box"), "draw mode should end after one box");
+  const name = root.querySelector("[data-box-name]");
+  assert.ok(name, "no name field for the drawn box");
+  type(name, "Nodule");
+  assert.deepEqual(boxLabels(), ["Bibasilar atelectasis", "Nodule"]);
+  assert.ok(rows()[1].includes("Manual"));
+});
+
+await test("a click without dragging does not add a box", async () => {
+  await click(root.querySelector("#draw-box"));
+  pointer(stage(), "pointerdown", 60, 20);
+  pointer(stage(), "pointerup", 60, 20);
+  await tick();
+  assert.equal(boxLabels().length, 2);
+  await click(root.querySelector("#draw-box"));
+});
+
+await test("clicking an AI box selects it and shows resize handles", async () => {
+  pointer(stage(), "pointerdown", 50, 70);
+  await tick();
+  const selected = root.querySelector("[data-selected='1']");
+  assert.ok(selected, "no box selected");
+  assert.ok(selected.textContent.includes("Bibasilar atelectasis"));
+  assert.equal(selected.querySelectorAll("[data-handle]").length, 4);
+});
+
+await test("dragging a corner resizes the AI box", async () => {
+  pointer(stage(), "pointerdown", 90, 80);
+  pointer(stage(), "pointermove", 70, 90);
+  pointer(stage(), "pointerup", 70, 90);
+  await tick();
+  const node = root.querySelector("[data-selected='1']");
+  assert.equal(node.style.width, "60%");
+  assert.equal(node.style.height, "30%");
+  assert.ok(rows()[0].includes("AI · adjusted"));
+});
+
+await test("dragging inside the box moves it", async () => {
+  pointer(stage(), "pointerdown", 30, 70);
+  pointer(stage(), "pointermove", 35, 65);
+  pointer(stage(), "pointerup", 35, 65);
+  await tick();
+  const node = root.querySelector("[data-selected='1']");
+  assert.equal(node.style.left, "15%");
+  assert.equal(node.style.top, "55%");
+});
+
+await test("Save draft stores the drawn and resized boxes", async () => {
+  calls.length = 0;
+  await click(button("Save draft"), 80);
+  const saved = lastUpdate().findings;
+  assert.ok(Array.isArray(saved), "boxes were not sent");
+  const drawn = saved.find((f) => f.source === "manual");
+  assert.equal(drawn.label, "Nodule");
+  assert.ok(!String(drawn._id || "").startsWith("tmp-"), "temporary id was sent");
+  const ai = saved.find((f) => f.label === "Bibasilar atelectasis");
+  assert.deepEqual(ai.bbox, [15, 55, 60, 30]);
+  assert.equal(ai.bboxSource, "manual");
+  assert.ok(!calls.some((c) => c[0] === "summarise"), "box edits alone must not call Azure");
+});
+
+await test("Delete hides an AI box and keeps it as rejected", async () => {
+  calls.length = 0;
+  const key = root.querySelector("[data-box-row]").dataset.boxRow;
+  await click(root.querySelector(`[data-delete-box="${key}"]`));
+  assert.deepEqual(boxLabels(), ["Nodule"]);
+  await click(button("Save draft"), 80);
+  const ai = lastUpdate().findings.find((f) => f.label === "Bibasilar atelectasis");
+  assert.equal(ai.status, "rejected");
+});
+
+await test("a report edit adds Azure's new box but keeps the radiologist's boxes", async () => {
+  type(root.querySelector("#report-text"), REPORT.replace("Impression:", "Impression:\nRight pleural effusion."));
+  await click(button("Save draft"), 80);
+  assert.ok(calls.some((c) => c[0] === "summarise"));
+  assert.deepEqual(boxLabels().sort(), ["Nodule", "Right pleural effusion"]);
+  assert.equal(server.findings.find((f) => f.label === "Bibasilar atelectasis").status, "rejected",
+    "a deleted AI box must not come back");
+});
+
+await test("a resized AI box keeps its size after Azure re-places boxes", async () => {
+  await open("radiologist", {
+    findings: [{ ...box("Bibasilar atelectasis"), bbox: [20, 50, 30, 30], bboxSource: "manual" }],
+  });
+  type(root.querySelector("#report-text"), REPORT + "\nSmall right pleural effusion.");
+  await click(button("Save draft"), 80);
+  const kept = server.findings.find((f) => f.label === "Bibasilar atelectasis");
+  assert.deepEqual(kept.bbox, [20, 50, 30, 30]);
+  assert.ok(boxLabels().includes("Right pleural effusion"));
+});
+
+await test("Delete removes a drawn box completely", async () => {
+  await open("radiologist", {
+    findings: [box("Bibasilar atelectasis"), { ...box("Nodule"), _id: "m-1", source: "manual", bboxSource: "manual" }],
+  });
+  await click(root.querySelector('[data-delete-box="m-1"]'));
+  await click(button("Save draft"), 80);
+  assert.ok(!lastUpdate().findings.some((f) => f.label === "Nodule"));
+});
+
+await test("boxes cannot be edited while Azure is placing them, or once endorsed", async () => {
+  await open("radiologist", { boxesState: "running" });
+  assert.equal(root.querySelector("#draw-box"), null);
+  assert.equal(root.querySelector("[data-delete-box]"), null);
+  await open("radiologist", { status: "finalized" });
+  assert.equal(root.querySelector("#draw-box"), null);
+  assert.equal(root.querySelector("[data-delete-box]"), null);
+  assert.deepEqual(boxLabels(), ["Bibasilar atelectasis"]);
+});
+
+console.log("\n=== Thinking and measurements ===");
+
+function filmSize(w = 1000, h = 1000) {
+  const img = root.querySelector("#xray-film");
+  assert.ok(img, "film not loaded");
+  Object.defineProperty(img, "naturalWidth", { value: w, configurable: true });
+  Object.defineProperty(img, "naturalHeight", { value: h, configurable: true });
+}
+
+await test("the report box hides Thinking and has no Thinking note", async () => {
+  await open();
+  const area = root.querySelector("textarea#report-text");
+  assert.ok(!/thinking/i.test(area.value), area.value);
+  assert.ok(!area.value.includes("Low volumes favour atelectasis"));
+  assert.ok(!root.textContent.includes("Thinking is on this draft"));
+});
+
+await test("editing the report keeps the hidden Thinking in the stored draft", async () => {
+  calls.length = 0;
+  const area = root.querySelector("textarea#report-text");
+  type(area, area.value.replace("Bibasilar atelectasis.", "Bibasilar atelectasis, improving."));
+  await click(button("Save draft"), 60);
+  const saved = lastUpdate().reportText;
+  assert.ok(saved.includes("improving"));
+  assert.ok(saved.indexOf("Low volumes favour") > 0 && saved.indexOf("Low volumes favour") < saved.indexOf("Impression:"), saved);
+  assert.ok(!/thinking/i.test(root.querySelector("textarea#report-text").value));
+});
+
+await test("a measurement stays on the film in white and is saved with Save draft", async () => {
+  await open("radiologist", { pixelSpacingMm: [0.1, 0.1] });
+  calls.length = 0;
+  await click(button("Measure"));
+  filmSize();
+  pointer(stage(), "pointerdown", 10, 10);
+  pointer(stage(), "pointermove", 40, 50);
+  pointer(stage(), "pointerup", 40, 50);
+  await tick();
+  assert.equal(root.querySelector("[data-saved-measure-label='1']")?.textContent, "1 · 5.00 cm");
+  const strokes = [...root.querySelectorAll("[data-saved-measures] line")].map((l) => l.getAttribute("stroke"));
+  assert.ok(strokes.includes("#ffffff"), strokes.join(","));
+  assert.ok(!strokes.some((s) => /67e8f9|cyan/i.test(s)));
+  pointer(stage(), "pointerdown", 70, 80);
+  pointer(stage(), "pointerup", 70, 80);
+  await tick();
+  assert.equal(root.querySelectorAll("[data-saved-measure-label]").length, 1, "a click must not add a measurement");
+  assert.equal(root.querySelector("[data-measure-label]"), null, "a click must not leave a dot on the film");
+  await click(root.querySelector("#toggle-measures"));
+  assert.equal(root.querySelector("[data-saved-measures]"), null, "Hide lines did not hide them");
+  await click(root.querySelector("#toggle-measures"));
+  assert.ok(root.querySelector("[data-saved-measures]"));
+  type(root.querySelector("[data-measure-name]"), "Nodule");
+  assert.equal(root.querySelector("[data-saved-measure-label='1']").textContent, "1 · Nodule 5.00 cm");
+  await click(button("Save draft"), 60);
+  const saved = lastUpdate().measurements;
+  assert.deepEqual(saved, [{ x1: 10, y1: 10, x2: 40, y2: 50, text: "5.00 cm", label: "Nodule" }]);
+  assert.ok(!calls.some((c) => c[0] === "summarise"), "a measurement alone must not call Azure");
+});
+
+await test("the measurement is in the Word and PDF report, without Thinking", async () => {
+  const { buildReportSections } = await import("../src/lib/reportExport.js");
+  const body = buildReportSections(server).body;
+  assert.ok(body.includes("Measurements\n1. Nodule: 5.00 cm"), body);
+  assert.ok(!body.includes("Low volumes favour"), "Thinking must not be exported");
+  downloads.length = 0;
+  await click(button("PDF"), 1500);
+  const pdf = await downloads.find((b) => b.type === "application/pdf").text();
+  assert.ok(pdf.includes("1. Nodule: 5.00 cm"), "PDF has no measurement");
+  assert.ok(!pdf.includes("Low volumes favour"));
+});
+
+await test("Delete removes a measurement", async () => {
+  calls.length = 0;
+  await click(root.querySelector("[data-delete-measure]"));
+  assert.equal(root.querySelector("[data-saved-measures]"), null);
+  await click(button("Save draft"), 60);
+  assert.deepEqual(lastUpdate().measurements, []);
+});
+
 console.log("\n=== navigation and roles ===");
 
 await test("patient name opens the patient page", async () => {
@@ -374,6 +607,8 @@ await test("a referring doctor sees the endorsed report read-only", async () => 
   assert.ok(root.querySelector("#report-text").textContent.includes("Bibasilar atelectasis."));
   assert.equal(button("Save draft"), undefined);
   assert.equal(button("Endorse report"), undefined);
+  assert.equal(root.querySelector("#draw-box"), null);
+  assert.equal(root.querySelector("[data-delete-box]"), null);
 });
 
 stopReviewWatch();

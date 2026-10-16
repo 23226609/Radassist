@@ -7,7 +7,7 @@ import { el, mount } from "../dom.js";
 import { api } from "../api.js";
 import { state, toast } from "../state.js";
 import { unwrapLegacyReport, resyncMachineFindings } from "./review.js";
-import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, applyRemarksToReport, reportSignOff, withoutThinking, normalizeReportShape } from "../lib/reportExport.js";
+import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, applyRemarksToReport, reportSignOff, withoutThinking, restoreThinking, normalizeReportShape, measurementLines, MEASUREMENTS_HEADING } from "../lib/reportExport.js";
 import { svgIcon } from "./icons.js";
 import { canEditReport } from "../lib/roles.js";
 import { isGenerating } from "../lib/caseStatus.js";
@@ -39,7 +39,7 @@ export async function renderReportViewPage({ target }) {
     const data = await api.getCase(caseId);
     stored = unwrapLegacyReport(data.case || data);
     const split = splitReportAndRemarks(stored.reportText || "");
-    draftBody = normalizeReportShape(split.body);
+    draftBody = withoutThinking(normalizeReportShape(split.body));
     remarks = (stored.remarks || "").trim() || split.remarks;
     error = "";
   }
@@ -85,6 +85,7 @@ export async function renderReportViewPage({ target }) {
     if (!stored || !canRemark()) return;
     const typedBody = draftBody;
     const typedRemarks = remarks;
+    const storedBody = splitReportAndRemarks(stored.reportText || "").body;
     const run = async () => {
       if (!silent) {
         busy = true;
@@ -93,7 +94,7 @@ export async function renderReportViewPage({ target }) {
       try {
         hintMongo("Saving to MongoDB…");
         const next = canEdit()
-          ? applyRemarksToReport(typedBody, typedRemarks)
+          ? applyRemarksToReport(restoreThinking(storedBody, typedBody), typedRemarks)
           : { remarks: String(typedRemarks || "").trim() };
         const updated = await api.updateCase(caseId, next);
         stored = unwrapLegacyReport(updated.case || { ...stored, ...next });
@@ -102,7 +103,7 @@ export async function renderReportViewPage({ target }) {
           stored = await resyncMachineFindings(caseId, stored);
         }
         const split = splitReportAndRemarks(stored.reportText || "");
-        if (draftBody === typedBody) draftBody = normalizeReportShape(split.body);
+        if (draftBody === typedBody) draftBody = withoutThinking(normalizeReportShape(split.body));
         if (remarks === typedRemarks) remarks = stored.remarks || next.remarks || remarks;
         hintMongo(canEdit() ? "Report saved in MongoDB." : "Notes saved in MongoDB.");
         if (!silent) {
@@ -156,8 +157,8 @@ export async function renderReportViewPage({ target }) {
   function paint() {
     const generating = Boolean(stored && isGenerating(stored));
     const edit = canEdit() && !generating;
-    const endorsed = stored?.status === "finalized";
-    const shownBody = endorsed ? withoutThinking(draftBody) : draftBody;
+    const shownBody = draftBody;
+    const measured = measurementLines(stored?.measurements);
     const root = el("main", { class: "mx-auto max-w-3xl px-5 py-7" },
       el("div", { class: "flex flex-wrap items-center justify-between gap-3" },
         el("div", {},
@@ -194,9 +195,6 @@ export async function renderReportViewPage({ target }) {
       error
         ? el("p", { class: "mt-6 rounded-xl bg-red-50 p-4 text-red-700" }, error)
         : el("section", { class: "card mt-5" },
-            edit && el("p", { class: "mb-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950" },
-              "Thinking is on this draft so you can check the model’s reasoning. It is not included in the endorsed report, or in the Word and PDF files after you endorse."
-            ),
             edit
               ? el("textarea", {
                   id: "report-body",
@@ -207,6 +205,10 @@ export async function renderReportViewPage({ target }) {
               : el("pre", { class: "whitespace-pre-wrap font-sans text-sm leading-6 text-slate-800" },
                   shownBody || "No report has been saved for this case yet."
                 ),
+            measured.length > 0 && el("div", { id: "report-measurements", class: "mt-4 text-sm leading-6 text-slate-800" },
+              el("p", { class: "font-semibold" }, MEASUREMENTS_HEADING),
+              ...measured.map((line) => el("p", {}, line))
+            ),
             stored && (() => {
               const sign = reportSignOff(stored, state.user?.name || "");
               return el("div", { class: "mt-6 border-t border-slate-200 pt-4 text-sm text-slate-800" },

@@ -85,14 +85,36 @@ export function normalizeReportShape(reportText) {
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-// The model's reasoning stays on the draft. Endorsed reports and downloads omit it.
+const THINKING_BLOCK = /(^|\n)([ \t]*#*\s*Thinking\s*:?[ \t]*\n[\s\S]*?)(?=\n[ \t]*#*\s*(?:Findings|Impression|Conclusion|Radiologist remarks|Clinician-added findings)\s*:?[ \t]*\n|$)/i;
+
+// The model's reasoning is kept in the stored draft but never shown or exported.
 export function withoutThinking(reportText) {
   const src = String(reportText || "").replace(/\r\n/g, "\n");
-  const cleaned = src.replace(
-    /(^|\n)[ \t]*#*\s*Thinking\s*:?[ \t]*\n[\s\S]*?(?=\n[ \t]*#*\s*(?:Findings|Impression|Conclusion|Radiologist remarks|Clinician-added findings)\s*:?[ \t]*\n|$)/gi,
-    "$1"
-  );
+  const cleaned = src.replace(new RegExp(THINKING_BLOCK.source, "gi"), "$1");
   return cleaned.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// The editor shows the report without Thinking. Put the stored block back
+// before Impression so saving an edit does not drop it.
+export function restoreThinking(original, edited) {
+  const text = String(edited || "").replace(/\r\n/g, "\n").trim();
+  const match = String(original || "").replace(/\r\n/g, "\n").match(THINKING_BLOCK);
+  if (!match || THINKING_BLOCK.test(text)) return text;
+  const block = match[2].trim();
+  const at = text.search(/(^|\n)[ \t]*#*\s*(?:Impression|Conclusion)\s*:?[ \t]*(\n|$)/i);
+  if (at < 0) return `${text}\n\n${block}`.trim();
+  return `${text.slice(0, at).trimEnd()}\n\n${block}\n\n${text.slice(at).trimStart()}`.trim();
+}
+
+export const MEASUREMENTS_HEADING = "Measurements";
+
+export function measurementLines(measurements) {
+  return (Array.isArray(measurements) ? measurements : [])
+    .filter((m) => String(m?.text || "").trim())
+    .map((m, i) => {
+      const label = String(m.label || "").trim();
+      return `${i + 1}. ${label ? `${label}: ` : ""}${String(m.text).trim()}`;
+    });
 }
 
 export function splitManualFindings(reportText) {
@@ -329,7 +351,39 @@ export function fitImageBox(width, height, maxW, maxH) {
   };
 }
 
-async function rasterizeJpeg(bytes) {
+function drawMeasurements(ctx, width, height, measurements) {
+  const list = (Array.isArray(measurements) ? measurements : []).filter((m) => String(m?.text || "").trim());
+  if (!list.length) return;
+  const scale = Math.max(width, height) / 1000;
+  ctx.lineCap = "round";
+  ctx.font = `bold ${Math.round(22 * scale)}px Helvetica, Arial, sans-serif`;
+  ctx.textBaseline = "bottom";
+  list.forEach((m, i) => {
+    const x1 = (m.x1 / 100) * width;
+    const y1 = (m.y1 / 100) * height;
+    const x2 = (m.x2 / 100) * width;
+    const y2 = (m.y2 / 100) * height;
+    ctx.strokeStyle = "#000";
+    ctx.lineWidth = 6 * scale;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 3 * scale;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    const name = String(m.label || "").trim();
+    const tag = `${i + 1} · ${name ? `${name} ` : ""}${String(m.text).trim()}`;
+    const pad = 4 * scale;
+    const tw = ctx.measureText(tag).width;
+    const th = 26 * scale;
+    const cx = Math.min(width - tw / 2 - pad, Math.max(tw / 2 + pad, (x1 + x2) / 2));
+    const cy = Math.min(height - pad, Math.max(th + pad, (y1 + y2) / 2 - 6 * scale));
+    ctx.fillStyle = "rgba(0,0,0,0.8)";
+    ctx.fillRect(cx - tw / 2 - pad, cy - th, tw + pad * 2, th);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(tag, cx - tw / 2, cy - pad / 2);
+  });
+}
+
+async function rasterizeJpeg(bytes, measurements = []) {
   if (typeof createImageBitmap !== "function" || typeof document === "undefined") return null;
   try {
     const blob = new Blob([bytes]);
@@ -342,6 +396,7 @@ async function rasterizeJpeg(bytes) {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(bmp, 0, 0);
+    drawMeasurements(ctx, canvas.width, canvas.height, measurements);
     const jpegBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
     if (!jpegBlob) return null;
     const jpeg = new Uint8Array(await jpegBlob.arrayBuffer());
@@ -371,8 +426,9 @@ async function loadCaseFilm(c) {
       height: meta.height || 0,
       components: meta.components || 3,
     };
-    if (film.type === "jpg" && film.width && film.height) return film;
-    const converted = await rasterizeJpeg(bytes);
+    const measured = measurementLines(c.measurements).length > 0;
+    if (film.type === "jpg" && film.width && film.height && !measured) return film;
+    const converted = await rasterizeJpeg(bytes, c.measurements);
     if (converted) return converted;
     return film.width && film.height && film.type ? film : null;
   } catch (err) {
@@ -404,9 +460,10 @@ export function reportSignOff(c = {}, signerName = "") {
 function reportBody(c = {}) {
   const split = splitReportAndRemarks(c.reportText);
   const manual = splitManualFindings(split.body);
-  let body = normalizeReportShape(manual.body);
-  if (c.status === "finalized") body = withoutThinking(body);
+  let body = withoutThinking(normalizeReportShape(manual.body));
   if (manual.manual) body = `${body}\n\n${MANUAL_FINDINGS_HEADING}\n${manual.manual}`.trim();
+  const measured = measurementLines(c.measurements);
+  if (measured.length) body = `${body}\n\n${MEASUREMENTS_HEADING}\n${measured.join("\n")}`.trim();
   if (split.remarks) body = `${body}\n\n${REMARKS_HEADING}\n${split.remarks}`.trim();
   return body;
 }

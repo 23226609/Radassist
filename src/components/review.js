@@ -16,8 +16,7 @@ import { state, setPage, toast } from "../state.js";
 import { api, clearFilmSpacingAdjust, filmSpacingAdjust } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { reportPopupUrl } from "../lib/reportPopup.js";
-import { downloadReportDocx, downloadReportPdf, composeReportText, splitReportAndRemarks, withoutThinking, normalizeReportShape } from "../lib/reportExport.js";
-import { dedupeFindings } from "../lib/findingsSync.js";
+import { downloadReportDocx, downloadReportPdf, applyRemarksToReport, splitReportAndRemarks, withoutThinking, restoreThinking, normalizeReportShape } from "../lib/reportExport.js";
 import { urgentBadge, patientDisplayName, doctorInCharge } from "../lib/tags.js";
 import { isGenerating, isAwaitingApprove, isAwaitingAi, statusLabel } from "../lib/caseStatus.js";
 import { forgetCases } from "../lib/records.js";
@@ -60,6 +59,10 @@ const FILM_BOX_COLORS = [
   { border: "border-orange-400", fill: "bg-orange-400/25", handle: "border-orange-200 bg-orange-400", chip: "bg-orange-400", name: "orange" },
 ];
 
+// White so a measurement never matches one of the box colours above.
+const MEASURE_COLOR = "#ffffff";
+const MEASURE_LABEL_CLASS = "bg-white text-black ring-1 ring-black/60";
+
 function filmBoxColor(index, total) {
   if (total <= 1) return FILM_BOX_COLORS[0];
   return FILM_BOX_COLORS[index % FILM_BOX_COLORS.length];
@@ -80,10 +83,84 @@ function eventToPct(e, el) {
   };
 }
 
-// Azure boxes for abnormal findings. Normal statements ("clear lungs") and
-// older locally parsed findings have no real position, so they are not drawn.
+function boxFromCorners(a, b) {
+  const left = Math.min(a.x, b.x);
+  const top = Math.min(a.y, b.y);
+  return clampBox(left, top, Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+}
+
+function clampBox(left, top, width, height) {
+  let w = Math.max(3, Number(width) || 3);
+  let h = Math.max(3, Number(height) || 3);
+  let l = Number(left) || 0;
+  let t = Number(top) || 0;
+  l = Math.min(97, Math.max(0, l));
+  t = Math.min(97, Math.max(0, t));
+  w = Math.min(100 - l, w);
+  h = Math.min(100 - t, h);
+  return [Number(l.toFixed(2)), Number(t.toFixed(2)), Number(w.toFixed(2)), Number(h.toFixed(2))];
+}
+
+function movedBox(origin, start, pct) {
+  const [l, t, w, h] = (origin || []).map(Number);
+  return clampBox(
+    Math.min(100 - w, Math.max(0, l + (pct.x - start.x))),
+    Math.min(100 - h, Math.max(0, t + (pct.y - start.y))),
+    w,
+    h
+  );
+}
+
+function resizedBox(origin, handle, pct) {
+  const [l0, t0, w0, h0] = (origin || []).map(Number);
+  let l = l0;
+  let t = t0;
+  let r = l0 + w0;
+  let b = t0 + h0;
+  if (handle.includes("e")) r = pct.x;
+  if (handle.includes("w")) l = pct.x;
+  if (handle.includes("s")) b = pct.y;
+  if (handle.includes("n")) t = pct.y;
+  return clampBox(Math.min(l, r), Math.min(t, b), Math.abs(r - l), Math.abs(b - t));
+}
+
+// "nw" / "ne" / "sw" / "se" for a corner handle, "move" inside the box.
+function hitBoxHandle(pct, bbox) {
+  if (!hasBbox({ bbox })) return null;
+  const [l, t, w, h] = bbox.map(Number);
+  const r = l + w;
+  const b = t + h;
+  const pad = 3;
+  const corners = [["nw", l, t], ["ne", r, t], ["sw", l, b], ["se", r, b]];
+  for (const [name, x, y] of corners) {
+    if (Math.abs(pct.x - x) <= pad && Math.abs(pct.y - y) <= pad) return name;
+  }
+  if (pct.x >= l && pct.x <= r && pct.y >= t && pct.y <= b) return "move";
+  return null;
+}
+
+function cursorForHandle(hit) {
+  if (hit === "move") return "move";
+  if (hit === "nw" || hit === "se") return "nwse-resize";
+  if (hit === "ne" || hit === "sw") return "nesw-resize";
+  return "";
+}
+
+function isDrawnBox(f) {
+  return String(f?.source || "").toLowerCase() === "manual";
+}
+
+function boxKey(f) {
+  return String(f?._id || f?.id || "");
+}
+
+// Boxes the radiologist drew, plus Azure boxes for abnormal findings. Normal
+// statements ("clear lungs") and older locally parsed findings have no real
+// position. A deleted AI box stays stored as rejected so Azure does not put
+// it back, but it is not drawn.
 function filmBoxes(findings) {
-  return (findings || []).filter((f) => f?.source === "Azure" && f.severity !== "normal" && hasBbox(f));
+  return (findings || []).filter((f) => hasBbox(f) && f.status !== "rejected"
+    && (isDrawnBox(f) || (f.source === "Azure" && f.severity !== "normal")));
 }
 
 // ---------------------------------------------------------------------------
@@ -373,10 +450,14 @@ export async function renderReviewPage({ target }) {
   let msg = "";
   let imageSrc = null; // resolved object URL once the blob is fetched
   let showBoxes = true;
+  let showMeasures = true;
   let boxDrag = null;
   let zoom = 1;
   let filmTool = "view";
+  let selectedBoxKey = "";
+  let boxesDirty = false;
   let measureLine = null;
+  let measuresDirty = false;
   let remarksDraft = "";
   let remarksDirty = false;
   let reportDirty = false;
@@ -402,7 +483,7 @@ export async function renderReviewPage({ target }) {
     const split = splitReportAndRemarks(localCase?.reportText || "");
     remarksDraft = (localCase?.remarks || "").trim() || split.remarks;
     remarksDirty = false;
-    bodyDraft = normalizeReportShape(split.body);
+    bodyDraft = withoutThinking(normalizeReportShape(split.body));
     bodyDirty = false;
   }
 
@@ -471,7 +552,6 @@ export async function renderReviewPage({ target }) {
       localCase = data.case || data;
       // One-shot fixup: unwrap the legacy `{"report":"..."}` string shape.
       localCase = unwrapLegacyReport(localCase);
-      localCase = { ...localCase, findings: dedupeFindings(localCase.findings || []) };
       syncRemarksFromCase();
       if (wasGenerating && !isGenerating(localCase)) toast("Draft ready — pending approve.");
       if (isGenerating(localCase) || placingBoxes(localCase)) watchGenerating();
@@ -556,6 +636,21 @@ export async function renderReviewPage({ target }) {
     hintMongo("Unsaved changes. Press Save draft or Save remarks.");
   }
 
+  function measureLineEls(NS, line) {
+    return [["#000000", "4"], [MEASURE_COLOR, "2"]].map(([stroke, width]) => {
+      const ln = document.createElementNS(NS, "line");
+      ln.setAttribute("x1", line.x1);
+      ln.setAttribute("y1", line.y1);
+      ln.setAttribute("x2", line.x2);
+      ln.setAttribute("y2", line.y2);
+      ln.setAttribute("stroke", stroke);
+      ln.setAttribute("stroke-width", width);
+      ln.setAttribute("stroke-linecap", "round");
+      ln.setAttribute("vector-effect", "non-scaling-stroke");
+      return ln;
+    });
+  }
+
   function measureOverlay(line) {
     const NS = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(NS, "svg");
@@ -563,15 +658,74 @@ export async function renderReviewPage({ target }) {
     svg.setAttribute("class", "pointer-events-none absolute inset-0 z-20 h-full w-full");
     svg.setAttribute("viewBox", "0 0 100 100");
     svg.setAttribute("preserveAspectRatio", "none");
-    const ln = document.createElementNS(NS, "line");
-    ln.setAttribute("x1", line.x1);
-    ln.setAttribute("y1", line.y1);
-    ln.setAttribute("x2", line.x2);
-    ln.setAttribute("y2", line.y2);
-    ln.setAttribute("stroke", "#67e8f9");
-    ln.setAttribute("stroke-width", "0.8");
-    svg.appendChild(ln);
+    for (const ln of measureLineEls(NS, line)) svg.appendChild(ln);
     return svg;
+  }
+
+  function measurementList() {
+    return Array.isArray(localCase?.measurements) ? localCase.measurements : [];
+  }
+
+  function measureKey(m, i) {
+    return String(m?._id || m?.id || `m-${i}`);
+  }
+
+  function setMeasurements(next) {
+    localCase = { ...localCase, measurements: next };
+    measuresDirty = true;
+    markUnsaved();
+  }
+
+  function addMeasurement(line, text) {
+    const id = `tmp-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+    const r = (n) => Math.round(Math.min(100, Math.max(0, Number(n) || 0)) * 100) / 100;
+    setMeasurements([...measurementList(), {
+      _id: id,
+      x1: r(line.x1), y1: r(line.y1), x2: r(line.x2), y2: r(line.y2),
+      text,
+      label: "",
+    }]);
+  }
+
+  function deleteMeasurement(key) {
+    setMeasurements(measurementList().filter((m, i) => measureKey(m, i) !== key));
+    render();
+  }
+
+  function measurementsForSave() {
+    return measurementList().map(({ _id, x1, y1, x2, y2, text, label }) => {
+      const row = { x1, y1, x2, y2, text, label: String(label || "").trim() };
+      if (_id && !String(_id).startsWith("tmp-")) row._id = _id;
+      return row;
+    });
+  }
+
+  function savedMeasuresLayer(list) {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("data-saved-measures", "1");
+    svg.setAttribute("class", "pointer-events-none absolute inset-0 z-20 h-full w-full");
+    svg.setAttribute("viewBox", "0 0 100 100");
+    svg.setAttribute("preserveAspectRatio", "none");
+    for (const m of list) for (const ln of measureLineEls(NS, m)) svg.appendChild(ln);
+    return svg;
+  }
+
+  function measureTagText(m, i) {
+    const name = String(m.label || "").trim();
+    return `${i + 1} · ${name ? `${name} ` : ""}${m.text}`;
+  }
+
+  // A small tag beside the end of the line, so it does not sit on the box labels.
+  function savedMeasureLabel(m, i) {
+    const [ex, ey] = Number(m.x2) >= Number(m.x1) ? [m.x2, m.y2] : [m.x1, m.y1];
+    const flip = Number(ex) > 82;
+    const y = Math.min(96, Math.max(4, Number(ey)));
+    return el("span", {
+      class: `pointer-events-none absolute z-30 -translate-y-1/2 whitespace-nowrap rounded px-1 text-[10px] font-semibold leading-4 ${MEASURE_LABEL_CLASS} ${flip ? "-translate-x-full -ml-1.5" : "ml-1.5"}`,
+      style: { left: `${ex}%`, top: `${y}%` },
+      dataset: { savedMeasureLabel: String(i + 1) },
+    }, measureTagText(m, i));
   }
 
   function measureLength(line) {
@@ -586,7 +740,7 @@ export async function renderReviewPage({ target }) {
     const x = Math.min(94, Math.max(6, (Number(line.x1) + Number(line.x2)) / 2));
     const y = Math.min(92, Math.max(8, (Number(line.y1) + Number(line.y2)) / 2));
     return el("span", {
-      class: "pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded bg-black/80 px-1.5 py-0.5 text-xs font-semibold text-cyan-100",
+      class: `pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-semibold ${MEASURE_LABEL_CLASS}`,
       style: { left: `${x}%`, top: `${y}%` },
       dataset: { measureLabel: "1" },
     }, label);
@@ -602,7 +756,7 @@ export async function renderReviewPage({ target }) {
     if (!node) {
       node = document.createElement("span");
       node.setAttribute("data-measure-label", "1");
-      node.className = "pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded bg-black/80 px-1.5 py-0.5 text-xs font-semibold text-cyan-100";
+      node.className = `pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-semibold ${MEASURE_LABEL_CLASS}`;
       stage.appendChild(node);
     }
     const x = Math.min(94, Math.max(6, (Number(line.x1) + Number(line.x2)) / 2));
@@ -624,17 +778,15 @@ export async function renderReviewPage({ target }) {
       svg.setAttribute("preserveAspectRatio", "none");
       stage.appendChild(svg);
     }
-    let ln = svg.querySelector("line");
-    if (!ln) {
-      ln = document.createElementNS(NS, "line");
-      ln.setAttribute("stroke", "#67e8f9");
-      ln.setAttribute("stroke-width", "0.7");
-      svg.appendChild(ln);
+    if (!svg.querySelector("line")) {
+      for (const ln of measureLineEls(NS, line)) svg.appendChild(ln);
     }
-    ln.setAttribute("x1", line.x1);
-    ln.setAttribute("y1", line.y1);
-    ln.setAttribute("x2", line.x2);
-    ln.setAttribute("y2", line.y2);
+    for (const ln of svg.querySelectorAll("line")) {
+      ln.setAttribute("x1", line.x1);
+      ln.setAttribute("y1", line.y1);
+      ln.setAttribute("x2", line.x2);
+      ln.setAttribute("y2", line.y2);
+    }
     placeMeasureLabel(stage, line);
   }
 
@@ -667,37 +819,180 @@ export async function renderReviewPage({ target }) {
     render();
   }
 
+  function canEditBoxes() {
+    return Boolean(localCase) && canEditReport(state.user) && localCase.status !== "finalized"
+      && !isGenerating(localCase) && !placingBoxes(localCase);
+  }
+
+  function setFindings(next) {
+    localCase = { ...localCase, findings: next };
+    boxesDirty = true;
+    markUnsaved();
+  }
+
+  function patchBox(key, patch) {
+    setFindings((localCase.findings || []).map((f) => (boxKey(f) === key ? { ...f, ...patch } : f)));
+  }
+
+  function deleteBox(key) {
+    const target = (localCase.findings || []).find((f) => boxKey(f) === key);
+    if (!target) return;
+    setFindings(isDrawnBox(target)
+      ? (localCase.findings || []).filter((f) => boxKey(f) !== key)
+      : (localCase.findings || []).map((f) => (boxKey(f) === key ? { ...f, status: "rejected" } : f)));
+    if (selectedBoxKey === key) selectedBoxKey = "";
+    render();
+  }
+
+  function addDrawnBox(bbox) {
+    const id = `tmp-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+    setFindings([...(localCase.findings || []), {
+      _id: id,
+      id,
+      label: "Marked area",
+      bbox,
+      source: "manual",
+      bboxSource: "manual",
+      status: "pending",
+      severity: "",
+      confidence: 1,
+      pattern: "Other",
+      sentence: "",
+      location: "",
+      size: "",
+    }]);
+    selectedBoxKey = id;
+  }
+
+  function paintLiveBox(stage, bbox) {
+    if (!stage || !bbox) return;
+    let node = stage.querySelector("[data-draw-box]");
+    if (!node) {
+      node = document.createElement("div");
+      node.setAttribute("data-draw-box", "1");
+      node.className = "pointer-events-none absolute z-20 border-2 border-dashed border-white bg-white/20";
+      stage.appendChild(node);
+    }
+    node.style.left = bbox[0] + "%";
+    node.style.top = bbox[1] + "%";
+    node.style.width = bbox[2] + "%";
+    node.style.height = bbox[3] + "%";
+  }
+
+  function liveBox(pct) {
+    if (boxDrag.mode === "move") return movedBox(boxDrag.origin, boxDrag.start, pct);
+    if (boxDrag.mode === "resize") return resizedBox(boxDrag.origin, boxDrag.handle, pct);
+    return boxFromCorners(boxDrag.start, pct);
+  }
+
+  function selectedBox() {
+    return filmBoxes(localCase.findings).find((f) => boxKey(f) === selectedBoxKey) || null;
+  }
+
   function onFilmPointerDown(e) {
-    if (filmTool !== "measure") return;
     if (e.button != null && e.button !== 0) return;
     const stage = e.currentTarget || document.getElementById("xray-stage");
     if (!stage) return;
     const pct = eventToPct(e, stage);
-    measureLine = { x1: pct.x, y1: pct.y, x2: pct.x, y2: pct.y };
-    boxDrag = { mode: "measure" };
+    if (filmTool === "measure") {
+      measureLine = { x1: pct.x, y1: pct.y, x2: pct.x, y2: pct.y };
+      boxDrag = { mode: "measure" };
+      try { stage.setPointerCapture?.(e.pointerId); } catch { /* tests */ }
+      paintMeasure(stage, measureLine);
+      e.preventDefault();
+      return;
+    }
+    if (!canEditBoxes()) return;
+    if (filmTool === "draw") {
+      boxDrag = { mode: "draw", start: pct };
+    } else {
+      if (!showBoxes) return;
+      const sel = selectedBox();
+      const hit = sel ? hitBoxHandle(pct, sel.bbox) : null;
+      if (hit === "move") {
+        boxDrag = { mode: "move", key: selectedBoxKey, start: pct, origin: sel.bbox.slice() };
+      } else if (hit) {
+        boxDrag = { mode: "resize", handle: hit, key: selectedBoxKey, start: pct, origin: sel.bbox.slice() };
+      } else {
+        const under = [...filmBoxes(localCase.findings)].reverse().find((f) => hitBoxHandle(pct, f.bbox) === "move");
+        selectedBoxKey = under ? boxKey(under) : "";
+        render();
+        return;
+      }
+    }
     try { stage.setPointerCapture?.(e.pointerId); } catch { /* tests */ }
-    paintMeasure(stage, measureLine);
     e.preventDefault();
   }
 
   function onFilmPointerMove(e) {
-    if (boxDrag?.mode !== "measure" || !measureLine) return;
     const stage = e.currentTarget || document.getElementById("xray-stage");
     if (!stage) return;
     const pct = eventToPct(e, stage);
-    measureLine = { ...measureLine, x2: pct.x, y2: pct.y };
-    paintMeasure(stage, measureLine);
+    if (boxDrag?.mode === "measure") {
+      if (!measureLine) return;
+      measureLine = { ...measureLine, x2: pct.x, y2: pct.y };
+      paintMeasure(stage, measureLine);
+      return;
+    }
+    if (boxDrag) {
+      paintLiveBox(stage, liveBox(pct));
+      return;
+    }
+    if (filmTool === "view" && canEditBoxes()) {
+      const sel = selectedBox();
+      stage.style.cursor = sel ? cursorForHandle(hitBoxHandle(pct, sel.bbox)) : "";
+    }
   }
 
   function onFilmPointerUp(e) {
-    if (boxDrag?.mode !== "measure") return;
+    if (!boxDrag) return;
     const stage = e.currentTarget || document.getElementById("xray-stage");
-    if (stage && measureLine) {
-      const pct = eventToPct(e, stage);
-      measureLine = { ...measureLine, x2: pct.x, y2: pct.y };
+    if (boxDrag.mode === "measure") {
+      if (stage && measureLine) {
+        const pct = eventToPct(e, stage);
+        measureLine = { ...measureLine, x2: pct.x, y2: pct.y };
+      }
+      boxDrag = null;
+      const line = measureLine;
+      const long = line && Math.hypot(line.x2 - line.x1, line.y2 - line.y1) >= 1;
+      const text = long ? measureLength(line) : "";
+      if (!text) {
+        measureLine = null;
+      } else if (canEditBoxes()) {
+        addMeasurement(line, text);
+        measureLine = null;
+      }
+      render();
+      return;
     }
+    if (!stage) return;
+    const pct = eventToPct(e, stage);
+    const drag = boxDrag;
+    const bbox = liveBox(pct);
     boxDrag = null;
+    if (drag.mode === "draw") {
+      const moved = Math.abs(pct.x - drag.start.x) >= 2 || Math.abs(pct.y - drag.start.y) >= 2;
+      if (!moved) {
+        stage.querySelector("[data-draw-box]")?.remove();
+        return;
+      }
+      addDrawnBox(bbox);
+      filmTool = "view";
+      showBoxes = true;
+    } else {
+      patchBox(drag.key, { bbox, bboxSource: "manual" });
+    }
     render();
+  }
+
+  function findingsForSave(list) {
+    return (list || []).map((f) => {
+      const o = { ...f };
+      if (String(o._id || "").startsWith("tmp-")) delete o._id;
+      if (String(o.id || "").startsWith("tmp-")) delete o.id;
+      o.label = String(o.label || "").trim() || "Marked area";
+      return o;
+    });
   }
 
   function syncFromPersisted(stored, fallback = {}) {
@@ -709,13 +1004,18 @@ export async function renderReviewPage({ target }) {
     remarksDraft = localCase.remarks || fallback.remarks || "";
     remarksDirty = false;
     reportDirty = false;
-    bodyDraft = normalizeReportShape(splitReportAndRemarks(localCase.reportText || "").body);
+    bodyDraft = withoutThinking(normalizeReportShape(splitReportAndRemarks(localCase.reportText || "").body));
     bodyDirty = false;
+    boxesDirty = false;
+    measuresDirty = false;
+    if (selectedBoxKey && !filmBoxes(localCase.findings).some((f) => boxKey(f) === selectedBoxKey)) {
+      selectedBoxKey = "";
+    }
   }
 
-  // The report body is sent only when the radiologist typed in it; otherwise
-  // the stored text is kept so a stale copy here cannot overwrite the popup.
-  // Film boxes are never sent: Azure re-places them after a report edit.
+  // The report body is sent only when the radiologist typed in it, and boxes
+  // only when they drew, moved or deleted one; otherwise the stored copy is
+  // kept so a stale copy here cannot overwrite the popup or a fresh Azure pass.
   function persistClinicianEdits() {
     const run = async () => {
       if (signal.aborted || leaving) return;
@@ -745,17 +1045,23 @@ export async function renderReviewPage({ target }) {
         return stored;
       }
       const typedBody = bodyDirty ? bodyDraft : null;
-      const composed = composeReportText(typedBody ?? stored.reportText, { remarks: note, findings: stored.findings });
+      const storedBody = splitReportAndRemarks(stored.reportText || "").body;
+      const composed = applyRemarksToReport(
+        typedBody == null ? stored.reportText : restoreThinking(storedBody, typedBody),
+        note
+      );
       const payload = {
         reportText: composed.reportText,
         remarks: composed.remarks,
       };
-      const reportChanged = splitReportAndRemarks(composed.reportText).body.trim()
-        !== splitReportAndRemarks(stored.reportText || "").body.trim();
+      if (boxesDirty) payload.findings = findingsForSave(localCase.findings);
+      if (measuresDirty) payload.measurements = measurementsForSave();
+      const reportChanged = withoutThinking(splitReportAndRemarks(composed.reportText).body)
+        !== withoutThinking(storedBody);
       const updated = await api.updateCase(getEffectiveCaseId(), payload);
       let next = unwrapLegacyReport(updated.case || { ...stored, ...payload });
       const typedSince = bodyDirty && bodyDraft !== typedBody;
-      const neverBoxed = !stored.boxesState && !filmBoxes(stored.findings).length;
+      const neverBoxed = !stored.boxesState && !filmBoxes(payload.findings || stored.findings).length;
       if (reportChanged || neverBoxed) {
         hintMongo("Placing film boxes…");
         next = await resyncMachineFindings(getEffectiveCaseId(), next);
@@ -948,18 +1254,18 @@ export async function renderReviewPage({ target }) {
     const canFlag = canEditReport(state.user);
     const boxes = filmBoxes(localCase.findings);
     const placing = placingBoxes(localCase);
+    const editBoxes = canEditBoxes();
     const patientName = patientDisplayName(localCase);
-    const reportBody = (() => {
-      const body = normalizeReportShape(splitReportAndRemarks(localCase.reportText || "").body);
-      return localCase.status === "finalized" ? withoutThinking(body) : body;
-    })();
+    const reportBody = withoutThinking(normalizeReportShape(splitReportAndRemarks(localCase.reportText || "").body));
+    const measures = measurementList();
 
     function boxStatus() {
       if (generating || awaitingAi) return "";
       if (placing) return "Azure is placing boxes on the film from the report…";
       if (localCase.boxesState === "failed") return "Azure could not place boxes for this report.";
       if (localCase.boxesState === "done" && !boxes.length) return "Azure found nothing to box on this film.";
-      if (boxes.length) return "Boxes are placed by Azure from the report wording. They are approximate, not drawn by CURV.";
+      if (boxes.some((f) => !isDrawnBox(f))) return "AI boxes are placed by Azure from the report wording. They are approximate, not drawn by CURV.";
+      if (boxes.length) return "";
       if (String(localCase.reportText || "").trim() && !localCase.boxesState) {
         return "This report has no film boxes yet. Press Re-run AI for a fresh CURV report with boxes, or Save draft to box this one.";
       }
@@ -1098,21 +1404,38 @@ export async function renderReviewPage({ target }) {
               }, "Zoom out"),
               el("button", {
                 type: "button",
-                class: `rounded-lg border px-2.5 py-1 text-xs font-semibold ${filmTool === "measure" ? "border-cyan-300 bg-cyan-700 text-white" : "border-white/20 bg-white/10 text-white hover:bg-white/20"}`,
-                onClick: () => { filmTool = filmTool === "measure" ? "box" : "measure"; render(); },
+                class: `rounded-lg border px-2.5 py-1 text-xs font-semibold ${filmTool === "measure" ? "border-white bg-white text-black" : "border-white/20 bg-white/10 text-white hover:bg-white/20"}`,
+                onClick: () => {
+                  filmTool = filmTool === "measure" ? "view" : "measure";
+                  measureLine = null;
+                  showMeasures = true;
+                  render();
+                },
               }, filmTool === "measure" ? "Measuring" : "Measure"),
+              editBoxes && el("button", {
+                id: "draw-box",
+                type: "button",
+                class: `rounded-lg border px-2.5 py-1 text-xs font-semibold ${filmTool === "draw" ? "border-yellow-300 bg-yellow-600 text-white" : "border-white/20 bg-white/10 text-white hover:bg-white/20"}`,
+                onClick: () => { filmTool = filmTool === "draw" ? "view" : "draw"; showBoxes = true; render(); },
+              }, filmTool === "draw" ? "Drawing…" : "Draw box"),
               boxes.length > 0 && el("button", {
                 id: "toggle-bboxes",
                 type: "button",
                 class: "rounded-lg border border-white/20 bg-white/10 px-2.5 py-1 text-xs font-semibold text-white hover:bg-white/20",
                 onClick: () => { showBoxes = !showBoxes; render(); },
-              }, showBoxes ? "Hide boxes" : "Show boxes")
+              }, showBoxes ? "Hide boxes" : "Show boxes"),
+              measures.length > 0 && el("button", {
+                id: "toggle-measures",
+                type: "button",
+                class: "rounded-lg border border-white/20 bg-white/10 px-2.5 py-1 text-xs font-semibold text-white hover:bg-white/20",
+                onClick: () => { showMeasures = !showMeasures; render(); },
+              }, showMeasures ? "Hide lines" : "Show lines")
             )
           ),
           el("div", { class: "mt-3 max-h-[560px] overflow-auto rounded-xl bg-gradient-to-b from-slate-500 to-slate-900" },
             el("div", {
               id: "xray-stage",
-              class: `relative touch-none ${filmTool === "measure" ? "cursor-crosshair" : ""}`,
+              class: `relative touch-none ${filmTool === "measure" || filmTool === "draw" ? "cursor-crosshair" : ""}`,
               style: { width: `${Math.round(zoom * 100)}%` },
               onPointerdown: onFilmPointerDown,
               onPointermove: onFilmPointerMove,
@@ -1123,13 +1446,16 @@ export async function renderReviewPage({ target }) {
               _imageSrc
                 ? el("img", { id: "xray-film", src: _imageSrc, class: "pointer-events-none block h-auto w-full", alt: "Chest X-ray" })
                 : el("div", { class: "pointer-events-none flex h-[320px] w-full min-w-[240px] items-center justify-center text-slate-300 text-sm" }, localCase.imageId ? "Loading image…" : "No image"),
+              showMeasures && measures.length > 0 && savedMeasuresLayer(measures),
+              ...(showMeasures ? measures.map((m, i) => savedMeasureLabel(m, i)) : []),
               measureLine && measureOverlay(measureLine),
               measureLine && measureLabelEl(measureLine),
               ...(!showBoxes ? [] : boxes.map((finding, index) => {
                 const color = filmBoxColor(index, boxes.length);
+                const selected = boxKey(finding) === selectedBoxKey;
                 return el("div", {
-                  class: `pointer-events-none absolute border-2 ${color.border} ${color.fill}`,
-                  dataset: { bbox: String(index + 1) },
+                  class: `pointer-events-none absolute ${color.border} ${selected ? `z-10 border-2 ${color.fill}` : "border-[1.5px]"} ${filmTool === "measure" ? "opacity-40" : ""}`,
+                  dataset: { bbox: String(index + 1), bboxKey: boxKey(finding), selected: selected ? "1" : "" },
                   style: {
                     left: finding.bbox[0] + "%",
                     top: finding.bbox[1] + "%",
@@ -1139,19 +1465,125 @@ export async function renderReviewPage({ target }) {
                   title: finding.sentence || finding.label,
                 },
                   el("span", {
-                    class: `absolute -top-5 left-0 max-w-[16rem] truncate px-1 text-xs font-bold text-black ${color.chip}`,
+                    class: `absolute -top-4 left-0 max-w-[11rem] truncate rounded-sm px-1 text-[10px] font-semibold leading-4 text-black ${color.chip}`,
                     dataset: { bboxLabel: "1" },
-                  }, finding.label)
+                  }, finding.label),
+                  ...(selected && editBoxes ? ["nw", "ne", "sw", "se"].map((h) =>
+                    el("span", {
+                      class: `absolute h-2.5 w-2.5 rounded-sm border ${color.handle}`,
+                      dataset: { handle: h },
+                      style: {
+                        left: h.includes("w") ? "-5px" : "auto",
+                        right: h.includes("e") ? "-5px" : "auto",
+                        top: h.includes("n") ? "-5px" : "auto",
+                        bottom: h.includes("s") ? "-5px" : "auto",
+                      },
+                    })
+                  ) : [])
                 );
               }))
             )
           ),
           el("p", { class: "mt-2 text-center text-xs text-slate-300" },
             filmTool === "measure"
-              ? (measureLine ? measureText(measureLine) : "Drag a line across the lesion. Centimetres use the DICOM pixel spacing.")
+              ? (measureLine
+                  ? measureText(measureLine)
+                  : editBoxes
+                  ? "Drag a line across the lesion. Each line is added to the report when you press Save draft."
+                  : "Drag a line across the lesion. Centimetres use the DICOM pixel spacing.")
+              : filmTool === "draw"
+              ? "Drag on the film to draw a box, then name it in the list below."
+              : editBoxes && boxes.length
+              ? "Click a box to select it. Drag it to move, or drag a corner to resize."
               : `Zoom ${Math.round(zoom * 100)}%. Scroll the film to move around.`
           ),
-          boxStatus() && el("p", { id: "box-status", class: "mt-1 text-center text-xs text-slate-400" }, boxStatus())
+          boxStatus() && el("p", { id: "box-status", class: "mt-1 text-center text-xs text-slate-400" }, boxStatus()),
+          boxes.length > 0 && el("div", { class: "mt-4" },
+            el("div", { class: "flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400" },
+              el("span", {}, "Boxes on the film"),
+              boxesDirty && el("span", { class: "normal-case tracking-normal text-amber-300" }, "Unsaved. Press Save draft.")
+            ),
+            el("ul", { id: "box-list", class: "mt-2 divide-y divide-white/10 rounded-xl border border-white/10" },
+              ...boxes.map((f, i) => {
+                const key = boxKey(f);
+                const color = filmBoxColor(i, boxes.length);
+                const selected = key === selectedBoxKey;
+                const select = () => { selectedBoxKey = selected ? "" : key; render(); };
+                return el("li", {
+                  class: `flex items-center gap-2 px-3 py-2 ${selected ? "bg-white/10" : ""}`,
+                  dataset: { boxRow: key },
+                },
+                  el("button", {
+                    type: "button",
+                    class: `h-3.5 w-3.5 shrink-0 rounded-sm ${color.chip}`,
+                    title: "Select this box",
+                    onClick: select,
+                  }),
+                  editBoxes && isDrawnBox(f)
+                    ? el("input", {
+                        class: "min-w-0 flex-1 rounded bg-white/10 px-2 py-1 text-sm text-white outline-none focus:bg-white/20",
+                        value: f.label || "",
+                        placeholder: "Name this box",
+                        dataset: { boxName: key },
+                        onFocus: () => { selectedBoxKey = key; },
+                        onInput: (e) => {
+                          patchBox(key, { label: e.target.value });
+                          const tag = document.querySelector(`[data-bbox-key="${key}"] [data-bbox-label]`);
+                          if (tag) tag.textContent = e.target.value || "Marked area";
+                        },
+                      })
+                    : el("button", {
+                        type: "button",
+                        class: "min-w-0 flex-1 truncate text-left text-sm text-slate-100",
+                        title: f.sentence || f.label,
+                        onClick: select,
+                      }, f.label),
+                  el("span", { class: "shrink-0 text-[11px] font-semibold uppercase text-slate-400" },
+                    isDrawnBox(f) ? "Manual" : f.bboxSource === "manual" ? "AI · adjusted" : "AI"),
+                  editBoxes && el("button", {
+                    type: "button",
+                    class: "shrink-0 rounded border border-red-300/40 px-2 py-0.5 text-xs font-semibold text-red-200 hover:bg-red-500/20",
+                    dataset: { deleteBox: key },
+                    onClick: () => deleteBox(key),
+                  }, "Delete")
+                );
+              })
+            )
+          ),
+          measures.length > 0 && el("div", { class: "mt-4" },
+            el("div", { class: "flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400" },
+              el("span", {}, "Measurements (in the report)"),
+              measuresDirty && el("span", { class: "normal-case tracking-normal text-amber-300" }, "Unsaved. Press Save draft.")
+            ),
+            el("ul", { id: "measure-list", class: "mt-2 divide-y divide-white/10 rounded-xl border border-white/10" },
+              ...measures.map((m, i) => {
+                const key = measureKey(m, i);
+                return el("li", { class: "flex items-center gap-2 px-3 py-2", dataset: { measureRow: key } },
+                  el("span", { class: "shrink-0 rounded bg-white px-1.5 text-xs font-bold text-black" }, String(i + 1)),
+                  editBoxes
+                    ? el("input", {
+                        class: "min-w-0 flex-1 rounded bg-white/10 px-2 py-1 text-sm text-white outline-none focus:bg-white/20",
+                        value: m.label || "",
+                        placeholder: "Name (optional), e.g. Nodule",
+                        dataset: { measureName: key },
+                        onInput: (e) => {
+                          setMeasurements(measurementList().map((row, j) => (measureKey(row, j) === key ? { ...row, label: e.target.value } : row)));
+                          const tag = document.querySelector(`[data-saved-measure-label="${i + 1}"]`);
+                          if (tag) tag.textContent = measureTagText({ ...m, label: e.target.value }, i);
+                        },
+                      })
+                    : el("span", { class: "min-w-0 flex-1 truncate text-sm text-slate-100" }, m.label || "Measurement"),
+                  el("span", { class: "shrink-0 font-mono text-sm text-white" }, m.text),
+                  editBoxes && el("button", {
+                    type: "button",
+                    class: "shrink-0 rounded border border-red-300/40 px-2 py-0.5 text-xs font-semibold text-red-200 hover:bg-red-500/20",
+                    dataset: { deleteMeasure: key },
+                    onClick: () => deleteMeasurement(key),
+                  }, "Delete")
+                );
+              })
+            )
+          )
         ),
 
         el("section", { class: "flex flex-col gap-5" },
@@ -1163,9 +1595,6 @@ export async function renderReviewPage({ target }) {
                 disabled: busy,
                 onClick: openReport,
               }, "Open report")
-            ),
-            edit && el("p", { class: "mt-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950" },
-              "Thinking is on this draft so you can check the model’s reasoning. It is not included in the endorsed report, or in the Word and PDF files after you endorse."
             ),
             edit
               ? el("textarea", {
@@ -1180,7 +1609,7 @@ export async function renderReviewPage({ target }) {
                     : reportBody || "No report has been saved for this case yet."
                 ),
             edit && el("p", { class: "mt-2 text-xs text-slate-500" },
-              "Edit the report here. Save draft keeps it and Azure moves the film boxes to match."
+              "Edit the report here. Save draft keeps it and Azure adds boxes for new findings. Boxes you drew, resized or deleted stay as you left them."
             )
           ),
           el("div", { class: "card flex-1" },

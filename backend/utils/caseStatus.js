@@ -39,6 +39,7 @@ function toPublicCase(doc, extra = {}) {
     delete o.imageUrl;
     o.reportText = '';
     o.findings = [];
+    o.measurements = [];
   }
   if (extra.stripProvenance) {
     o.findings = (o.findings || []).map((f) => {

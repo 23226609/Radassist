@@ -40,6 +40,19 @@ const findingSchema = new mongoose.Schema(
   { _id: true }
 );
 
+// A line the radiologist drew with the Measure tool. Ends are % of the film.
+const measurementSchema = new mongoose.Schema(
+  {
+    x1: { type: Number, required: true, min: 0, max: 100 },
+    y1: { type: Number, required: true, min: 0, max: 100 },
+    x2: { type: Number, required: true, min: 0, max: 100 },
+    y2: { type: Number, required: true, min: 0, max: 100 },
+    text: { type: String, default: '' },
+    label: { type: String, default: '' },
+  },
+  { _id: true }
+);
+
 const caseSchema = new mongoose.Schema(
   {
     caseId: { type: String, required: true, unique: true, trim: true, index: true },
@@ -59,6 +72,7 @@ const caseSchema = new mongoose.Schema(
     // the end of reportText when they save, so downloads include them.
     remarks: { type: String, default: '' },
     findings: { type: [findingSchema], default: [] },
+    measurements: { type: [measurementSchema], default: [] },
     // none = film stored, AI not started; running = CURV in progress; done = draft ready.
     analysisState: { type: String, enum: ['none', 'running', 'done'], default: 'none' },
     // Azure film boxes, placed after the CURV draft is stored. '' = not requested.

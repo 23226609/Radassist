@@ -59,20 +59,23 @@ function dedupeFindings(list) {
   return out;
 }
 
+// Radiologist work survives a fresh Azure pass: drawn boxes are kept, a
+// resized AI box keeps its size, and a deleted (rejected) AI box stays deleted.
 function mergeFindingsFromReport(previous, parsed) {
   const prev = Array.isArray(previous) ? previous : [];
   const incoming = dedupeFindings(parsed);
   const manual = prev.filter(isManualFinding);
-  const accepted = prev.filter((f) => !isManualFinding(f) && f.status === 'accepted');
+  const reviewed = prev.filter((f) => !isManualFinding(f)
+    && (f.status === 'accepted' || f.status === 'rejected' || keepManualBox(f)));
   const used = new Set();
   const rebuilt = incoming.map((p) => {
-    const idx = accepted.findIndex((a, i) => !used.has(i) && findingsOverlap(a, p));
+    const idx = reviewed.findIndex((a, i) => !used.has(i) && findingsOverlap(a, p));
     if (idx < 0) return p;
     used.add(idx);
-    const a = accepted[idx];
+    const a = reviewed[idx];
     return {
       ...p,
-      status: 'accepted',
+      status: a.status || p.status,
       bbox: keepManualBox(a) ? a.bbox : (p.bbox || a.bbox),
       bboxSource: keepManualBox(a) ? 'manual' : (p.bboxSource || a.bboxSource),
     };

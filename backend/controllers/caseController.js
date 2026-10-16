@@ -12,7 +12,7 @@ const { analyzeXray } = require('../utils/aiService');
 const { prepareFilm } = require('../utils/dicom');
 const { buildEditChanges } = require('../utils/editDiff');
 const azureFindings = require('../utils/azureFindings');
-const { dedupeFindings } = require('../utils/findingsMerge');
+const { dedupeFindings, mergeFindingsFromReport } = require('../utils/findingsMerge');
 const { bucket, downloadImage } = require('./_gridfs');
 const { nameFieldsFrom } = require('../utils/patientName');
 const { toPublicCase, statusFilter, publicStatus, clinicianEdited } = require('../utils/caseStatus');
@@ -45,6 +45,25 @@ function sanitizeFindings(findings) {
     if (!Array.isArray(f.bbox) || f.bbox.length !== 4) f.bbox = [];
     return f;
   });
+}
+
+function sanitizeMeasurements(list) {
+  const pct = (n) => Math.min(100, Math.max(0, Math.round((Number(n) || 0) * 100) / 100));
+  return (list || [])
+    .filter((m) => m && ['x1', 'y1', 'x2', 'y2'].every((k) => Number.isFinite(Number(m[k]))))
+    .slice(0, 50)
+    .map((m) => {
+      const row = {
+        x1: pct(m.x1),
+        y1: pct(m.y1),
+        x2: pct(m.x2),
+        y2: pct(m.y2),
+        text: String(m.text || '').trim().slice(0, 40),
+        label: String(m.label || '').trim().slice(0, 80),
+      };
+      if (m._id && !String(m._id).startsWith('tmp-')) row._id = m._id;
+      return row;
+    });
 }
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || require('os').tmpdir();
@@ -533,7 +552,7 @@ async function placeFilmBoxes(c, userId) {
   c = await Case.findOne({ caseId });
   if (!c) return;
   const stale = c.status === 'finalized' || c.reportText !== reportText;
-  if (boxes.length && !stale) c.findings = boxes;
+  if (boxes.length && !stale) c.findings = mergeFindingsFromReport(c.findings, boxes);
   c.boxesState = failed ? 'failed' : 'done';
   await c.save();
   if (boxes.length && !stale) {
@@ -580,8 +599,9 @@ exports.updateCase = catchAsync(async (req, res, next) => {
     reportText: c.reportText,
     remarks: c.remarks,
     findings: (c.findings || []).map((row) => (row.toObject ? row.toObject() : { ...row })),
+    measurements: (c.measurements || []).map((row) => (row.toObject ? row.toObject() : { ...row })),
   };
-  const { diagnosis, reportText, findings, remarks, urgent } = req.body || {};
+  const { diagnosis, reportText, findings, remarks, urgent, measurements } = req.body || {};
   if (c.analysisState === 'running' && (diagnosis !== undefined || reportText !== undefined || Array.isArray(findings))) {
     return next(ApiError.badRequest('The report is still generating.'));
   }
@@ -595,10 +615,12 @@ exports.updateCase = catchAsync(async (req, res, next) => {
     if (reportText !== undefined) c.reportText = reportText;
     if (remarks !== undefined) c.remarks = remarks;
     if (Array.isArray(findings)) c.findings = sanitizeFindings(findings);
+    if (Array.isArray(measurements)) c.measurements = sanitizeMeasurements(measurements);
     const diff = buildEditChanges(prevSnapshot, {
       reportText: c.reportText,
       remarks: c.remarks,
       findings: (c.findings || []).map((row) => (row.toObject ? row.toObject() : { ...row })),
+      measurements: (c.measurements || []).map((row) => (row.toObject ? row.toObject() : { ...row })),
     });
     if (diff.changes.length) {
       pushEditLog(c, {
@@ -815,7 +837,7 @@ exports.summariseFindings = catchAsync(async (req, res, next) => {
     return next(ApiError.badRequest('Azure AI did not return any findings for this report.'));
   }
 
-  c.findings = dedupeFindings(findings);
+  c.findings = mergeFindingsFromReport(c.findings, findings);
   c.boxesState = 'done';
   if (summarised.diagnosis && clinicianEdited(c)) {
     c.diagnosis = summarised.diagnosis;
