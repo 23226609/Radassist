@@ -15,8 +15,7 @@ import { el, mount } from "../dom.js";
 import { state, setPage, toast } from "../state.js";
 import { api, clearFilmSpacingAdjust, filmSpacingAdjust } from "../api.js";
 import { svgIcon } from "./icons.js";
-import { reportPopupUrl } from "../lib/reportPopup.js";
-import { downloadReportDocx, downloadReportPdf, applyRemarksToReport, splitReportAndRemarks, withoutThinking, restoreThinking, normalizeReportShape } from "../lib/reportExport.js";
+import { downloadReportDocx, downloadReportPdf, previewReportPdf, applyRemarksToReport, splitReportAndRemarks, withoutThinking, restoreThinking, normalizeReportShape } from "../lib/reportExport.js";
 import { urgentBadge, patientDisplayName, doctorInCharge } from "../lib/tags.js";
 import { isGenerating, isAwaitingApprove, isAwaitingAi, statusLabel } from "../lib/caseStatus.js";
 import { forgetCases } from "../lib/records.js";
@@ -157,10 +156,16 @@ function boxKey(f) {
 // Boxes the radiologist drew, plus Azure boxes for abnormal findings. Normal
 // statements ("clear lungs") and older locally parsed findings have no real
 // position. A deleted AI box stays stored as rejected so Azure does not put
-// it back, but it is not drawn.
+// it back, but it is not drawn. Finalized cases arrive without `source`
+// (the signed report carries no AI/manual tags), so a box placed by Azure
+// or by hand is then recognised by its `bboxSource` instead.
 function filmBoxes(findings) {
-  return (findings || []).filter((f) => hasBbox(f) && f.status !== "rejected"
-    && (isDrawnBox(f) || (f.source === "Azure" && f.severity !== "normal")));
+  return (findings || []).filter((f) => {
+    if (!hasBbox(f) || f.status === "rejected") return false;
+    if (isDrawnBox(f)) return true;
+    if (f.source) return f.source === "Azure" && f.severity !== "normal";
+    return Boolean(f.bboxSource) && f.severity !== "normal";
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -453,6 +458,8 @@ export async function renderReviewPage({ target }) {
   let showMeasures = true;
   let boxDrag = null;
   let zoom = 1;
+  let filmAspect = 0;
+  let showLog = false;
   let filmTool = "view";
   let selectedBoxKey = "";
   let boxesDirty = false;
@@ -1132,27 +1139,6 @@ export async function renderReviewPage({ target }) {
     } finally { busy = false; render(); }
   }
 
-  async function openReport() {
-    const id = getEffectiveCaseId();
-    if (!id) {
-      toast("This case has no id yet.");
-      return;
-    }
-    if (canEditReport(state.user)) {
-      try {
-        await persistClinicianEdits();
-      } catch (err) {
-        toast(err.message || "Could not save before opening the report.");
-      }
-    }
-    const popup = window.open(
-      reportPopupUrl(id),
-      "radassist-report",
-      "popup=yes,width=820,height=920,scrollbars=yes,resizable=yes"
-    );
-    if (!popup) toast("Allow popups to open the report in a new window.");
-  }
-
   async function saveRemarks() {
     busy = true;
     render();
@@ -1219,6 +1205,8 @@ export async function renderReviewPage({ target }) {
   }
 
   async function download(kind) {
+    const preview = kind === "preview" ? window.open("", "_blank") : null;
+    if (preview?.document) preview.document.title = "Preparing report…";
     busy = true;
     render();
     try {
@@ -1232,12 +1220,15 @@ export async function renderReviewPage({ target }) {
         stored = await persistClinicianEdits();
       }
       if (!(stored.reportText || "").trim()) {
+        preview?.close();
         toast("No report has been saved for this case yet.");
         return;
       }
       if (kind === "docx") await downloadReportDocx(stored);
+      else if (kind === "preview") await previewReportPdf(stored, preview);
       else await downloadReportPdf(stored);
     } catch (err) {
+      preview?.close();
       toast(err.message || "Download failed.");
     } finally {
       busy = false;
@@ -1274,118 +1265,117 @@ export async function renderReviewPage({ target }) {
 
     const _imageSrc = imageSrc;
 
+    const btn = "inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50";
+    const btnLight = `${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`;
+    const listMax = boxes.length > 0 && measures.length > 0 ? "max-h-28" : "max-h-36";
+
     const root = el(
       "main",
-      { class: "mx-auto max-w-[1450px] px-5 py-7" },
-      el("button", {
-        class: "inline-flex items-center gap-1 text-slate-700 hover:text-slate-900",
-        onClick: () => setPage("dashboard"),
-      }, svgIcon("arrow-left", { size: 16 }), isReferringDoctor(state.user) ? "Ward enquiry" : "Work list"),
-
-      el("div", { class: "mt-3 flex flex-wrap items-center justify-between gap-3" },
-        el("div", {},
-          el("h1", { class: "text-3xl font-bold text-slate-900" }, isReferringDoctor(state.user) ? "Exam enquiry" : "Reporting"),
-          el("p", { class: "text-slate-600 mt-1 flex flex-wrap items-center gap-2" },
+      { class: "flex flex-col gap-2 p-1 lg:h-full" },
+      el("div", { class: "flex shrink-0 flex-wrap items-start justify-between gap-2" },
+        el("div", { class: "min-w-0" },
+          el("div", { class: "flex flex-wrap items-center gap-x-3 gap-y-1" },
             el("button", {
-              class: "font-semibold hover:text-ha-blue hover:underline",
-              onClick: () => {
-                state.selectedPatientId = localCase.patientId;
-                setPage("patient");
-              },
-            }, patientName || localCase.patientId),
-            patientName
-              ? el("span", { class: "font-mono text-xs text-slate-500" }, localCase.patientId)
-              : null,
-            " · ",
-            localCase.age || "?", " years · ",
-            localCase.sex || "?",
-            localCase.urgent ? urgentBadge() : null
-          ),
-          el("p", { class: "mt-1 text-sm text-slate-700" },
-            "Modality: ", el("b", {}, "XRAY"),
-            " · Procedure: ", el("b", {}, "Chest"),
-            (localCase.registeredAt || localCase.imageId)
-              ? el("span", {}, " · Registered: ", new Date(localCase.registeredAt || localCase.createdAt).toLocaleString())
+              class: "inline-flex items-center gap-1 text-xs text-slate-600 hover:text-slate-900",
+              onClick: () => setPage("dashboard"),
+            }, svgIcon("arrow-left", { size: 14 }), isReferringDoctor(state.user) ? "Ward enquiry" : "Work list"),
+            el("h1", { class: "text-lg font-bold text-slate-900" }, isReferringDoctor(state.user) ? "Exam enquiry" : "Reporting"),
+            el("span", { class: "flex flex-wrap items-center gap-2 text-sm text-slate-600" },
+              el("button", {
+                class: "font-semibold text-slate-800 hover:text-ha-blue hover:underline",
+                onClick: () => {
+                  state.selectedPatientId = localCase.patientId;
+                  setPage("patient");
+                },
+              }, patientName || localCase.patientId),
+              patientName
+                ? el("span", { class: "font-mono text-xs text-slate-500" }, localCase.patientId)
+                : null,
+              el("span", {}, `${localCase.age || "?"} years · ${localCase.sex || "?"}`),
+              localCase.urgent ? urgentBadge() : null
+            ),
+            generating
+              ? el("span", { class: "rounded-full bg-amber-50 text-amber-700 px-2.5 py-0.5 text-xs font-bold" }, "GENERATING")
+              : awaitingAi
+              ? el("span", { class: "rounded-full bg-violet-50 text-violet-700 px-2.5 py-0.5 text-xs font-bold" }, "AWAITING AI")
+              : isAwaitingApprove(localCase)
+              ? el("span", { class: "rounded-full bg-blue-50 text-ha-blue px-2.5 py-0.5 text-xs font-bold" }, "PENDING APPROVE")
+              : localCase.status === "finalized"
+              ? el("span", { class: "rounded-full bg-green-50 text-green-700 px-2.5 py-0.5 text-xs font-bold" }, "FINALIZED")
               : null
           ),
-          el("p", { class: "mt-1 text-sm text-slate-500" },
-            "Doctor in charge: ",
-            el("span", { class: "font-semibold text-slate-700" }, doctorInCharge(localCase))
-          ),
-          el("p", { class: "text-xs text-slate-500 mt-1" },
-            "MongoDB case id: ", el("span", { class: "font-mono" }, localCase.caseId || localCase._id || ""),
-            localCase.imageId ? el("span", {}, " · image: ", el("span", { class: "font-mono" }, String(localCase.imageId).slice(-8))) : null
+          el("p", { class: "mt-0.5 text-xs text-slate-500" },
+            "Modality: ", el("b", { class: "text-slate-700" }, "XRAY"),
+            " · Procedure: ", el("b", { class: "text-slate-700" }, "Chest"),
+            (localCase.registeredAt || localCase.imageId)
+              ? el("span", {}, " · Registered: ", new Date(localCase.registeredAt || localCase.createdAt).toLocaleString())
+              : null,
+            " · Doctor in charge: ",
+            el("span", { class: "font-semibold text-slate-700" }, doctorInCharge(localCase)),
+            " · Case ", el("span", { class: "font-mono" }, localCase.caseId || localCase._id || ""),
+            localCase.imageId ? el("span", {}, " · image ", el("span", { class: "font-mono" }, String(localCase.imageId).slice(-8))) : null
           )
         ),
-        el("div", { class: "flex gap-2 flex-wrap" },
+        el("div", { class: "flex flex-wrap gap-1.5" },
           canRunAi(state.user) && localCase.status !== "finalized" && !awaitingAi && el("button", {
-            class: "inline-flex items-center gap-1 rounded-xl bg-ha-blue px-3 py-2 text-sm font-semibold text-white hover:bg-[#074f85] disabled:opacity-50",
+            class: `${btn} bg-ha-blue text-white hover:bg-[#074f85]`,
             disabled: busy || generating,
             onClick: runAi,
           }, generating ? "Generating…" : "Re-run AI"),
           canExport(state.user) && el("button", {
-            class: "inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50",
+            class: `${btn} bg-slate-900 text-white hover:bg-slate-700`,
             disabled: busy || generating || awaitingAi,
-            onClick: openReport,
-          }, svgIcon("file-text", { size: 16 }), "Report"),
+            onClick: () => download("preview"),
+          }, svgIcon("eye", { size: 14 }), "Preview PDF"),
           canExport(state.user) && el("button", {
-            class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
+            class: btnLight,
             disabled: busy || generating || awaitingAi,
             onClick: () => download("docx"),
-          }, svgIcon("download", { size: 16 }), "Word"),
+          }, svgIcon("download", { size: 14 }), "Word"),
           canExport(state.user) && el("button", {
-            class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
+            class: btnLight,
             disabled: busy || generating || awaitingAi,
             onClick: () => download("pdf"),
-          }, svgIcon("download", { size: 16 }), "PDF"),
+          }, svgIcon("download", { size: 14 }), "PDF"),
           canFlag && localCase.status === "finalized" && el("button", {
-            class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
+            class: btnLight,
             disabled: busy,
             onClick: shareReport,
-          }, svgIcon("share", { size: 16 }), localCase.shared || localCase.shareToken ? "Copy share link" : "Share"),
+          }, svgIcon("share", { size: 14 }), localCase.shared || localCase.shareToken ? "Copy share link" : "Share"),
           edit && el("button", {
-            class: "rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50",
+            class: btnLight,
             disabled: busy,
             onClick: saveDraft,
           }, "Save draft"),
           edit && el("button", {
-            class: "rounded-xl bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-700",
+            class: `${btn} bg-green-600 text-white hover:bg-green-700`,
             disabled: busy,
             onClick: finalize,
           }, "Endorse report"),
           canFlag && el("button", {
             class: localCase.urgent
-              ? "rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50"
-              : "rounded-xl border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50",
+              ? `${btn} border border-red-200 bg-red-50 text-red-700 hover:bg-red-100`
+              : `${btn} border border-red-200 bg-white text-red-700 hover:bg-red-50`,
             disabled: busy,
             onClick: toggleUrgent,
-          }, localCase.urgent ? "Remove urgent" : "Mark urgent"),
-          generating
-            ? el("span", { class: "rounded-full bg-amber-50 text-amber-700 px-3 py-1 text-xs font-bold" }, "GENERATING")
-            : awaitingAi
-            ? el("span", { class: "rounded-full bg-violet-50 text-violet-700 px-3 py-1 text-xs font-bold" }, "AWAITING AI")
-            : isAwaitingApprove(localCase)
-            ? el("span", { class: "rounded-full bg-blue-50 text-ha-blue px-3 py-1 text-xs font-bold" }, "PENDING APPROVE")
-            : localCase.status === "finalized"
-            ? el("span", { class: "rounded-full bg-green-50 text-green-700 px-3 py-1 text-xs font-bold" }, "FINALIZED")
-            : null
+          }, localCase.urgent ? "Remove urgent" : "Mark urgent")
         )
       ),
 
-      msg && el("p", { class: "mt-4 rounded-lg bg-green-50 text-green-700 p-3" }, msg),
-      awaitingAi && el("p", { class: "mt-4 rounded-lg bg-violet-50 text-violet-900 p-3" },
+      msg && el("p", { class: "shrink-0 rounded bg-green-50 px-3 py-1.5 text-sm text-green-700" }, msg),
+      awaitingAi && el("p", { class: "shrink-0 rounded bg-violet-50 px-3 py-1.5 text-sm text-violet-900" },
         "The film is registered. The draft report is generated automatically and will appear here as pending approve."
       ),
-      generating && el("p", { class: "mt-4 rounded-lg bg-amber-50 text-amber-800 p-3" },
+      generating && el("p", { class: "shrink-0 rounded bg-amber-50 px-3 py-1.5 text-sm text-amber-800" },
         "The report is still generating. Return to the worklist — Review is ready once the status is ",
         el("b", {}, statusLabel("pending_approve")),
         "."
       ),
 
-      // Film and report side by side.
-      el("div", { class: "mt-5 grid gap-5 xl:grid-cols-2" },
+      // Film and report side by side, sharing the rest of the window.
+      el("div", { class: "grid gap-3 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]" },
         // X-ray with the Azure boxes
-        el("section", { class: "rounded-2xl bg-slate-950 p-4 text-white" },
+        el("section", { class: "flex min-h-0 flex-col rounded-xl bg-slate-950 p-3 text-white" },
           el("div", { class: "flex flex-wrap items-center justify-between gap-2" },
             el("div", { class: "flex items-baseline gap-2" },
               el("b", {}, "Chest X-Ray"),
@@ -1432,11 +1422,19 @@ export async function renderReviewPage({ target }) {
               }, showMeasures ? "Hide lines" : "Show lines")
             )
           ),
-          el("div", { class: "mt-3 max-h-[560px] overflow-auto rounded-xl bg-gradient-to-b from-slate-500 to-slate-900" },
+          el("div", {
+            class: "mt-2 flex h-[60vh] overflow-auto rounded-lg bg-gradient-to-b from-slate-500 to-slate-900 lg:h-auto lg:min-h-0 lg:flex-1",
+            style: { containerType: "size" },
+          },
             el("div", {
               id: "xray-stage",
-              class: `relative touch-none ${filmTool === "measure" || filmTool === "draw" ? "cursor-crosshair" : ""}`,
-              style: { width: `${Math.round(zoom * 100)}%` },
+              class: `relative m-auto shrink-0 touch-none ${filmTool === "measure" || filmTool === "draw" ? "cursor-crosshair" : ""}`,
+              // At 100% the whole film fits the panel; zoom scales from there.
+              style: {
+                width: filmAspect
+                  ? `calc(min(100cqw, ${(100 * filmAspect).toFixed(3)}cqh) * ${zoom})`
+                  : `${Math.round(zoom * 100)}%`,
+              },
               onPointerdown: onFilmPointerDown,
               onPointermove: onFilmPointerMove,
               onPointerup: onFilmPointerUp,
@@ -1444,7 +1442,20 @@ export async function renderReviewPage({ target }) {
               onWheel: onFilmWheel,
             },
               _imageSrc
-                ? el("img", { id: "xray-film", src: _imageSrc, class: "pointer-events-none block h-auto w-full", alt: "Chest X-ray" })
+                ? el("img", {
+                    id: "xray-film",
+                    src: _imageSrc,
+                    class: "pointer-events-none block h-auto w-full",
+                    alt: "Chest X-ray",
+                    onLoad: (e) => {
+                      const { naturalWidth: w, naturalHeight: h } = e.target;
+                      const next = w && h ? w / h : 0;
+                      if (next && Math.abs(next - filmAspect) > 0.001) {
+                        filmAspect = next;
+                        render();
+                      }
+                    },
+                  })
                 : el("div", { class: "pointer-events-none flex h-[320px] w-full min-w-[240px] items-center justify-center text-slate-300 text-sm" }, localCase.imageId ? "Loading image…" : "No image"),
               showMeasures && measures.length > 0 && savedMeasuresLayer(measures),
               ...(showMeasures ? measures.map((m, i) => savedMeasureLabel(m, i)) : []),
@@ -1484,7 +1495,7 @@ export async function renderReviewPage({ target }) {
               }))
             )
           ),
-          el("p", { class: "mt-2 text-center text-xs text-slate-300" },
+          el("p", { class: "mt-1.5 shrink-0 text-center text-xs text-slate-300" },
             filmTool === "measure"
               ? (measureLine
                   ? measureText(measureLine)
@@ -1497,20 +1508,20 @@ export async function renderReviewPage({ target }) {
               ? "Click a box to select it. Drag it to move, or drag a corner to resize."
               : `Zoom ${Math.round(zoom * 100)}%. Scroll the film to move around.`
           ),
-          boxStatus() && el("p", { id: "box-status", class: "mt-1 text-center text-xs text-slate-400" }, boxStatus()),
-          boxes.length > 0 && el("div", { class: "mt-4" },
+          boxStatus() && el("p", { id: "box-status", class: "mt-0.5 shrink-0 text-center text-xs text-slate-400" }, boxStatus()),
+          boxes.length > 0 && el("div", { class: "mt-2 shrink-0" },
             el("div", { class: "flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400" },
               el("span", {}, "Boxes on the film"),
               boxesDirty && el("span", { class: "normal-case tracking-normal text-amber-300" }, "Unsaved. Press Save draft.")
             ),
-            el("ul", { id: "box-list", class: "mt-2 divide-y divide-white/10 rounded-xl border border-white/10" },
+            el("ul", { id: "box-list", class: `mt-1 ${listMax} divide-y divide-white/10 overflow-y-auto rounded-lg border border-white/10` },
               ...boxes.map((f, i) => {
                 const key = boxKey(f);
                 const color = filmBoxColor(i, boxes.length);
                 const selected = key === selectedBoxKey;
                 const select = () => { selectedBoxKey = selected ? "" : key; render(); };
                 return el("li", {
-                  class: `flex items-center gap-2 px-3 py-2 ${selected ? "bg-white/10" : ""}`,
+                  class: `flex items-center gap-2 px-3 py-1 ${selected ? "bg-white/10" : ""}`,
                   dataset: { boxRow: key },
                 },
                   el("button", {
@@ -1538,7 +1549,7 @@ export async function renderReviewPage({ target }) {
                         title: f.sentence || f.label,
                         onClick: select,
                       }, f.label),
-                  el("span", { class: "shrink-0 text-[11px] font-semibold uppercase text-slate-400" },
+                  f.source && el("span", { class: "shrink-0 text-[11px] font-semibold uppercase text-slate-400" },
                     isDrawnBox(f) ? "Manual" : f.bboxSource === "manual" ? "AI · adjusted" : "AI"),
                   editBoxes && el("button", {
                     type: "button",
@@ -1550,15 +1561,15 @@ export async function renderReviewPage({ target }) {
               })
             )
           ),
-          measures.length > 0 && el("div", { class: "mt-4" },
+          measures.length > 0 && el("div", { class: "mt-2 shrink-0" },
             el("div", { class: "flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400" },
               el("span", {}, "Measurements (in the report)"),
               measuresDirty && el("span", { class: "normal-case tracking-normal text-amber-300" }, "Unsaved. Press Save draft.")
             ),
-            el("ul", { id: "measure-list", class: "mt-2 divide-y divide-white/10 rounded-xl border border-white/10" },
+            el("ul", { id: "measure-list", class: `mt-1 ${listMax} divide-y divide-white/10 overflow-y-auto rounded-lg border border-white/10` },
               ...measures.map((m, i) => {
                 const key = measureKey(m, i);
-                return el("li", { class: "flex items-center gap-2 px-3 py-2", dataset: { measureRow: key } },
+                return el("li", { class: "flex items-center gap-2 px-3 py-1", dataset: { measureRow: key } },
                   el("span", { class: "shrink-0 rounded bg-white px-1.5 text-xs font-bold text-black" }, String(i + 1)),
                   editBoxes
                     ? el("input", {
@@ -1586,64 +1597,68 @@ export async function renderReviewPage({ target }) {
           )
         ),
 
-        el("section", { class: "flex flex-col gap-5" },
-          el("div", { class: "card", id: "report-panel" },
-            el("div", { class: "flex flex-wrap items-center justify-between gap-2" },
-              el("h2", { class: "text-lg font-bold text-slate-900" }, "Report"),
-              canExport(state.user) && !generating && !awaitingAi && el("button", {
-                class: "rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
-                disabled: busy,
-                onClick: openReport,
-              }, "Open report")
-            ),
+        el("section", { class: "flex min-h-0 flex-col gap-3" },
+          el("div", { class: "card flex min-h-0 flex-1 flex-col !p-3", id: "report-panel" },
+            el("h2", { class: "shrink-0 text-base font-bold text-slate-900" }, "Report"),
             edit
               ? el("textarea", {
                   id: "report-text",
-                  class: "input mt-3 min-h-[420px] font-sans text-sm leading-6",
+                  class: "input mt-2 min-h-[16rem] flex-1 resize-none font-sans text-sm leading-6 lg:min-h-[8rem]",
                   rows: 18,
                   onInput: (e) => { bodyDraft = e.target.value; bodyDirty = true; markUnsaved(); },
                 }, bodyDraft)
-              : el("pre", { id: "report-text", class: "mt-3 max-h-[560px] overflow-y-auto whitespace-pre-wrap font-sans text-sm leading-6 text-slate-800" },
+              : el("pre", { id: "report-text", class: "mt-2 min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap font-sans text-sm leading-6 text-slate-800" },
                   generating
                     ? "The report is still generating."
                     : reportBody || "No report has been saved for this case yet."
                 ),
-            edit && el("p", { class: "mt-2 text-xs text-slate-500" },
-              "Edit the report here. Save draft keeps it and Azure adds boxes for new findings. Boxes you drew, resized or deleted stay as you left them."
+            edit && el("p", { class: "mt-1 shrink-0 text-xs text-slate-500" },
+              "Save draft keeps your edits and Azure adds boxes for new findings. Boxes you drew, resized or deleted stay as you left them."
             )
           ),
-          el("div", { class: "card flex-1" },
+          el("div", { class: "card shrink-0 !p-3" },
             el("div", { class: "flex flex-wrap items-center justify-between gap-2" },
-              el("h2", { class: "text-lg font-bold text-slate-900" }, "Remarks"),
+              el("h2", { class: "text-base font-bold text-slate-900" }, "Remarks"),
               canRemark && el("button", {
-                class: "rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50",
+                class: `${btn} bg-slate-900 text-white hover:bg-slate-700`,
                 disabled: busy,
                 onClick: saveRemarks,
               }, "Save remarks")
             ),
             el("textarea", {
               id: "remarks-box",
-              class: "input mt-3 min-h-[180px]",
-              rows: 8,
+              class: "input mt-2 h-20 resize-y py-1.5 text-sm",
+              rows: 3,
               readOnly: !canRemark,
               placeholder: localCase.status === "finalized"
                 ? "Notes stay on this case. They are not added to the finalized report…"
                 : "Notes or extra findings to add to the report…",
               onInput: (e) => { remarksDraft = e.target.value; remarksDirty = true; markUnsaved(); },
             }, remarksDraft),
-            el("p", { class: "mt-2 text-xs text-slate-500" },
+            el("p", { class: "mt-1 text-xs text-slate-500" },
               localCase.status === "finalized"
                 ? "This case is finalized. Remarks are saved as notes only and are not written into the report, Word, or PDF."
                 : "Nothing is written until you press Save draft or Save remarks. Both save the report and the remarks."
             ),
-            canRemark && el("p", { id: "mongo-report-status", class: "mt-1 text-xs font-medium text-ha-blue" })
+            canRemark && el("p", { id: "mongo-report-status", class: "mt-0.5 text-xs font-medium text-ha-blue" })
           ),
-          showProvenance && (localCase.editLog || []).length > 0 && el("div", { class: "card" },
-            el("h2", { class: "text-lg font-bold text-slate-900" }, "Draft log (AI vs manual)"),
-            el("p", { class: "mt-1 text-xs text-slate-500" },
+          showProvenance && (localCase.editLog || []).length > 0 && el("div", { class: "card shrink-0 !p-0" },
+            el("button", {
+              id: "toggle-log",
+              type: "button",
+              class: "flex w-full items-center justify-between gap-2 px-3 py-2 text-left",
+              "aria-expanded": showLog ? "true" : "false",
+              onClick: () => { showLog = !showLog; render(); },
+            },
+              el("span", { class: "text-sm font-bold text-slate-900" },
+                `Draft log (AI vs manual) · ${(localCase.editLog || []).length}`),
+              el("span", { class: "text-xs font-semibold text-ha-blue" }, showLog ? "Hide" : "Show")
+            ),
+            showLog && el("div", { class: "max-h-48 overflow-y-auto border-t border-slate-200 px-3 pb-2" },
+            el("p", { class: "mt-2 text-xs text-slate-500" },
               "Shown while editing. The signed report the doctor sees has no source tags."
             ),
-            el("ul", { class: "mt-3 space-y-2 text-sm" },
+            el("ul", { class: "mt-2 space-y-2 text-sm" },
               ...(localCase.editLog || []).slice(-12).reverse().map((row, index) => {
                 const key = String(row._id || row.at || index);
                 const open = openLogKey === key;
@@ -1690,6 +1705,7 @@ export async function renderReviewPage({ target }) {
                   )
                 );
               })
+            )
             )
           )
         )

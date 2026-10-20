@@ -32,8 +32,8 @@ URL.createObjectURL = (blob) => {
 URL.revokeObjectURL = () => {};
 let opened = null;
 window.open = (url) => {
-  opened = url;
-  return {};
+  opened = { url, location: {}, closed: false, close() { this.closed = true; } };
+  return opened;
 };
 if (!window.location?.href) {
   Object.defineProperty(window, "location", {
@@ -267,6 +267,8 @@ await test("Save remarks adds them to the report and keeps the report edit", asy
 });
 
 await test("the draft log shows the manual edit and expands", async () => {
+  assert.ok(!buttons().some((b) => b.textContent.includes("Edited report")), "the log should start collapsed");
+  await click(root.querySelector("#toggle-log"));
   const entry = buttons().find((b) => b.textContent.includes("Edited report"));
   assert.ok(entry, "manual edit missing from the log");
   await click(entry);
@@ -282,16 +284,19 @@ await test("Mark urgent / Remove urgent", async () => {
   assert.ok(button("Mark urgent"));
 });
 
-await test("Report opens the popup after saving", async () => {
+await test("Preview PDF saves, then shows the PDF in a new tab", async () => {
   opened = null;
-  await click(button("Report"), 60);
-  assert.ok(opened && opened.includes("CASE-RV-1"), `popup url: ${opened}`);
-});
-
-await test("Open report in the report panel opens the same popup", async () => {
-  opened = null;
-  await click(button("Open report"), 60);
-  assert.ok(opened && opened.includes("CASE-RV-1"));
+  calls.length = 0;
+  downloads.length = 0;
+  await click(button("Preview PDF"), 1500);
+  assert.ok(opened, "no tab opened");
+  assert.ok(calls.some((c) => c[0] === "update"), "unsaved edits were not saved first");
+  assert.equal(downloads.length, 1, "no PDF produced");
+  assert.equal(downloads[0].type, "application/pdf");
+  assert.equal(opened.location.href, "blob:test");
+  assert.ok(!opened.closed);
+  assert.equal(button("Report"), undefined, "the old popup button is still shown");
+  assert.equal(button("Open report"), undefined);
 });
 
 await test("Word download", async () => {
@@ -488,6 +493,21 @@ await test("boxes cannot be edited while Azure is placing them, or once endorsed
   assert.equal(root.querySelector("#draw-box"), null);
   assert.equal(root.querySelector("[data-delete-box]"), null);
   assert.deepEqual(boxLabels(), ["Bibasilar atelectasis"]);
+});
+
+await test("endorsed boxes stay on the film after the server strips their source", async () => {
+  const strip = ({ source, ...rest }) => rest;
+  await open("radiologist", {
+    status: "finalized",
+    findings: [
+      strip(box("Bibasilar atelectasis")),
+      strip({ ...box("Nodule"), _id: "m-1", source: "manual", bboxSource: "manual", severity: "" }),
+      strip(box("Clear lungs", "normal")),
+      strip({ ...box("Old parsed finding"), bboxSource: "" }),
+    ],
+  });
+  assert.deepEqual(boxLabels(), ["Bibasilar atelectasis", "Nodule"]);
+  assert.ok(!root.querySelector("#box-list").textContent.includes("Manual"), "provenance tag shown on a signed report");
 });
 
 console.log("\n=== Thinking and measurements ===");

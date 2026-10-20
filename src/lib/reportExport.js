@@ -706,9 +706,25 @@ export function buildReportPdfBytes(c, film = null) {
   return encodePdf(objects);
 }
 
-export async function downloadReportPdf(c) {
-  const s = buildReportSections(c);
+async function reportPdfBlob(c) {
   const film = await filmForReport(c);
   const bytes = buildReportPdfBytes(c, film?.type === "jpg" ? film : null);
-  triggerDownload(new Blob([bytes], { type: "application/pdf" }), `${s.fileBase}.pdf`);
+  return new Blob([bytes], { type: "application/pdf" });
+}
+
+export async function downloadReportPdf(c) {
+  const s = buildReportSections(c);
+  triggerDownload(await reportPdfBlob(c), `${s.fileBase}.pdf`);
+}
+
+// `win` must be opened synchronously in the click handler; a window opened
+// after an await is blocked as a popup. Without one the PDF is downloaded.
+export async function previewReportPdf(c, win) {
+  if (!win || win.closed) {
+    await downloadReportPdf(c);
+    return;
+  }
+  const url = URL.createObjectURL(await reportPdfBlob(c));
+  win.location.href = url;
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }

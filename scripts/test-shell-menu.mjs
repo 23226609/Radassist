@@ -36,7 +36,7 @@ function test(name, fn) {
 }
 
 state.user = { role: "radiologist", userId: "u1", name: "Dr Test" };
-state.page = "review";
+state.page = "dashboard";
 
 const { root } = Shell({ onLogout() {} });
 document.body.appendChild(root);
@@ -51,6 +51,26 @@ test("the CMS shell shows a permanent modules column", () => {
   assert.ok(root.textContent.includes("INPATIENT"));
   assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.includes("Sign out")));
   assert.equal(root.querySelector("#app-menu-button"), null);
+});
+
+test("the review page hides the modules behind a Menu button", () => {
+  state.page = "review";
+  const { root: reviewRoot } = Shell({ onLogout() {} });
+  state.page = "dashboard";
+  assert.ok(reviewRoot.classList.contains("h-screen"));
+  const nav = reviewRoot.querySelector("#app-modules");
+  const menu = reviewRoot.querySelector("#app-menu-button");
+  const backdrop = reviewRoot.querySelector("#app-modules-backdrop");
+  assert.ok(nav.classList.contains("hidden"), "modules should start hidden");
+  menu.dispatchEvent(new window.Event("click"));
+  assert.ok(!nav.classList.contains("hidden"), "Menu did not open the modules");
+  assert.equal(menu.getAttribute("aria-expanded"), "true");
+  assert.ok([...nav.querySelectorAll("button")].some((b) => b.textContent.includes("X-ray Worklist")));
+  backdrop.dispatchEvent(new window.Event("click"));
+  assert.ok(nav.classList.contains("hidden"), "clicking outside did not close the modules");
+  menu.dispatchEvent(new window.Event("click"));
+  menu.dispatchEvent(new window.Event("click"));
+  assert.ok(nav.classList.contains("hidden"), "Menu did not close the modules");
 });
 
 test("radiologists do not see Audit log in the menu", () => {

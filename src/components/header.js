@@ -82,7 +82,7 @@ function deptCode(user) {
   return "RAD";
 }
 
-function sidebar() {
+function sidebar({ drawer = false } = {}) {
   const index = [
     { page: "patients", icon: "users", label: "Patient Master" },
   ];
@@ -108,10 +108,12 @@ function sidebar() {
 
   return el("aside", {
     id: "app-modules",
-    class: "flex w-20 shrink-0 flex-col overflow-y-auto border-r border-gray-400 bg-gray-200 shadow-inner md:w-52",
+    class: drawer
+      ? "absolute inset-y-0 left-0 z-30 hidden w-52 flex-col overflow-y-auto border-r border-gray-400 bg-gray-200 shadow-xl"
+      : "flex w-20 shrink-0 flex-col overflow-y-auto border-r border-gray-400 bg-gray-200 shadow-inner md:w-52",
     "aria-label": "Modules",
   },
-    el("div", { class: "hidden border-b border-gray-400 bg-gray-300 p-2 text-xs font-bold text-gray-700 shadow-sm md:block" }, "MODULES"),
+    el("div", { class: `${drawer ? "block" : "hidden md:block"} border-b border-gray-400 bg-gray-300 p-2 text-xs font-bold text-gray-700 shadow-sm` }, "MODULES"),
     el("nav", { class: "flex-1 p-1" },
       ...groups.flatMap((group, indexNo) => [
         indexNo ? el("div", { class: "my-2 border-t border-gray-400" }) : null,
@@ -125,10 +127,35 @@ export function Shell({ onLogout }) {
   bindListHotkeys();
   watchRequests();
   const user = state.user || {};
-  const main = el("div", { class: "min-w-0 flex-1 overflow-auto" });
-  const root = el("div", { class: "flex min-h-screen flex-col bg-gray-200 font-sans text-sm text-slate-900" },
+  // Reporting needs the film, report and remarks in one screen, so the
+  // modules column becomes a drawer behind a Menu button and the shell is
+  // pinned to the window height.
+  const focus = state.page === "review";
+  const main = el("div", { class: focus ? "h-full min-w-0" : "min-w-0 flex-1 overflow-auto" });
+  const modules = sidebar({ drawer: focus });
+  const backdrop = focus
+    ? el("div", { id: "app-modules-backdrop", class: "absolute inset-0 z-20 hidden bg-black/30", onClick: () => toggleModules(false) })
+    : null;
+  const menuButton = focus
+    ? el("button", {
+        id: "app-menu-button",
+        type: "button",
+        class: "flex items-center gap-1 rounded border border-stone-400 bg-white px-2 py-1 text-xs font-semibold text-stone-800 hover:bg-[#e4dfcc] focus:outline-none focus:ring-2 focus:ring-stone-300",
+        "aria-controls": "app-modules",
+        "aria-expanded": "false",
+        onClick: () => toggleModules(),
+      }, svgIcon("menu", { size: 14 }), "Menu")
+    : null;
+  function toggleModules(open = modules.classList.contains("hidden")) {
+    modules.classList.toggle("hidden", !open);
+    modules.classList.toggle("flex", open);
+    backdrop?.classList.toggle("hidden", !open);
+    menuButton?.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  const root = el("div", { class: `flex ${focus ? "h-screen" : "min-h-screen"} flex-col bg-gray-200 font-sans text-sm text-slate-900` },
     el("header", { class: "z-10 flex flex-wrap items-center justify-between gap-2 border-b-4 border-[#d9d3bc] bg-ha-paper p-2 text-stone-900 shadow-md" },
       el("div", { class: "flex min-w-0 items-center gap-2" },
+        menuButton,
         svgIcon("activity", { size: 20, class: "shrink-0" }),
         el("h1", { class: "truncate text-sm font-bold tracking-wide sm:text-lg" },
           "Clinical Management System ",
@@ -149,8 +176,9 @@ export function Shell({ onLogout }) {
         }, svgIcon("log-out", { size: 13 }), el("span", { class: "hidden sm:inline" }, "Sign out"))
       )
     ),
-    el("div", { class: "flex min-h-0 flex-1 overflow-hidden" },
-      sidebar(),
+    el("div", { class: "relative flex min-h-0 flex-1 overflow-hidden" },
+      modules,
+      backdrop,
       el("main", { class: "min-w-0 flex-1 overflow-auto bg-gray-100 p-2 shadow-inner" }, main)
     ),
     el("footer", { class: "flex justify-between gap-2 border-t border-gray-400 bg-gray-300 p-1 px-2 text-[10px] text-gray-600 sm:px-4 sm:text-xs" },
