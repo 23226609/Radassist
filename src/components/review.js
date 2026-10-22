@@ -1131,7 +1131,9 @@ export async function renderReviewPage({ target }) {
       await persistClinicianEdits();
       const data = await api.finalizeCase(getEffectiveCaseId());
       localCase = data.case || data;
-      msg = "Report finalized and approved.";
+      msg = localCase?.chartFindingsState === "running"
+        ? "Report endorsed. Azure AI is writing the findings on the patient chart."
+        : "Report finalized and approved.";
       toast(msg);
     } catch (err) {
       msg = err.message;

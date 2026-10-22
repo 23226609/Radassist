@@ -18,6 +18,7 @@ import { renderSharePage } from "./components/shareView.js";
 import { isReportPopup, renderReportViewPage } from "./components/reportView.js";
 import { el, mount } from "./dom.js";
 import { stopAnalysisWatch } from "./lib/analysisJob.js";
+import { isChartWindow, renderChartWindow } from "./lib/chartWindow.js";
 import { canUpload, canEditPatient, canSeeAudit, isAdmin, isTechnician, roleOf } from "./lib/roles.js";
 import "./index.css";
 
@@ -109,6 +110,14 @@ function render() {
       el("div", { class: "min-h-screen bg-slate-50 text-slate-900" }, target)
     );
     renderReportViewPage({ target });
+    return;
+  }
+
+  // ?view=sepsis|notes&patientId=... is a chart window for one patient.
+  if (isChartWindow()) {
+    if (app.dataset.chartWindow === "1") return;
+    app.dataset.chartWindow = "1";
+    renderChartWindow({ target: app });
     return;
   }
 
@@ -212,7 +221,7 @@ subscribe(render);
 
 try {
   window.addEventListener("hashchange", () => {
-    if (isReportPopup()) return;
+    if (isReportPopup() || isChartWindow()) return;
     const next = parseHash();
     if (!state.user) {
       if (next.page === "register" || next.page === "login" || next.page === "share") applyHash();

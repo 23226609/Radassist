@@ -45,7 +45,9 @@ export function headerCheckbox(ids, selected, onTogglePage) {
 
 export function bulkDeleteButton({ count, onClick, disabled }) {
   return el("button", {
-    class: "inline-flex items-center gap-1 rounded-xl border border-red-200 bg-white px-3 py-2.5 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50",
+    type: "button",
+    class: "inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-red-300 bg-white px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50",
+    title: count ? `Delete ${count} selected` : "Tick rows to delete them",
     disabled: disabled || !count,
     onClick,
   }, svgIcon("trash", { size: 16 }), count ? `Delete (${count})` : "Delete");

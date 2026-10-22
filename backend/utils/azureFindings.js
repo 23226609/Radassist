@@ -331,6 +331,35 @@ Rules:
 - Never write a sentence or start with "The chest X-ray". Never truncate mid-word.
 - No report headings, no full paragraph, no markdown, no trailing period unless it is an abbreviation.`;
 
+const CHART_PROMPT = `You write the Findings section of a patient's chart from a chest X-ray report that a radiologist has just endorsed.
+
+Return ONLY JSON of the form:
+{"findings":[{"label":"...","detail":"...","location":"...","severity":"normal|minor|significant"}]}
+
+Rules:
+- At most 6 findings, most clinically important first.
+- Group related observations into ONE finding. Never one finding per sentence.
+- "label" is a short clinical phrase under 60 characters, e.g. "Mild cardiomegaly".
+- "detail" is one plain sentence a ward clinician can read, stating what the report says.
+- "location" is the anatomy in the report's own words, or "" if it does not say.
+- "severity" is "normal" for negative/normal statements, "minor" for incidental
+  findings, "significant" for anything needing follow-up.
+- Use only what the endorsed report states. Never invent or soften a finding.
+- If the report describes a normal study, return a single finding saying so.`;
+
+const THINKING_BLOCK = /(^|\n)([ \t]*#*\s*Thinking\s*:?[ \t]*\n[\s\S]*?)(?=\n[ \t]*#*\s*(?:Findings|Impression|Conclusion|Radiologist remarks|Clinician-added findings)\s*:?[ \t]*\n|$)/gi;
+
+// Same rule as src/lib/reportExport.js: the model's reasoning is never part
+// of the endorsed report.
+function withoutThinking(reportText) {
+  return String(reportText || '')
+    .replace(/\r\n/g, '\n')
+    .replace(THINKING_BLOCK, '$1')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 async function chatJson(systemPrompt, userContent, maxTokens) {
   if (!isConfigured()) {
     throw new Error(
@@ -421,9 +450,40 @@ async function summariseDiagnosis(reportText) {
   return diagnosis;
 }
 
+/**
+ * Patient-chart findings from an endorsed report. Text only: the report is
+ * signed, so the chart repeats what the radiologist wrote.
+ * @param {string} reportText
+ * @returns {Promise<Array<{label: string, detail: string, location: string, severity: string}>>}
+ */
+async function summariseChartFindings(reportText) {
+  const text = withoutThinking(reportText);
+  if (!text) throw new Error('This case has no report text to summarise.');
+  const parsed = await chatJson(CHART_PROMPT, text, 700);
+  const list = Array.isArray(parsed?.findings) ? parsed.findings : [];
+  const seen = new Set();
+  const findings = [];
+  for (const raw of list) {
+    const label = String(raw?.label || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (!label || seen.has(label.toLowerCase())) continue;
+    seen.add(label.toLowerCase());
+    findings.push({
+      label,
+      detail: String(raw?.detail || '').replace(/\s+/g, ' ').trim().slice(0, 300),
+      location: String(raw?.location || '').trim().slice(0, 80),
+      severity: ['normal', 'minor', 'significant'].includes(raw?.severity) ? raw.severity : 'minor',
+    });
+    if (findings.length === 6) break;
+  }
+  if (!findings.length) throw new Error('Azure AI did not return any findings for this report.');
+  return findings;
+}
+
 module.exports = {
   summariseFindings,
   summariseDiagnosis,
+  summariseChartFindings,
+  withoutThinking,
   isConfigured,
   clampBbox,
   parseDiagnosis,

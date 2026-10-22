@@ -12,8 +12,19 @@ import { emptyState } from "../lib/ui.js";
 import { statusLabel } from "../lib/caseStatus.js";
 import { CASES_CHANGED } from "../lib/analysisJob.js";
 import { forgetPatients } from "../lib/records.js";
-import { canEditPatient, canUpload, canRequestExam, isAdmin as roleIsAdmin } from "../lib/roles.js";
+import { canEditPatient, canEditReport, canUpload, canRequestExam, isTechnician, isAdmin as roleIsAdmin } from "../lib/roles.js";
 import { reviewState, cmsAssessmentStamp } from "./clinical.js";
+import { sepsisButton, careNotesButton, PATIENT_UPDATED } from "../lib/chartWindow.js";
+
+const CHART_POLL_MS = 4000;
+const CARE_NOTES_SHOWN = 3;
+let chartWindowListener = null;
+
+const SEVERITY_TAG = {
+  significant: ["Significant", "bg-red-100 text-red-800"],
+  minor: ["Minor", "bg-amber-100 text-amber-800"],
+  normal: ["Normal", "bg-emerald-100 text-emerald-800"],
+};
 
 function openPatient(patientId) {
   state.selectedPatientId = patientId;
@@ -182,7 +193,7 @@ export async function renderPatientsPage({ target }) {
                       el("thead", { class: "bg-slate-50 text-slate-600" },
                         el("tr", {},
                           isAdmin() ? headerCheckbox(pageIds, selected, (on) => { togglePage(selected, pageIds, on); render(); }) : null,
-                          ["Name", "Patient ID", "Age / sex", "Last diagnosis", "Studies", "Updated"].map((h) =>
+                          ["Name", "Patient ID", "Age / sex", "Last diagnosis", "Studies", "Updated", "Monitor"].map((h) =>
                             el("th", { class: "p-3" }, h)
                           )
                         )
@@ -199,7 +210,13 @@ export async function renderPatientsPage({ target }) {
                             el("td", {}, [p.age && `${p.age} years`, p.sex].filter(Boolean).join(" · ") || "—"),
                             el("td", {}, p.lastDiagnosis || "—"),
                             el("td", {}, String(p.caseCount || 0)),
-                            el("td", {}, p.lastCaseAt ? new Date(p.lastCaseAt).toISOString().slice(0, 10) : "—")
+                            el("td", {}, p.lastCaseAt ? new Date(p.lastCaseAt).toISOString().slice(0, 10) : "—"),
+                            el("td", { class: "p-2" },
+                              el("div", { class: "flex gap-1" },
+                                sepsisButton(p, { compact: true }),
+                                careNotesButton(p, { label: "Notes" })
+                              )
+                            )
                           )
                         )
                       )
@@ -264,6 +281,7 @@ export async function renderPatientPage({ target }) {
   let heartRateDraft = "";
   let labResultsDraft = "";
   let booking = false;
+  let allCareNotes = false;
   let bookCursor = new Date();
   let bookedDay = "";
 
@@ -290,6 +308,109 @@ export async function renderPatientPage({ target }) {
     await load();
   } catch (err) {
     error = err.message || "Could not load this patient.";
+  }
+
+  const stillHere = () => target.isConnected !== false
+    && state.page === "patient"
+    && state.selectedPatientId === patientId;
+
+  let pollTimer = null;
+  function pollChartFindings() {
+    clearTimeout(pollTimer);
+    if (!cases.some((c) => c.chartFindingsState === "running")) return;
+    pollTimer = setTimeout(async () => {
+      if (!stillHere()) return;
+      try {
+        const data = await api.getPatient(patientId);
+        if (!stillHere()) return;
+        cases = data.cases || cases;
+        if (data.patient) patient = { ...patient, lastDiagnosis: data.patient.lastDiagnosis };
+        paint();
+      } catch { /* try again on the next tick */ }
+      pollChartFindings();
+    }, CHART_POLL_MS);
+  }
+
+  async function retryChartFindings(caseId) {
+    try {
+      const data = await api.rewriteChartFindings(caseId);
+      cases = cases.map((c) => (c.caseId === caseId
+        ? { ...c, chartFindingsState: data.chartFindingsState || "running" }
+        : c));
+      paint();
+      pollChartFindings();
+    } catch (err) {
+      toast(err.message || "Could not ask Azure AI to try again.");
+    }
+  }
+
+  // Vitals or care notes saved in a chart window. Drafts the user is still
+  // editing here are left alone.
+  function chartSaved(saved) {
+    if (!saved || saved.patientId !== patientId || target.isConnected === false) return;
+    if (heartRateDraft === (patient?.heartRate || "")) heartRateDraft = saved.heartRate || "";
+    if (remarksDraft === (patient?.remarks || "")) remarksDraft = saved.remarks || "";
+    patient = {
+      ...patient,
+      observations: saved.observations || [],
+      heartRate: saved.heartRate || "",
+      careNotes: saved.careNotes || [],
+      remarks: saved.remarks || "",
+    };
+    paint();
+  }
+
+  if (chartWindowListener) window.removeEventListener("message", chartWindowListener);
+  chartWindowListener = (e) => {
+    if (e.origin && e.origin !== window.location.origin) return;
+    if (e.data?.type === PATIENT_UPDATED) chartSaved(e.data.patient);
+  };
+  window.addEventListener("message", chartWindowListener);
+
+  function chartFindingsBlock(c) {
+    const when = c.finalizedAt || c.createdAt;
+    const canRetry = canEditReport(state.user);
+    const retry = canRetry && el("button", {
+      type: "button",
+      class: "ml-2 rounded border border-gray-400 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-800 hover:bg-slate-50",
+      onClick: () => retryChartFindings(c.caseId),
+    }, "Retry Azure AI");
+    let body;
+    if (c.chartFindingsState === "running") {
+      body = el("p", { role: "status", class: "mt-1 text-sm text-sky-800" }, "Azure AI is reading the endorsed report…");
+    } else if (c.chartFindingsState === "failed") {
+      body = el("p", { class: "mt-1 text-sm text-red-700" }, "Azure AI could not write findings for this report.", retry);
+    } else if (c.chartFindingsState === "unavailable") {
+      body = el("p", { class: "mt-1 text-sm text-slate-500" }, "Azure AI is not configured on the server, so no findings were written.", retry);
+    } else if (!(c.chartFindings || []).length) {
+      body = el("p", { class: "mt-1 text-sm text-slate-400" }, "No findings written yet.");
+    } else {
+      body = el("ul", { class: "mt-1 divide-y divide-slate-100" },
+        ...c.chartFindings.map((f) => {
+          const [tag, tone] = SEVERITY_TAG[f.severity] || SEVERITY_TAG.minor;
+          return el("li", { class: "py-2" },
+            el("div", { class: "flex flex-wrap items-center gap-2" },
+              el("span", { class: "font-semibold" }, f.label || "Finding"),
+              el("span", { class: `rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${tone}` }, tag),
+              f.location ? el("span", { class: "text-xs text-slate-500" }, f.location) : null
+            ),
+            f.detail ? el("p", { class: "text-sm text-slate-600" }, f.detail) : null
+          );
+        })
+      );
+    }
+    return el("article", { class: "rounded border border-slate-200 bg-white p-2" },
+      el("button", {
+        type: "button",
+        class: "text-left text-xs font-bold text-ha-blue hover:underline",
+        onClick: () => openCase(c.caseId),
+      },
+        c.caseId,
+        when ? ` · ${new Date(when).toISOString().slice(0, 10)}` : "",
+        c.finalizedByName ? ` · Endorsed by ${c.finalizedByName}` : " · Endorsed"
+      ),
+      body
+    );
   }
 
   function dayKey(date) {
@@ -375,9 +496,7 @@ export async function renderPatientPage({ target }) {
 
   function paint() {
     const edit = canEdit();
-    const findings = cases.flatMap((c) =>
-      (c.findings || []).map((f) => ({ ...f, caseId: c.caseId, diagnosis: c.diagnosis, createdAt: c.createdAt }))
-    );
+    const endorsed = cases.filter((c) => c.status === "finalized");
 
     const root = el(
       "div",
@@ -389,6 +508,8 @@ export async function renderPatientPage({ target }) {
             onClick: () => setPage("patients"),
           }, "Enquiry of Patient Master Index"),
           el("div", { class: "flex items-center gap-2" },
+            patient && sepsisButton(patient, { onSaved: chartSaved }),
+            patient && careNotesButton(patient, { onSaved: chartSaved }),
             isAdmin() && el("button", {
               class: "rounded border border-stone-400 bg-white px-2 py-0.5 text-[11px] font-semibold text-stone-900 hover:bg-stone-100",
               disabled: busy,
@@ -538,24 +659,43 @@ export async function renderPatientPage({ target }) {
                 )
               ),
 
-              el("section", { class: "rounded border border-gray-200 p-3" },
-                el("h2", { class: "text-sm font-bold text-slate-900" }, "Findings"),
-                findings.length === 0
-                  ? el("p", { class: "mt-2 text-slate-400" }, "No findings recorded for this patient yet.")
-                  : el("ul", { class: "mt-2 divide-y divide-slate-100" },
-                      ...findings.slice(0, 12).map((f) =>
-                        el("li", { class: "py-2" },
-                          el("button", {
-                            class: "w-full text-left hover:text-ha-blue",
-                            onClick: () => openCase(f.caseId),
-                          },
-                            el("div", { class: "font-semibold" }, f.label || "Finding"),
-                            el("p", { class: "text-sm text-slate-600" }, [f.location, f.pattern, f.sentence].filter(Boolean).join(" · "))
-                          )
-                        )
-                      )
-                    )
+              !isTechnician(state.user) && el("section", { id: "patient-findings", class: "rounded border border-gray-200 p-3" },
+                el("div", { class: "flex flex-wrap items-baseline justify-between gap-2" },
+                  el("h2", { class: "text-sm font-bold text-slate-900" }, "Findings"),
+                  el("span", { class: "text-[11px] text-slate-500" }, "Written by Azure AI from each endorsed report")
+                ),
+                endorsed.length === 0
+                  ? el("p", { class: "mt-2 text-slate-400" }, "Findings appear here after a radiologist endorses a report.")
+                  : el("div", { class: "mt-2 space-y-2" }, ...endorsed.map(chartFindingsBlock))
               ),
+
+              (() => {
+                const notes = (patient?.careNotes || []).slice().reverse();
+                if (!notes.length) return null;
+                const shown = allCareNotes ? notes : notes.slice(0, CARE_NOTES_SHOWN);
+                return el("section", { id: "patient-care-notes", class: "rounded border border-gray-200 p-3" },
+                  el("div", { class: "flex flex-wrap items-baseline justify-between gap-2" },
+                    el("h2", { class: "text-sm font-bold text-slate-900" }, `Care notes (${notes.length})`),
+                    careNotesButton(patient, {
+                      onSaved: chartSaved,
+                      label: "Open Nursing / Care Notes",
+                      className: "text-[11px] font-semibold text-ha-blue hover:underline",
+                    })
+                  ),
+                  el("ul", { class: "mt-2 divide-y divide-slate-100" },
+                    ...shown.map((row) => el("li", { class: "py-2 text-sm" },
+                      el("p", { class: "font-semibold text-slate-900" }, row.author || "—", row.role ? ` · ${row.role}` : ""),
+                      el("p", { class: "text-xs text-slate-500" }, [row.category, cmsAssessmentStamp(row.at)].filter(Boolean).join(" · ")),
+                      el("p", { class: "mt-1 whitespace-pre-wrap text-slate-700" }, row.note || "—")
+                    ))
+                  ),
+                  notes.length > CARE_NOTES_SHOWN && el("button", {
+                    type: "button",
+                    class: "mt-1 text-xs font-semibold text-ha-blue hover:underline",
+                    onClick: () => { allCareNotes = !allCareNotes; paint(); },
+                  }, allCareNotes ? "Show latest only" : `Show all ${notes.length} notes`)
+                );
+              })(),
 
               el("section", { class: "rounded border border-gray-200 p-3" },
                 el("h2", { class: "text-sm font-bold text-slate-900" }, "Remarks"),
@@ -699,4 +839,5 @@ export async function renderPatientPage({ target }) {
   }
 
   paint();
+  pollChartFindings();
 }

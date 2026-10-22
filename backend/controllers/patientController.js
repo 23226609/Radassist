@@ -7,7 +7,8 @@ const ApiError = require('../utils/ApiError');
 const catchAsync = require('../utils/catchAsync');
 const addAuditLog = require('../utils/auditLogger');
 const { nameFieldsFrom } = require('../utils/patientName');
-const { normalizeRole } = require('../utils/roles');
+const { normalizeRole, isTechnician } = require('../utils/roles');
+const { queueChartFindings, needsChartFindings, isStale } = require('../utils/chartFindings');
 const {
   escapeRegex,
   findPatientRecord,
@@ -94,8 +95,11 @@ function summarisePatient(record, grouped = {}, cases = []) {
   };
 }
 
-function summariseCase(c) {
-  const findings = Array.isArray(c.findings) ? c.findings : [];
+function summariseCase(c, { hideReport = false } = {}) {
+  const endorsed = c.status === 'finalized' && !hideReport;
+  const chartFindings = endorsed && Array.isArray(c.chartFindings) ? c.chartFindings : [];
+  let chartFindingsState = endorsed ? (c.chartFindingsState || '') : '';
+  if (endorsed && isStale(c)) chartFindingsState = 'failed';
   return {
     caseId: c.caseId || String(c._id),
     _id: c._id,
@@ -105,15 +109,17 @@ function summariseCase(c) {
     history: c.history || '',
     createdAt: c.createdAt,
     requestedByName: c.requestedByName || '',
+    finalizedByName: endorsed ? (c.finalizedByName || '') : '',
+    finalizedAt: endorsed ? c.finalizedAt || null : null,
     imageId: c.imageId || null,
-    findings: findings.slice(0, 6).map((f) => ({
-      _id: f._id,
+    chartFindings: chartFindings.map((f) => ({
       label: f.label,
+      detail: f.detail || '',
       location: f.location || '',
-      pattern: f.pattern || '',
-      confidence: f.confidence,
-      sentence: f.sentence || '',
+      severity: f.severity || 'minor',
     })),
+    chartFindingsState,
+    chartFindingsAt: endorsed ? c.chartFindingsAt || null : null,
   };
 }
 
@@ -290,11 +296,22 @@ exports.getPatient = catchAsync(async (req, res, next) => {
   }
 
   const patient = summarisePatient(record, latest || {}, cases);
+  const hideReport = isTechnician(req.user);
+
+  // Reports endorsed before this feature (or while Azure was down) get their
+  // chart findings the first time someone opens the chart.
+  if (!hideReport) {
+    for (const c of cases) {
+      if (!needsChartFindings(c)) continue;
+      c.chartFindingsState = await queueChartFindings(c, { userId: req.user.userId });
+      if (c.chartFindingsState === 'running') c.chartFindingsAt = new Date();
+    }
+  }
 
   res.json({
     success: true,
     patient,
-    cases: cases.map(summariseCase),
+    cases: cases.map((c) => summariseCase(c, { hideReport })),
   });
 });
 
@@ -351,7 +368,7 @@ exports.updatePatient = catchAsync(async (req, res, next) => {
     return res.json({
       success: true,
       patient: summarisePatient(record, {}, visible),
-      cases: visible.map(summariseCase),
+      cases: visible.map((c) => summariseCase(c)),
     });
   }
   if (firstName !== undefined || middleName !== undefined || lastName !== undefined || name !== undefined) {
@@ -395,7 +412,7 @@ exports.updatePatient = catchAsync(async (req, res, next) => {
   res.json({
     success: true,
     patient: summarisePatient(record, {}, cases),
-    cases: cases.map(summariseCase),
+    cases: cases.map((c) => summariseCase(c, { hideReport: isTechnician(req.user) })),
   });
 });
 

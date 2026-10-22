@@ -139,6 +139,8 @@ export const api = {
     request("POST", `/cases/${encodeURIComponent(id)}/summarise-findings`),
   summariseDiagnosis: (id) =>
     request("POST", `/cases/${encodeURIComponent(id)}/summarise-diagnosis`),
+  rewriteChartFindings: (id) =>
+    request("POST", `/cases/${encodeURIComponent(id)}/chart-findings`),
   shareCase: (id) => request("POST", `/cases/${encodeURIComponent(id)}/share`),
   unshareCase: (id) => request("DELETE", `/cases/${encodeURIComponent(id)}/share`),
   getSharedCase: (token) => request("GET", `/share/${encodeURIComponent(token)}`),

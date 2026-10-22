@@ -77,6 +77,20 @@ const caseSchema = new mongoose.Schema(
     analysisState: { type: String, enum: ['none', 'running', 'done'], default: 'none' },
     // Azure film boxes, placed after the CURV draft is stored. '' = not requested.
     boxesState: { type: String, enum: ['', 'running', 'done', 'failed'], default: '' },
+    // Patient-chart findings Azure writes from the endorsed report.
+    // '' = not requested; unavailable = Azure is not configured.
+    chartFindings: {
+      type: [{
+        label: { type: String, required: true },
+        detail: { type: String, default: '' },
+        location: { type: String, default: '' },
+        severity: { type: String, enum: ['normal', 'minor', 'significant'], default: 'minor' },
+      }],
+      default: [],
+    },
+    chartFindingsState: { type: String, enum: ['', 'running', 'done', 'failed', 'unavailable'], default: '' },
+    chartFindingsAt: { type: Date, default: null },
+    chartFindingsError: { type: String, default: '' },
     editLog: {
       type: [{
         at: { type: Date, default: Date.now },
@@ -106,6 +120,7 @@ const caseSchema = new mongoose.Schema(
     requestedByName: { type: String, default: '' },
     finalizedBy: { type: String, default: null }, // userId
     finalizedByName: { type: String, default: null },
+    finalizedAt: { type: Date, default: null },
     // Image stored in GridFS
     // When the technician saved the film. Requested exams have no film yet.
     registeredAt: { type: Date, default: null },

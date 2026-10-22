@@ -211,6 +211,7 @@ function assessmentPreface(patient, review, stamp, hour, {
   qaOpen,
   onToggleQa,
   hourScore,
+  embedded = false,
 }) {
   const urgent = review.level === "urgent";
   const box = urgent
@@ -243,7 +244,7 @@ function assessmentPreface(patient, review, stamp, hour, {
       el("span", {}, `Historical H+${hour} preview — read-only. The saved current assessment is unchanged.`),
       el("button", { type: "button", class: "font-bold underline", onClick: onReturn }, "Return to latest observations")
     ),
-    el("details", { class: "rounded border border-sky-200 bg-sky-50 text-xs", open: true },
+    embedded ? null : el("details", { class: "rounded border border-sky-200 bg-sky-50 text-xs", open: true },
       el("summary", { class: "cursor-pointer px-3 py-2 font-bold text-sky-950" }, "Teaching cases — historical cohort selection and evaluation"),
       el("div", { class: "space-y-2 border-t border-sky-200 px-3 py-2" },
         el("p", {}, `Linked inpatient teaching cohort: ward demonstration charts (${patients.length})`),
@@ -471,7 +472,9 @@ export async function renderBedsPage({ target }) {
   catch (err) { error = err.message; paint(); }
 }
 
-export async function renderMonitorPage({ target }) {
+// `embedded` renders one patient's monitor (no ward worklist) for the
+// floating window on the patient chart.
+export async function renderMonitorPage({ target, patientId: focusId = "", embedded = false, onSaved } = {}) {
   let patients = [];
   let selected = null;
   let error = "";
@@ -517,6 +520,7 @@ export async function renderMonitorPage({ target }) {
       });
       selected = data.patient;
       toast("Vitals recorded.");
+      onSaved?.(selected);
     } catch (err) {
       toast(err.message || "Could not record vitals.");
     } finally {
@@ -550,10 +554,13 @@ export async function renderMonitorPage({ target }) {
     const hourRow = slots[trendHour] || null;
     const hourScore = hourRow ? teachingScore(hourRow) : null;
     const obsRows = (selected?.observations || []).slice().reverse();
-    mount(target, cmsWindow("Inpatient Observations & Sepsis Screening (Teaching)",
+    const wrap = embedded
+      ? (...body) => el("div", { class: "flex flex-col p-2" }, ...body)
+      : (...body) => cmsWindow("Inpatient Observations & Sepsis Screening (Teaching)", ...body);
+    mount(target, wrap(
       error ? el("p", { class: "mt-2 bg-red-100 p-2 text-sm text-red-900" }, error) : null,
       activePatientBar(selected),
-      el("section", { class: "my-3 rounded border border-slate-300 bg-white", "aria-label": "Ward patient worklist" },
+      embedded ? null : el("section", { class: "my-3 rounded border border-slate-300 bg-white", "aria-label": "Ward patient worklist" },
         el("div", { class: "flex flex-wrap justify-between gap-2 rounded-t bg-slate-800 px-3 py-2 text-white" },
           el("h2", { class: "font-bold" }, "Ward patient worklist"),
           el("span", { class: "text-xs" }, `${base.length} inpatients · ${urgentCount} require urgent review`)
@@ -712,14 +719,15 @@ export async function renderMonitorPage({ target }) {
                 },
                 qaOpen,
                 onToggleQa: () => { qaOpen = !qaOpen; paint(); },
+                embedded,
               }
             ),
             hourNote ? el("p", { class: "mb-2 text-xs font-bold text-sky-900" }, hourNote) : null,
             trendPanel(selected.observations, trendHour, (hour) => { trendHour = hour; hourNote = ""; paint(); }, selected.patientId)
           )
         : null,
-      selected && el("div", { class: "flex flex-1 flex-col gap-4 overflow-hidden lg:flex-row" },
-        el("div", { class: "flex w-full flex-col overflow-auto border border-gray-400 bg-[#e4e4e4] p-3 lg:w-1/3" },
+      selected && el("div", { class: embedded ? "flex flex-col gap-3" : "flex flex-1 flex-col gap-4 overflow-hidden lg:flex-row" },
+        el("div", { class: embedded ? "flex flex-col border border-gray-400 bg-[#e4e4e4] p-3" : "flex w-full flex-col overflow-auto border border-gray-400 bg-[#e4e4e4] p-3 lg:w-1/3" },
           el("h3", { class: "mb-3 flex items-center justify-between border-b border-gray-400 pb-1 font-bold text-ha-blue" },
             el("span", {}, "Enter / Update Vitals"),
             el("span", { class: "rounded bg-blue-100 px-1.5 py-0.5 text-xs font-normal text-blue-800" }, "New assessment")
@@ -791,6 +799,10 @@ export async function renderMonitorPage({ target }) {
   }
 
   try {
+    if (embedded) {
+      await choose(focusId);
+      return;
+    }
     patients = await loadPatients();
     if (state.selectedPatientId) await choose(state.selectedPatientId);
     else paint();
@@ -842,7 +854,8 @@ export async function renderLabsPage({ target }) {
 const NOTE_ROLES = ["RN (Registered Nurse)", "Radiologist", "Doctor", "Technician"];
 const NOTE_CATEGORIES = ["General", "Handover", "Incident", "Pain Assessment", "Wound Care"];
 
-export async function renderNotesPage({ target }) {
+// `embedded` renders one patient's notes for the separate chart window.
+export async function renderNotesPage({ target, patientId: focusId = "", embedded = false, onSaved } = {}) {
   let patients = [];
   let selected = null;
   let error = "";
@@ -882,6 +895,7 @@ export async function renderNotesPage({ target }) {
       selected = data.patient;
       form.note = "";
       toast("Note added to the chart.");
+      onSaved?.(selected);
     } catch (err) {
       toast(err.message || "Could not save.");
     } finally {
@@ -892,15 +906,18 @@ export async function renderNotesPage({ target }) {
 
   function paint() {
     const rows = selected?.careNotes || [];
-    mount(target, cmsWindow("Nursing / Care Notes (Multidisciplinary Progress Notes)",
+    const wrap = embedded
+      ? (...body) => el("div", { class: "flex flex-col p-2" }, ...body)
+      : (...body) => cmsWindow("Nursing / Care Notes (Multidisciplinary Progress Notes)", ...body);
+    mount(target, wrap(
       error ? el("p", { class: "mt-2 bg-red-100 p-2 text-sm" }, error) : null,
       activePatientBar(selected),
-      el("div", { class: "mb-2 flex flex-wrap items-center gap-2 rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs" },
+      embedded ? null : el("div", { class: "mb-2 flex flex-wrap items-center gap-2 rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs" },
         el("span", {}, "Select inpatient record:"),
         el("div", { class: "min-w-[16rem] flex-1" }, patientPicker(patients, selected?.patientId || "", choose))
       ),
-      el("div", { class: "flex flex-1 flex-col gap-3 overflow-hidden lg:flex-row" },
-        canEdit && el("div", { class: "flex w-full flex-col overflow-auto border border-gray-400 bg-[#e4e4e4] p-3 lg:w-1/3" },
+      el("div", { class: embedded ? "flex flex-col gap-3" : "flex flex-1 flex-col gap-3 overflow-hidden lg:flex-row" },
+        canEdit && el("div", { class: embedded ? "flex flex-col border border-gray-400 bg-[#e4e4e4] p-3" : "flex w-full flex-col overflow-auto border border-gray-400 bg-[#e4e4e4] p-3 lg:w-1/3" },
           el("h3", { class: "mb-3 border-b border-gray-400 pb-1 font-bold text-ha-blue" }, "New Progress Note"),
           el("label", { class: "text-xs font-bold" }, "Author name / staff ID",
             el("input", {
@@ -954,6 +971,10 @@ export async function renderNotesPage({ target }) {
   }
 
   try {
+    if (embedded) {
+      await choose(focusId);
+      return;
+    }
     patients = await loadPatients();
     form.author = form.author || state.user?.name || "";
     await choose(state.selectedPatientId || patients[0]?.patientId || "");

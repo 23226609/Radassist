@@ -17,6 +17,7 @@ const { bucket, downloadImage } = require('./_gridfs');
 const { nameFieldsFrom } = require('../utils/patientName');
 const { toPublicCase, statusFilter, publicStatus, clinicianEdited } = require('../utils/caseStatus');
 const { upsertPatientFromCase, removeCaseRecord } = require('../utils/recordSync');
+const { queueChartFindings } = require('../utils/chartFindings');
 const { normalizeRole, isReferringDoctor, isTechnician } = require('../utils/roles');
 const { OWNED } = Case;
 
@@ -654,10 +655,26 @@ exports.finalizeCase = catchAsync(async (req, res, next) => {
   c.status = 'finalized';
   c.finalizedBy = req.user.userId;
   c.finalizedByName = req.user.name;
+  c.finalizedAt = new Date();
+  c.chartFindings = [];
+  c.chartFindingsState = '';
+  c.chartFindingsError = '';
   await c.save();
   await addAuditLog(req.user.userId, 'CASE_FINALIZED', `Finalized case ${c.caseId || c._id}`, c.caseId || String(c._id), null, 'finalized');
 
+  c.chartFindingsState = await queueChartFindings(c, { userId: req.user.userId });
   res.json({ success: true, case: toPublicCase(c, publicCaseOpts(req, c)) });
+});
+
+// Retry from the patient chart when Azure failed on an endorsed report.
+exports.rewriteChartFindings = catchAsync(async (req, res, next) => {
+  const c = await findCaseByAnyId(req.params.id);
+  if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
+  if (c.status !== 'finalized') {
+    return next(ApiError.badRequest('Chart findings are written after the report is endorsed.'));
+  }
+  const state = await queueChartFindings(c, { userId: req.user.userId, force: true });
+  res.json({ success: true, chartFindingsState: state });
 });
 
 exports.createShareLink = catchAsync(async (req, res, next) => {

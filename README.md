@@ -18,7 +18,7 @@ The shell has a beige title bar (`#ece9da`) and a gray **MODULES** column. The X
 | API | Express 4, Mongoose 8, JWT | http://localhost:5002 |
 | Database | Azure Cosmos DB (Mongo API) + GridFS | `MONGODB_URI` |
 | Local vision model | FastAPI middleware → `mlx_vlm` (CURV) | http://localhost:8001 → :8080 |
-| Optional | Azure OpenAI: film boxes after the CURV draft, work-list label after a manual edit | env flags |
+| Optional | Azure OpenAI: film boxes after the CURV draft, work-list label after a manual edit, patient-chart findings after endorse | env flags |
 
 The UI is **not React**. Pages are plain modules that build DOM with `src/dom.js` and re-render through a small pub/sub store in `src/state.js`.
 
@@ -46,6 +46,7 @@ The UI is **not React**. Pages are plain modules that build DOM with `src/dom.js
         │
         └──────────────► Azure OpenAI (optional)
                          boxes on the film (never edits the report)
+                         patient-chart findings from the endorsed report
 ```
 
 **On booking** (`POST /api/cases/request`), the referring doctor drops **Chest X-ray** on a calendar day. The case is `status: requested`, with `scheduledAt` and no film. The chart button stays **Requested** until a technician saves the film.
@@ -55,6 +56,8 @@ The UI is **not React**. Pages are plain modules that build DOM with `src/dom.js
 **After the draft is stored**, Azure reads the CURV report and places boxes on the film (`boxesState: running` → `done` / `failed`). Azure does not rewrite the report or the work-list label at this step; the report text is CURV’s alone.
 
 **On review**, the page shows the report and the film side by side, the way a hospital viewer does. There are no finding cards. The report box is directly editable. The radiologist can draw, move, resize, and delete boxes, and **Measure** lines are saved with the report. **Save draft** stores everything; if the report wording changed, Azure re-places boxes for the new wording and keeps the boxes the radiologist drew, adjusted, or deleted. **Thinking** (the model’s reasoning) is kept in the stored draft but never shown to anyone and never exported. **Endorse** locks the report. The date, reporting doctor, and signature stay on the report and in both downloads.
+
+**After endorse**, Azure reads the clean endorsed report (text only, no Thinking) in the background and writes the **Findings** shown on the patient chart (`chartFindingsState: running` → `done` / `failed`). The chart updates on its own when they land.
 
 ---
 
@@ -111,8 +114,9 @@ Stored in `cases`. One study / one film.
 - Workflow: `status` (`requested` no film yet \| `pending` outstanding or generating \| `pending_approve` draft ready \| `finalized` endorsed) and `urgent`. Old documents may still say `completed` — the UI treats that as pending approve
 - Image: `imageId` (GridFS), filename / type / size. Hidden from technician responses. `registeredAt` is the day the technician saved the film; the work list **Reg. Date** uses that, not the request day. `pixelSpacingMm` is `[row, column]` in millimetres when the DICOM file had it
 - Booking: `scheduledAt`
-- People: `requestedBy`, `requestedByName`, `createdBy`, `createdByName` (uploader), `finalizedBy`, `finalizedByName`
+- People: `requestedBy`, `requestedByName`, `createdBy`, `createdByName` (uploader), `finalizedBy`, `finalizedByName`, `finalizedAt`
 - Share: `shareToken` (set when someone shares an endorsed report)
+- Patient-chart findings (endorsed cases only): `chartFindings[]` (`label`, `detail`, `location`, `severity` `normal` \| `minor` \| `significant`), `chartFindingsState` (`''` not requested \| `running` \| `done` \| `failed` \| `unavailable` Azure not configured), `chartFindingsAt`, `chartFindingsError`. These are separate from `findings[]` (the film boxes) and are never written into the report
 
 Work-list labels: **Requested**, **Outstanding**, **Generating**, **Pending approve**, **Endorsed**. The left queue calls a draft **Partially endorsed** and a locked report **Fully endorsed**, matching the RIS slide. Stored status for an endorsed report is still `finalized`.
 
@@ -124,7 +128,7 @@ A **finding** is one box on the film: `label`, `bbox` `[left, top, width, height
 
 A **measurement** is `x1`, `y1`, `x2`, `y2` (percent of the film), `text` (e.g. `14.29 cm`, or pixels when the film has no spacing), and an optional `label`.
 
-**Locking:** after endorse, diagnosis, report text, boxes, and measurements cannot change. Remarks and the urgent flag still can. Referring doctors never receive `editLog` or source tags. Technicians never receive the film, report, or findings.
+**Locking:** after endorse, diagnosis, report text, boxes, and measurements cannot change. Remarks and the urgent flag still can. Referring doctors never receive `editLog` or source tags. Technicians never receive the film, report, findings, or chart findings.
 
 ### Other collections
 
@@ -158,7 +162,24 @@ Press `/` on list pages to focus search.
 
 **Patient Master** lists patients. **New patient** (technician, radiologist, admin) is a demo shortcut: required first name, last name, age, and sex. Middle name and patient ID are optional. Empty ID → next `PT-{year}-{nnnn}`.
 
-The chart shows prior medicines, heart rate, and lab results, plus Sepsis Monitor, labs, and care notes where that role can open them. A referring doctor can order labs. A technician or radiologist cannot.
+The full Master Index table has a **Monitor** column with **Sepsis** and **Notes** buttons for each patient. Admins tick rows there to bulk-delete.
+
+The chart shows prior medicines, heart rate, lab results, health metrics, and the review state from the latest observations. A referring doctor can order labs. A technician or radiologist cannot.
+
+**Findings.** Written by Azure AI only after a radiologist endorses a report, one block per endorsed study (case, date, **Endorsed by …**), each finding with a **Significant** / **Minor** / **Normal** tag. Draft reports never appear here.
+
+- Endorse queues a text-only Azure call on the clean report (no Thinking). The chart shows “Azure AI is reading the endorsed report…” and checks every 4 seconds until the findings land.
+- Reports endorsed before this feature, or while Azure was down, get theirs the first time the chart is opened. Two people opening the chart at once start only one Azure call.
+- If Azure fails, or a run was lost (still running after 3 minutes), a radiologist or admin sees **Retry Azure AI** (`POST /api/cases/:id/chart-findings`). With no Azure configured the block says so.
+- Technicians do not see this section.
+
+**Care notes.** Shown only when the patient has notes: the 3 newest first (author · role, category · time, note), with **Show all N notes**.
+
+**Sepsis monitor and Care notes windows.** **Sepsis monitor** and **Care notes** in the chart header (or **Sepsis** / **Notes** on a Master Index row, or **Open Nursing / Care Notes** in the Care notes section) open that patient in a separate browser window: `?view=sepsis&patientId=…` or `?view=notes&patientId=…`. Each window shows one patient only, with no worklist or patient picker, so it can sit beside the chart or on another screen.
+
+- The two use different windows, so both can be open with the chart. Opening either for another patient reuses its window.
+- Vitals or notes saved in a window are posted back to the chart that opened it, which updates without a reload. Drafts you are still typing on the chart are left alone.
+- If the browser blocks pop-ups, the same view opens as a floating, draggable, resizable panel on the page (no backdrop). The panel closes when you leave Patient Master.
 
 ### 3. Doctor: book the exam
 
@@ -193,7 +214,7 @@ Referring **doctors** use the same grid as **Examination enquiry**. They only re
 - **View** → case chart
 - **Edit report** / **Enquiry** → film + findings (doctors read the endorsed report; generating drafts stay closed)
 
-Admins can tick rows and bulk-delete.
+Admins tick rows and use **Delete (n)** beside the search box. It stays greyed out until a row is ticked.
 
 ### 6. Report review
 
@@ -226,7 +247,9 @@ Export composition (`src/lib/reportExport.js`): the report without Thinking, any
 
 ### 7. Endorse
 
-`POST /api/cases/:id/finalize` sets `status: finalized` and records who signed. The screen calls this **Endorse**. It is refused while AI is still `running`. After endorse, boxes, measurements, and the stored report stay locked.
+`POST /api/cases/:id/finalize` sets `status: finalized` and records who signed and when (`finalizedAt`). The screen calls this **Endorse**. It is refused while AI is still `running`. After endorse, boxes, measurements, and the stored report stay locked.
+
+Endorse also queues the patient-chart findings (`backend/utils/chartFindings.js`). The response comes back at once with `chartFindingsState: running`, and the radiologist sees “Report endorsed. Azure AI is writing the findings on the patient chart.” A result is dropped if the report changed in the meantime.
 
 ### 8. Share (public link)
 
@@ -262,6 +285,7 @@ Filterable log of logins, case and patient mutations, AI runs, endorsements, del
 | `audit` | `audit.js` | Admin trail |
 | `users` | `users.js` | Admin add / enable / disable / delete |
 | `?view=report&caseId=` | `reportView.js` | Report popup and sign-off |
+| `?view=sepsis&patientId=` / `?view=notes&patientId=` | `src/lib/chartWindow.js` → `clinical.js` | One patient's Sepsis Monitor / Care Notes in its own window |
 
 Shared pieces:
 
@@ -276,6 +300,9 @@ Shared pieces:
 - `src/lib/ui.js` — search, chips, empty states, urgent sort
 - `src/lib/caseStatus.js` — requested / outstanding / generating / pending approve / endorsed
 - `src/lib/analysisJob.js` — poll while a report is generating
+- `src/lib/chartWindow.js` — Sepsis / Care notes windows, the blocked-pop-up panel, and the buttons that open them
+- `src/lib/bulkSelect.js` — admin row checkboxes and the **Delete (n)** button
+- `backend/utils/chartFindings.js` — queue, claim, and save the patient-chart findings after endorse
 - `src/components/header.js` — CMS shell (title bar + MODULES + request badge + footer)
 - `src/components/patientFields.js` — labeled name controls, sex pills
 
@@ -303,13 +330,14 @@ Shared pieces:
 | `DELETE` | `/api/cases/:id/share` | radiologist, admin | revoke the share link |
 | `POST` | `/api/cases/:id/summarise-findings` | radiologist, admin | Azure re-places boxes for the stored report, keeping manual edits |
 | `POST` | `/api/cases/:id/summarise-diagnosis` | radiologist, admin | Work-list label; no-op until the radiologist has edited the draft |
+| `POST` | `/api/cases/:id/chart-findings` | radiologist, admin | endorsed cases only; ask Azure again for the patient-chart findings (Retry) |
 | `POST` | `/api/cases/bulk-delete` | admin | |
 | `DELETE` | `/api/cases/:id` | admin | |
 | `GET` | `/api/share/:token` | public | endorsed case for a share link |
 | `GET` | `/api/share/:token/image` | public | film for that share link |
 | `GET` | `/api/patients` | any | includes patients with no studies |
 | `POST` | `/api/patients` | technician, radiologist, admin | demo new patient |
-| `GET`/`PUT` | `/api/patients/:id` | GET any; PUT as noted | doctors may save lab orders |
+| `GET`/`PUT` | `/api/patients/:id` | GET any; PUT as noted | doctors may save lab orders. GET returns each endorsed case's `chartFindings` (not to technicians) and starts any that are missing |
 | `POST`/`DELETE` | `/api/patients/bulk-delete`, `.../:id` | admin | also deletes studies + images |
 | `GET` | `/api/images/:id` | any | GridFS stream (JWT) |
 | `GET` | `/api/audit-logs` | admin | |
@@ -350,6 +378,7 @@ Used for (`backend/utils/azureFindings.js`):
 
 - **Film boxes** after CURV stores the draft, and again when a Save draft changes the report wording. Azure gets the report text and the film, and returns boxes with a severity; `normal` findings are not drawn. If vision boxes are missing, anatomical **zones** are used and the page says the boxes are approximate.
 - A short **diagnosis** on the work list, but only after the radiologist has edited the draft. Until then the label is picked locally from CURV’s report text, with no Azure call (`diagnosisSource: local`).
+- **Patient-chart findings** after endorse (`summariseChartFindings`). Text only, Thinking removed, at most 6 grouped findings with a severity. Stored in `chartFindings[]` on the case.
 
 Azure never writes `reportText`. If those env vars are absent, the app runs on CURV alone and the film has only the boxes the radiologist draws.
 
@@ -415,6 +444,8 @@ npm test
 
 That runs the suite in `scripts/test-*.mjs`: report unwrap/parse, the review page, automatic box placement, Azure bbox, confidence, export, report popup, diagnosis, patients, new patient, cases, pagination, new-case drop zone, DICOM, audit bulk-delete, users page, share page, analysis job, shell menu.
 
+`scripts/test-patient-page.mjs` covers the chart: Azure findings only for endorsed reports, the running / failed / Retry states, hiding findings from technicians, the Care notes section, the Sepsis and Care notes windows (URL, separate windows, window reuse, saves posted back to the chart), and the blocked-pop-up panel.
+
 `scripts/test-review-page.mjs` clicks every control on the review page against a mocked API. That covers inline report edits, hidden Thinking, drawing, moving, resizing, and deleting boxes, the Azure merge after a report edit, measurements (saved, named, deleted, in the PDF), Endorse, Share, Word, PDF, and read-only roles.
 
 Against a **running** backend:
@@ -444,8 +475,8 @@ Dry-run by default; pass `--apply` to write.
 
 1. Start backend, Vite, and `start_server.sh` before the session. Confirm `/api/health` says `mongo: "up"` and `:8001/health` is OK. Wait until the model has finished loading.
 2. Make sure only one backend owns port 5002 (`lsof -ti:5002`) and that it started after your last backend edit. Restart `start_server.sh` (or the middleware LaunchAgent) after any `middleware.py` edit.
-3. Walk: doctor **Book chest X-ray** on the calendar → technician **Requested case** → save the film (draft generates on its own) → radiologist work list moves from **Generating** to **Pending approve** → Azure boxes appear on the film → edit the report, resize a box, draw one, measure a lesion → **Save draft** → download the PDF to show the measurement → **Endorse report** → doctor login reads the report without Thinking, with the signature → Share copies a public link.
-4. Show Patient Master, an X-ray request on the chart, and Sepsis / labs / notes for a doctor. Show that a technician and a radiologist do not have labs or the audit log.
+3. Walk: doctor **Book chest X-ray** on the calendar → technician **Requested case** → save the film (draft generates on its own) → radiologist work list moves from **Generating** to **Pending approve** → Azure boxes appear on the film → edit the report, resize a box, draw one, measure a lesion → **Save draft** → download the PDF to show the measurement → **Endorse report** → open the patient chart and watch Azure write the **Findings** → doctor login reads the report without Thinking, with the signature → Share copies a public link.
+4. Show Patient Master, an X-ray request on the chart, and Sepsis / labs / notes for a doctor. Open **Sepsis monitor** and **Care notes** from the chart so both windows sit beside it, record a vital and a note, and show the chart update. Show that a technician and a radiologist do not have labs or the audit log.
 5. Show admin **Users** (add by email, temporary password once) and bulk-delete on a throwaway row, not on the last demo case.
 
 ### Product / clinical
@@ -490,7 +521,8 @@ It is not a PACS, not a CE/FDA device, and not a substitute for a radiologist. A
 - Seed accounts are for local/demo use only.
 - Helmet is on; CORS is intentionally loose for local Vite ports.
 - GridFS images under `/api/images/:id` require a valid JWT. A **share link** is the exception: `GET /api/share/:token` and `.../image` are public for that one endorsed case.
-- Technician API responses omit the film, report text, and findings.
+- Technician API responses omit the film, report text, findings, and patient-chart findings.
+- The Sepsis / Care notes windows only accept chart updates posted from the same origin.
 
 ---
 
@@ -501,5 +533,5 @@ src/                  UI (Vite) — CMS shell + X-ray + clinical modules
 backend/              Express API, models, seed, Azure/CURV helpers
 middleware.py         FastAPI wrapper around mlx_vlm (started by start_server.sh)
 scripts/              Frontend tests + e2e
-docs/                 FYP plan and initial analysis
+docs/                 FYP plan, initial analysis, Azure findings setup
 ```

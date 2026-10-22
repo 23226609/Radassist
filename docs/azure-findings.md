@@ -43,6 +43,7 @@ Relevant files:
 | `backend/routes/cases.js` | `POST /api/cases/:id/summarise-findings` and `…/summarise-diagnosis` |
 | `src/components/review.js` | Auto-runs the summary when the review page opens, and draws the boxes on the film |
 | `src/components/dashboard.js` | Fills the Diagnosis column with Azure when the label is still the old first-sentence fallback |
+| `backend/utils/chartFindings.js` | After Endorse, asks Azure for the patient-chart Findings from the endorsed report |
 | `scripts/setup-azure-openai.sh` | Creates the Azure resources for you |
 
 ---

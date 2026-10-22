@@ -325,13 +325,15 @@ export async function renderDashboardPage({ target }) {
                   el("span", { class: "ml-3" }, "Partially endorsed = draft report")
                 )
               ),
-              el("div", { class: "flex w-56 shrink-0 items-center gap-2" },
-                searchField({
-                  value: q,
-                  placeholder: "Patient or diagnosis",
-                  onQuery: (value) => { q = value; state.pendingFilter.q = value; },
-                  onSearch: () => { page = 1; selected.clear(); refresh(); },
-                }),
+              el("div", { class: "flex shrink-0 items-center gap-2" },
+                el("div", { class: "w-56" },
+                  searchField({
+                    value: q,
+                    placeholder: "Patient or diagnosis",
+                    onQuery: (value) => { q = value; state.pendingFilter.q = value; },
+                    onSearch: () => { page = 1; selected.clear(); refresh(); },
+                  })
+                ),
                 isAdmin() && bulkDeleteButton({ count: selected.size, onClick: deleteSelected })
               )
             ),

@@ -18,6 +18,7 @@ router.post('/:id/share', authorize('radiologist', 'admin'), c.createShareLink);
 router.delete('/:id/share', authorize('radiologist', 'admin'), c.revokeShareLink);
 router.post('/:id/summarise-findings', authorize('radiologist', 'admin'), c.summariseFindings);
 router.post('/:id/summarise-diagnosis', authorize('radiologist', 'admin'), c.summariseDiagnosis);
+router.post('/:id/chart-findings', authorize('radiologist', 'admin'), c.rewriteChartFindings);
 router.delete('/:id', authorize('admin'), c.deleteCase);
 
 module.exports = router;
