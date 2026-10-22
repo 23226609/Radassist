@@ -21,6 +21,7 @@ import { isGenerating, isAwaitingApprove, isAwaitingAi, statusLabel } from "../l
 import { forgetCases } from "../lib/records.js";
 import { CASES_CHANGED, startAnalysisWatch } from "../lib/analysisJob.js";
 import { canEditReport, canRunAi, canExport, isReferringDoctor } from "../lib/roles.js";
+import { patientChartButton } from "../lib/chartWindow.js";
 
 let reviewLive = null;
 let reviewWatchId = "";
@@ -1319,6 +1320,7 @@ export async function renderReviewPage({ target }) {
           )
         ),
         el("div", { class: "flex flex-wrap gap-1.5" },
+          localCase.patientId && patientChartButton(localCase, { className: `${btn} border border-teal-700 bg-white text-teal-800 hover:bg-teal-50` }),
           canRunAi(state.user) && localCase.status !== "finalized" && !awaitingAi && el("button", {
             class: `${btn} bg-ha-blue text-white hover:bg-[#074f85]`,
             disabled: busy || generating,

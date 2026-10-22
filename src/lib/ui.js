@@ -129,6 +129,14 @@ export function bindListHotkeys() {
   });
 }
 
+export function bookingWhen(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const day = d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+  return `${day} · ${time}`;
+}
+
 function uploadedAt(c = {}) {
   const value = c.registeredAt || ((c.imageId || c.imageUrl) ? c.createdAt : null);
   const time = value ? new Date(value).getTime() : 0;

@@ -8,7 +8,7 @@ import { svgIcon } from "./icons.js";
 import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
 import { urgentBadge, patientDisplayName } from "../lib/tags.js";
-import { emptyState } from "../lib/ui.js";
+import { emptyState, bookingWhen } from "../lib/ui.js";
 import { statusLabel } from "../lib/caseStatus.js";
 import { CASES_CHANGED } from "../lib/analysisJob.js";
 import { forgetPatients } from "../lib/records.js";
@@ -25,6 +25,26 @@ const SEVERITY_TAG = {
   minor: ["Minor", "bg-amber-100 text-amber-800"],
   normal: ["Normal", "bg-emerald-100 text-emerald-800"],
 };
+
+const DAY_STYLE = {
+  open: ["border-emerald-300 bg-emerald-50 hover:bg-emerald-100", "text-emerald-800"],
+  few: ["border-amber-300 bg-amber-50 hover:bg-amber-100", "text-amber-800"],
+  full: ["cursor-not-allowed border-red-200 bg-red-50", "text-red-700"],
+  closed: ["cursor-not-allowed border-gray-200 bg-gray-100", "text-gray-500"],
+  past: ["cursor-not-allowed border-gray-100 bg-gray-50 text-gray-400", "text-gray-400"],
+};
+
+function longDay(key) {
+  return new Date(`${key}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+}
+
+function dayLabel(info) {
+  if (!info) return "";
+  if (info.status === "closed") return "Closed";
+  if (info.status === "past") return "";
+  if (info.status === "full") return "Full";
+  return `${info.left} left`;
+}
 
 function openPatient(patientId) {
   state.selectedPatientId = patientId;
@@ -269,8 +289,8 @@ export async function renderPatientsPage({ target }) {
   await refresh();
 }
 
-export async function renderPatientPage({ target }) {
-  const patientId = state.selectedPatientId;
+export async function renderPatientPage({ target, patientId: givenId = "", embedded = false } = {}) {
+  const patientId = givenId || state.selectedPatientId;
   let patient = null;
   let cases = [];
   let error = "";
@@ -284,6 +304,11 @@ export async function renderPatientPage({ target }) {
   let allCareNotes = false;
   let bookCursor = new Date();
   let bookedDay = "";
+  let bookedTime = "";
+  let slotDays = {};
+  let slotQuota = null;
+  let slotsLoading = false;
+  let slotsError = "";
 
   const canEdit = () => canEditPatient(state.user);
   const isAdmin = () => roleIsAdmin(state.user);
@@ -311,8 +336,20 @@ export async function renderPatientPage({ target }) {
   }
 
   const stillHere = () => target.isConnected !== false
-    && state.page === "patient"
-    && state.selectedPatientId === patientId;
+    && (embedded || (state.page === "patient" && state.selectedPatientId === patientId));
+
+  // In the patient window a study opens back in the main window.
+  function showCase(caseId) {
+    const main = embedded ? window.opener : null;
+    if (main && !main.closed) {
+      try {
+        main.location.hash = `#/cases/${encodeURIComponent(caseId)}`;
+        main.focus();
+        return;
+      } catch { /* opener navigated elsewhere */ }
+    }
+    openCase(caseId);
+  }
 
   let pollTimer = null;
   function pollChartFindings() {
@@ -403,7 +440,7 @@ export async function renderPatientPage({ target }) {
       el("button", {
         type: "button",
         class: "text-left text-xs font-bold text-ha-blue hover:underline",
-        onClick: () => openCase(c.caseId),
+        onClick: () => showCase(c.caseId),
       },
         c.caseId,
         when ? ` · ${new Date(when).toISOString().slice(0, 10)}` : "",
@@ -429,24 +466,68 @@ export async function renderPatientPage({ target }) {
     return cells;
   }
 
+  async function loadSlots() {
+    const year = bookCursor.getFullYear();
+    const month = bookCursor.getMonth();
+    const from = dayKey(new Date(year, month, 1));
+    const to = dayKey(new Date(year, month + 1, 0));
+    slotsLoading = true;
+    slotsError = "";
+    paint();
+    try {
+      const data = await api.xrayAvailability(from, to);
+      if (bookCursor.getFullYear() !== year || bookCursor.getMonth() !== month) return;
+      slotDays = Object.fromEntries((data.days || []).map((d) => [d.day, d]));
+      slotQuota = { daily: data.dailyQuota, perSlot: data.slotCapacity, minutes: data.slotMinutes };
+      const chosen = slotDays[bookedDay];
+      if (chosen && !["open", "few"].includes(chosen.status)) bookedDay = "";
+      if (bookedTime && !slotDays[bookedDay]?.slots.some((s) => s.time === bookedTime && s.status === "open")) bookedTime = "";
+    } catch (err) {
+      slotsError = err.message || "Could not load availability.";
+    } finally {
+      slotsLoading = false;
+      paint();
+    }
+  }
+
+  function openBooking() {
+    booking = true;
+    bookedDay = "";
+    bookedTime = "";
+    bookCursor = new Date();
+    loadSlots();
+  }
+
+  function moveMonth(step) {
+    bookCursor = new Date(bookCursor.getFullYear(), bookCursor.getMonth() + step, 1);
+    slotDays = {};
+    loadSlots();
+  }
+
+  function pickDay(key) {
+    const info = slotDays[key];
+    if (!info || !["open", "few"].includes(info.status)) return;
+    if (bookedDay !== key) bookedTime = "";
+    bookedDay = key;
+    paint();
+  }
+
   async function bookExam() {
     if (!patient || !canRequestExam(state.user)) return;
-    if (!bookedDay) {
-      toast("Drag Chest X-ray onto a day, or click a day.");
+    if (!bookedDay || !bookedTime) {
+      toast("Choose a day, then a time.");
       return;
     }
     busy = true;
     paint();
     try {
-      await api.requestExam({
-        patientId: patient.patientId,
-        scheduledAt: new Date(`${bookedDay}T09:00:00`).toISOString(),
-      });
+      await api.requestExam({ patientId: patient.patientId, day: bookedDay, time: bookedTime });
       booking = false;
       await load();
-      toast("Chest X-ray booked. A technician registers the film on that day.");
+      toast(`Chest X-ray booked for ${longDay(bookedDay)} at ${bookedTime}.`);
     } catch (err) {
       toast(err.message || "Could not book the X-ray.");
+      if (booking) loadSlots();
     } finally {
       busy = false;
       paint();
@@ -494,37 +575,153 @@ export async function renderPatientPage({ target }) {
     }
   }
 
+  function bookingDialog() {
+    const chosenDay = slotDays[bookedDay];
+    const legend = (cls, label) => el("span", { class: "inline-flex items-center gap-1" },
+      el("span", { class: `inline-block h-3 w-3 rounded-sm border ${cls}` }), label);
+    return el("section", { id: "book-xray", class: "max-h-[92vh] w-full max-w-2xl overflow-auto rounded border border-gray-300 bg-white p-4 shadow-2xl" },
+      el("div", { class: "flex flex-wrap items-center justify-between gap-2" },
+        el("h2", { class: "text-sm font-bold" }, "Book chest X-ray"),
+        el("div", { class: "flex items-center gap-2 text-xs" },
+          el("button", { type: "button", class: "rounded border border-gray-300 px-2 py-1", disabled: slotsLoading, onClick: () => moveMonth(-1) }, "Prev"),
+          el("span", { class: "min-w-28 text-center font-semibold" }, bookCursor.toLocaleString(undefined, { month: "long", year: "numeric" })),
+          el("button", { type: "button", class: "rounded border border-gray-300 px-2 py-1", disabled: slotsLoading, onClick: () => moveMonth(1) }, "Next")
+        )
+      ),
+      el("p", { class: "mt-2 text-xs text-slate-600" },
+        "Drag the exam onto a day, or click the day, then choose a time.",
+        slotQuota ? ` Quota: ${slotQuota.daily} X-rays a day, ${slotQuota.perSlot} per ${slotQuota.minutes}-minute slot.` : ""
+      ),
+      el("div", { class: "mt-2 flex flex-wrap items-center justify-between gap-2" },
+        el("div", {
+          draggable: "true",
+          class: "inline-block cursor-grab rounded bg-ha-blue px-3 py-1 text-xs font-bold text-white",
+          onDragstart: (e) => {
+            e.dataTransfer?.setData("text/plain", "chest-xray");
+            if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+          },
+        }, "Chest X-ray"),
+        el("div", { id: "book-legend", class: "flex flex-wrap gap-3 text-[11px] text-slate-600" },
+          legend("border-emerald-300 bg-emerald-50", "Available"),
+          legend("border-amber-300 bg-amber-50", "Few left"),
+          legend("border-red-200 bg-red-50", "Full"),
+          legend("border-gray-200 bg-gray-100", "Closed")
+        )
+      ),
+      slotsError && el("p", { class: "mt-2 rounded bg-red-50 px-2 py-1 text-xs text-red-800" }, slotsError),
+      el("div", { class: "mt-3 grid grid-cols-7 gap-1 text-center text-[11px] text-slate-500" },
+        ...["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((name) => el("div", { class: "font-semibold" }, name))
+      ),
+      el("div", { class: "mt-1 grid grid-cols-7 gap-1", "aria-busy": slotsLoading ? "true" : "false" },
+        ...monthCells(bookCursor).map((day) => {
+          if (!day) return el("div", {});
+          const key = dayKey(day);
+          const info = slotDays[key];
+          const chosen = key === bookedDay;
+          const bookable = info && ["open", "few"].includes(info.status);
+          const [cellCls, labelCls] = info ? DAY_STYLE[info.status] : ["border-gray-200 bg-white", "text-slate-400"];
+          return el("button", {
+            type: "button",
+            "data-day": key,
+            "data-status": info?.status || "loading",
+            class: `min-h-14 rounded border p-1 text-left text-xs ${chosen ? "border-ha-blue bg-blue-50 ring-2 ring-ha-blue" : cellCls}`,
+            disabled: !bookable,
+            title: info ? `${info.booked} of ${info.quota} booked` : "",
+            onClick: () => pickDay(key),
+            onDragover: (e) => { if (bookable) e.preventDefault(); },
+            onDrop: (e) => { e.preventDefault(); pickDay(key); },
+          },
+            el("div", { class: "font-semibold text-slate-700" }, String(day.getDate())),
+            chosen
+              ? el("div", { class: "mt-1 truncate rounded bg-ha-blue px-1 text-[10px] font-bold text-white" }, bookedTime || "Chest X-ray")
+              : el("div", { class: `mt-1 text-[10px] font-semibold ${labelCls}` }, slotsLoading && !info ? "…" : dayLabel(info))
+          );
+        })
+      ),
+      chosenDay && el("div", { id: "book-times", class: "mt-3 rounded border border-gray-200 bg-slate-50 p-2" },
+        el("div", { class: "flex flex-wrap items-baseline justify-between gap-2" },
+          el("h3", { class: "text-xs font-bold text-slate-800" }, `Times on ${longDay(bookedDay)}`),
+          el("span", { class: "text-[11px] text-slate-600" }, `${chosenDay.booked} of ${chosenDay.quota} booked · ${chosenDay.left} left`)
+        ),
+        el("div", { class: "mt-2 grid grid-cols-4 gap-1 sm:grid-cols-7" },
+          ...chosenDay.slots.map((slot) => {
+            const picked = slot.time === bookedTime;
+            const open = slot.status === "open";
+            const tone = picked
+              ? "border-ha-blue bg-ha-blue text-white"
+              : open
+                ? (slot.left === 1 ? "border-amber-300 bg-white hover:bg-amber-50" : "border-emerald-300 bg-white hover:bg-emerald-50")
+                : "cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400";
+            return el("button", {
+              type: "button",
+              "data-time": slot.time,
+              class: `rounded border px-1 py-1 text-center text-xs ${tone}`,
+              disabled: !open,
+              onClick: () => { bookedTime = slot.time; paint(); },
+            },
+              el("div", { class: "font-bold" }, slot.time),
+              el("div", { class: "text-[10px]" }, open ? `${slot.left} of ${slot.capacity} free` : (slot.status === "full" ? "Full" : "Passed"))
+            );
+          })
+        )
+      ),
+      el("div", { class: "mt-3 flex items-center justify-between gap-2" },
+        el("span", { id: "book-summary", class: "text-xs text-slate-600" },
+          bookedDay && bookedTime ? `Booking: ${longDay(bookedDay)} at ${bookedTime}`
+            : bookedDay ? "Now choose a time." : "No day chosen yet."),
+        el("div", { class: "flex gap-2" },
+          el("button", {
+            type: "button",
+            class: "rounded border border-gray-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50",
+            disabled: busy,
+            onClick: () => { booking = false; paint(); },
+          }, "Cancel"),
+          el("button", {
+            type: "button",
+            class: "rounded bg-ha-blue px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50",
+            disabled: busy || !bookedDay || !bookedTime,
+            onClick: bookExam,
+          }, busy ? "Booking…" : "Confirm booking")
+        )
+      )
+    );
+  }
+
   function paint() {
     const edit = canEdit();
     const endorsed = cases.filter((c) => c.status === "finalized");
+    const openRequest = cases.find((c) => c.status === "requested");
 
     const root = el(
       "div",
       { class: "flex h-full min-h-[70vh] flex-col p-2" },
       el("div", { class: "relative flex h-full flex-col border-2 border-white border-b-gray-500 border-r-gray-500 bg-[#d4d0c8] p-2 shadow-sm" },
         el("div", { class: "flex items-center justify-between border-b border-[#d9d3bc] bg-ha-paper px-2 py-1 font-bold text-stone-900" },
-          el("button", {
-            class: "text-sm",
-            onClick: () => setPage("patients"),
-          }, "Enquiry of Patient Master Index"),
-          el("div", { class: "flex items-center gap-2" },
+          embedded
+            ? el("span", { class: "text-sm" }, "Patient chart")
+            : el("button", {
+                class: "text-sm",
+                onClick: () => setPage("patients"),
+              }, "Enquiry of Patient Master Index"),
+          el("div", { class: "flex flex-wrap items-center justify-end gap-2" },
             patient && sepsisButton(patient, { onSaved: chartSaved }),
             patient && careNotesButton(patient, { onSaved: chartSaved }),
-            isAdmin() && el("button", {
+            !embedded && isAdmin() && el("button", {
               class: "rounded border border-stone-400 bg-white px-2 py-0.5 text-[11px] font-semibold text-stone-900 hover:bg-stone-100",
               disabled: busy,
               onClick: deleteThis,
             }, "Delete"),
-            edit && canUpload(state.user) && el("button", {
+            !embedded && edit && canUpload(state.user) && el("button", {
               class: "rounded border border-stone-400 bg-white px-2 py-0.5 text-[11px] font-semibold text-stone-900 hover:bg-stone-100",
               disabled: busy,
               onClick: () => setPage("new"),
             }, "New case"),
             canRequestExam(state.user) && el("button", {
               class: "rounded border border-stone-400 bg-white px-2 py-0.5 text-[11px] font-semibold text-stone-900 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-60",
-              disabled: busy || cases.some((c) => c.status === "requested"),
-              onClick: () => { booking = !booking; paint(); },
-            }, cases.some((c) => c.status === "requested") ? "Requested" : "Book chest X-ray"),
+              disabled: busy || Boolean(openRequest),
+              onClick: openBooking,
+              title: openRequest?.scheduledAt ? `Booked for ${bookingWhen(openRequest.scheduledAt)}` : "",
+            }, openRequest ? (openRequest.scheduledAt ? `X-ray booked ${bookingWhen(openRequest.scheduledAt)}` : "Requested") : "Book chest X-ray"),
             edit && el("button", {
               class: "rounded bg-white px-2 py-0.5 text-[11px] font-bold text-ha-blue",
               disabled: busy,
@@ -646,7 +843,7 @@ export async function renderPatientPage({ target }) {
                       el("li", {},
                         el("button", {
                           class: "text-left hover:text-ha-blue",
-                          onClick: () => openCase(c.caseId),
+                          onClick: () => showCase(c.caseId),
                         },
                           c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : "Study",
                           " · ",
@@ -718,76 +915,7 @@ export async function renderPatientPage({ target }) {
                 "aria-label": "Book chest X-ray",
                 onClick: (e) => { if (e.target === e.currentTarget) { booking = false; paint(); } },
               },
-              el("section", { id: "book-xray", class: "w-full max-w-xl rounded border border-gray-300 bg-white p-4 shadow-2xl" },
-                el("div", { class: "flex flex-wrap items-center justify-between gap-2" },
-                  el("h2", { class: "text-sm font-bold" }, "Book chest X-ray"),
-                  el("div", { class: "flex items-center gap-2 text-xs" },
-                    el("button", {
-                      type: "button",
-                      class: "rounded border border-gray-300 px-2 py-1",
-                      onClick: () => { bookCursor = new Date(bookCursor.getFullYear(), bookCursor.getMonth() - 1, 1); paint(); },
-                    }, "Prev"),
-                    el("span", { class: "min-w-28 text-center font-semibold" },
-                      bookCursor.toLocaleString(undefined, { month: "long", year: "numeric" })
-                    ),
-                    el("button", {
-                      type: "button",
-                      class: "rounded border border-gray-300 px-2 py-1",
-                      onClick: () => { bookCursor = new Date(bookCursor.getFullYear(), bookCursor.getMonth() + 1, 1); paint(); },
-                    }, "Next")
-                  )
-                ),
-                el("p", { class: "mt-2 text-xs text-slate-600" }, "Drag the exam onto a day, or click the day."),
-                el("div", {
-                  draggable: "true",
-                  class: "mt-2 inline-block cursor-grab rounded bg-ha-blue px-3 py-1 text-xs font-bold text-white",
-                  onDragstart: (e) => {
-                    e.dataTransfer?.setData("text/plain", "chest-xray");
-                    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-                  },
-                }, "Chest X-ray"),
-                el("div", { class: "mt-3 grid grid-cols-7 gap-1 text-center text-[11px] text-slate-500" },
-                  ...["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((name) => el("div", { class: "font-semibold" }, name))
-                ),
-                el("div", { class: "mt-1 grid grid-cols-7 gap-1" },
-                  ...monthCells(bookCursor).map((day) => {
-                    if (!day) return el("div", {});
-                    const key = dayKey(day);
-                    const chosen = key === bookedDay;
-                    return el("button", {
-                      type: "button",
-                      class: `min-h-14 rounded border p-1 text-left text-xs ${chosen ? "border-ha-blue bg-blue-50" : "border-gray-200 bg-white hover:bg-slate-50"}`,
-                      onClick: () => { bookedDay = key; paint(); },
-                      onDragover: (e) => e.preventDefault(),
-                      onDrop: (e) => {
-                        e.preventDefault();
-                        bookedDay = key;
-                        paint();
-                      },
-                    },
-                      el("div", { class: "font-semibold text-slate-700" }, String(day.getDate())),
-                      chosen && el("div", { class: "mt-1 truncate rounded bg-ha-blue px-1 text-[10px] font-bold text-white" }, "Chest X-ray")
-                    );
-                  })
-                ),
-                el("div", { class: "mt-3 flex items-center justify-between gap-2" },
-                  el("span", { class: "text-xs text-slate-600" }, bookedDay ? `Booked day: ${bookedDay}` : "No day chosen yet."),
-                  el("div", { class: "flex gap-2" },
-                    el("button", {
-                      type: "button",
-                      class: "rounded border border-gray-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50",
-                      disabled: busy,
-                      onClick: () => { booking = false; paint(); },
-                    }, "Cancel"),
-                    el("button", {
-                      type: "button",
-                      class: "rounded bg-ha-blue px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50",
-                      disabled: busy || !bookedDay,
-                      onClick: bookExam,
-                    }, busy ? "Booking…" : "Confirm booking")
-                  )
-                )
-              )),
+              bookingDialog()),
               el("section", { class: "overflow-hidden rounded border border-gray-200" },
                 el("div", { class: "border-b bg-gray-50 px-3 py-2" },
                   el("h2", { class: "text-sm font-bold" }, "X-ray requests")
@@ -795,18 +923,21 @@ export async function renderPatientPage({ target }) {
                 cases.filter((c) => c.status === "requested").length === 0
                   ? el("p", { class: "p-3 text-slate-400" }, "No open chest X-ray request.")
                   : el("ul", { class: "divide-y" },
-                      ...cases.filter((c) => c.status === "requested").map((c) =>
-                        el("li", { class: "flex items-center justify-between gap-3 px-3 py-3" },
+                      ...cases.filter((c) => c.status === "requested").map((c) => {
+                        const due = c.scheduledAt && new Date(c.scheduledAt).getTime() <= Date.now();
+                        return el("li", { class: "flex items-center justify-between gap-3 px-3 py-3" },
                           el("div", {},
                             el("div", { class: "font-semibold" }, "Chest X-ray"),
                             el("p", { class: "text-sm text-slate-600" },
-                              c.scheduledAt ? `Booked ${new Date(c.scheduledAt).toLocaleDateString()}` : (c.createdAt ? new Date(c.createdAt).toLocaleString() : "Requested"),
+                              c.scheduledAt ? `Booked for ${bookingWhen(c.scheduledAt)}` : (c.createdAt ? `Requested ${new Date(c.createdAt).toLocaleString()}` : "Requested"),
                               c.requestedByName ? ` · ${c.requestedByName}` : ""
                             )
                           ),
-                          el("span", { class: "text-xs font-semibold text-amber-800" }, "Requested")
-                        )
-                      )
+                          el("span", {
+                            class: `rounded px-2 py-0.5 text-xs font-semibold ${due ? "bg-amber-100 text-amber-900" : "bg-sky-100 text-sky-900"}`,
+                          }, due ? "Due · waiting for film" : "Booked · waiting for film")
+                        );
+                      })
                     )
               ),
               el("section", { class: "overflow-hidden rounded border border-gray-200" },
@@ -820,7 +951,7 @@ export async function renderPatientPage({ target }) {
                         el("li", {},
                           el("button", {
                             class: "flex w-full items-center justify-between gap-3 px-3 py-3 text-left hover:bg-slate-50",
-                            onClick: () => openCase(c.caseId),
+                            onClick: () => showCase(c.caseId),
                           },
                             el("div", {},
                               el("div", { class: "font-semibold" }, c.caseId, c.urgent ? urgentBadge({ class: "ml-2" }) : null),

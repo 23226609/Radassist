@@ -10,7 +10,7 @@ import { applyRemarksToReport, splitReportAndRemarks } from "../lib/reportExport
 import { paginate, paginationBar } from "../lib/pagination.js";
 import { toggleSelected, togglePage, rowCheckbox, headerCheckbox, bulkDeleteButton } from "../lib/bulkSelect.js";
 import { urgentBadge, patientDisplayName, doctorInCharge, isDoctorInCharge, doctorFilterKey, doctorsInChargeOptions } from "../lib/tags.js";
-import { PAGE, searchField, statusChips, emptyState, pageHeading, sortWorklist } from "../lib/ui.js";
+import { PAGE, searchField, statusChips, emptyState, pageHeading, sortWorklist, bookingWhen } from "../lib/ui.js";
 import { statusLabel, statusBadgeClass, isGenerating } from "../lib/caseStatus.js";
 import { canUpload, canEditReport, isAdmin as roleIsAdmin } from "../lib/roles.js";
 import { CASES_CHANGED } from "../lib/analysisJob.js";
@@ -29,7 +29,8 @@ export async function renderRequestedPage({ target }) {
   let error = "";
   async function load() {
     const data = await api.listCases({ status: "requested" });
-    rows = data.cases || [];
+    const when = (c) => new Date(c.scheduledAt || c.createdAt || 0).getTime() || 0;
+    rows = (data.cases || []).slice().sort((a, b) => when(a) - when(b));
   }
   function paint() {
     mount(target, el("main", { class: PAGE },
@@ -43,7 +44,7 @@ export async function renderRequestedPage({ target }) {
             rows.length
               ? el("table", { class: "w-full text-left text-sm" },
                   el("thead", { class: "bg-slate-50 text-slate-600" },
-                    el("tr", {}, ["Patient", "Requested by", "When", ""].map((h) => el("th", { class: "p-3" }, h)))
+                    el("tr", {}, ["Patient", "Requested by", "Booked for", ""].map((h) => el("th", { class: "p-3" }, h)))
                   ),
                   el("tbody", {}, ...rows.map((row) => el("tr", { class: "border-t" },
                     el("td", { class: "p-3" },
@@ -51,7 +52,11 @@ export async function renderRequestedPage({ target }) {
                       el("div", { class: "font-mono text-xs text-slate-500" }, row.patientId)
                     ),
                     el("td", { class: "p-3" }, row.requestedByName || row.createdByName || "—"),
-                    el("td", { class: "p-3" }, row.createdAt ? new Date(row.createdAt).toLocaleString() : "—"),
+                    el("td", { class: "p-3" },
+                      row.scheduledAt
+                        ? el("span", { class: "font-semibold" }, bookingWhen(row.scheduledAt))
+                        : el("span", { class: "text-slate-500" }, row.createdAt ? `Requested ${new Date(row.createdAt).toLocaleString()}` : "—")
+                    ),
                     el("td", { class: "p-3 text-right" },
                       el("button", {
                         class: "rounded-lg bg-ha-blue px-3 py-1.5 text-sm font-semibold text-white",

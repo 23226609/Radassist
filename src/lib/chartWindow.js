@@ -1,13 +1,14 @@
-// One patient's Sepsis Monitor or Care Notes in its own browser window
-// (?view=sepsis|notes&patientId=...), so it can sit beside the Patient Master
-// Index. If the browser blocks pop-ups, a floating in-page panel is used.
+// One patient's Sepsis Monitor, Care Notes or whole chart in its own browser
+// window (?view=sepsis|notes|patient&patientId=...), so it can sit beside the
+// Patient Master Index or the report. If the browser blocks pop-ups, a
+// floating in-page panel is used.
 
 import { el, mount } from "../dom.js";
 import { state, subscribe, toast } from "../state.js";
 import { renderMonitorPage, renderNotesPage } from "../components/clinical.js";
+import { renderPatientPage } from "../components/patients.js";
 import { patientDisplayName } from "./tags.js";
 
-const PAGES = new Set(["patients", "patient"]);
 export const PATIENT_UPDATED = "radassist-patient-updated";
 
 const VIEWS = {
@@ -15,13 +16,22 @@ const VIEWS = {
     title: "Sepsis Monitor",
     windowName: "radassist-sepsis",
     width: 820,
+    pages: ["patients", "patient"],
     render: renderMonitorPage,
   },
   notes: {
     title: "Nursing / Care Notes",
     windowName: "radassist-notes",
     width: 760,
+    pages: ["patients", "patient"],
     render: renderNotesPage,
+  },
+  patient: {
+    title: "Patient chart",
+    windowName: "radassist-patient",
+    width: 980,
+    pages: ["review"],
+    render: renderPatientPage,
   },
 };
 
@@ -151,7 +161,7 @@ function makeDraggable(node, handle) {
 /**
  * Floating, non-modal panel on the current page — the fallback when the
  * browser blocks the separate window.
- * @param {"sepsis"|"notes"} view
+ * @param {"sepsis"|"notes"|"patient"} view
  * @param {{ patientId: string, name?: string, onSaved?: (patient: object) => void }} opts
  */
 export function openChartPanel(view, { patientId, name = "", onSaved } = {}) {
@@ -209,7 +219,7 @@ export function openChartPanel(view, { patientId, name = "", onSaved } = {}) {
   document.body.appendChild(node);
 
   const unsubscribe = subscribe(() => {
-    if (!state.user || !PAGES.has(state.page)) closeChartPanel();
+    if (!state.user || !spec.pages.includes(state.page)) closeChartPanel();
   });
   current = { node, patientId, unsubscribe };
 
@@ -234,6 +244,18 @@ export function sepsisButton(patient, { onSaved, compact = false } = {}) {
       openChart("sepsis", patient, onSaved);
     },
   }, compact ? "Sepsis" : "Sepsis monitor");
+}
+
+export function patientChartButton(patient, { className } = {}) {
+  return el("button", {
+    type: "button",
+    class: className || "rounded border border-teal-700 bg-white px-2 py-0.5 text-[11px] font-semibold text-teal-800 hover:bg-teal-50",
+    title: "Open this patient's chart in its own window",
+    onClick: (e) => {
+      e.stopPropagation();
+      openChart("patient", patient);
+    },
+  }, "Patient chart");
 }
 
 export function careNotesButton(patient, { onSaved, label = "Care notes", className } = {}) {

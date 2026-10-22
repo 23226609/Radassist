@@ -108,6 +108,7 @@ function summariseCase(c, { hideReport = false } = {}) {
     diagnosis: c.diagnosis || '',
     history: c.history || '',
     createdAt: c.createdAt,
+    scheduledAt: c.scheduledAt || null,
     requestedByName: c.requestedByName || '',
     finalizedByName: endorsed ? (c.finalizedByName || '') : '',
     finalizedAt: endorsed ? c.finalizedAt || null : null,

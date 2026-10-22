@@ -49,7 +49,7 @@ The UI is **not React**. Pages are plain modules that build DOM with `src/dom.js
                          patient-chart findings from the endorsed report
 ```
 
-**On booking** (`POST /api/cases/request`), the referring doctor drops **Chest X-ray** on a calendar day. The case is `status: requested`, with `scheduledAt` and no film. The chart button stays **Requested** until a technician saves the film.
+**On booking** (`POST /api/cases/request`), the referring doctor picks a calendar day and a free 30-minute slot, within the per-slot and daily quota. The case is `status: requested`, with `scheduledAt` and no film. The chart button shows the booked day and time until a technician saves the film.
 
 **On registration of the film** (`POST /api/cases`), the image is stored in GridFS and CURV starts in the background. There is no Use AI click. The API returns immediately; the radiologist work list shows **Generating**, then **Pending approve**. If CURV is down, the case stays stored so the radiologist can write the report by hand. **Re-run AI** is available after a draft exists.
 
@@ -98,7 +98,7 @@ Stored in `patients`. A patient can exist **before** any X-ray. In a hospital th
 - Ward context (display only; no bed-management UI): `ward`, `bed`, `admissionStatus`
 - Clinical sub-records: `observations[]`, `labOrders[]`, `medOrders[]`, `careNotes[]`
 
-The chart lists **X-ray requests** separately from completed studies. **Book chest X-ray** opens the calendar. The button reads **Requested** while a request is still open.
+The chart lists **X-ray requests** separately from completed studies. **Book chest X-ray** opens the calendar with day status, times and quota. While a request is still open, the button reads **X-ray booked <day · time>**.
 
 Deleting a **patient** removes the chart, every study for that ID, and GridFS images. Deleting a **case** removes that study and its image; the patient chart stays.
 
@@ -181,9 +181,15 @@ The chart shows prior medicines, heart rate, lab results, health metrics, and th
 - Vitals or notes saved in a window are posted back to the chart that opened it, which updates without a reload. Drafts you are still typing on the chart are left alone.
 - If the browser blocks pop-ups, the same view opens as a floating, draggable, resizable panel on the page (no backdrop). The panel closes when you leave Patient Master.
 
+**Patient chart window from the report.** On the review page, **Patient chart** (first button in the toolbar) opens the whole chart for that patient in its own window (`?view=patient&patientId=…`). The radiologist can read history, labs, vitals, earlier findings and care notes while the report stays open. The window has no **Delete**, **New case** or back-to-list button. Clicking a study in it opens that study in the main window. If pop-ups are blocked, the chart opens as a floating panel on the review page instead.
+
 ### 3. Doctor: book the exam
 
-On the patient chart, **Book chest X-ray** opens a month calendar. Drag the **Chest X-ray** chip onto a day, or click the day, then **Confirm booking**. That calls `POST /api/cases/request` with `scheduledAt`. The case is `status: requested`, diagnosis “Chest X-ray requested”, with no image. A second open request for the same patient is refused. The button reads **Requested** until the technician saves the film, then it returns to **Book chest X-ray**. The booked day appears under **X-ray requests**.
+On the patient chart, **Book chest X-ray** opens a month calendar that loads availability from `GET /api/cases/availability?from=&to=`. Each day shows its status: **N left** (green), **few left** (amber, 4 or fewer), **Full** (red), **Closed** (Sundays), or grey for days that have passed. Drag the **Chest X-ray** chip onto a day, or click the day, then pick a time. Times run every 30 minutes from 09:00–12:30 and 14:00–16:30, and each one shows how many places are free (**2 of 2 free**, **Full**, or **Passed**). **Confirm booking** calls `POST /api/cases/request` with `{ patientId, day, time }`.
+
+- **Quota.** Each 30-minute slot takes `XRAY_SLOT_CAPACITY` X-rays (default 2), and each day takes `XRAY_DAILY_QUOTA` (default 20). The server checks both when a booking is made. If two doctors take the last place at the same moment, the later booking is removed and the doctor is asked to choose another time.
+- **Time zone.** Days and times are hospital local time (`BOOKING_UTC_OFFSET`, default `+08:00`), whatever the server's own time zone is.
+- **Status.** The case is `status: requested`, diagnosis “Chest X-ray requested”, with no image. A second open request for the same patient is refused. The header button reads **X-ray booked <day · time>** until the technician saves the film. **X-ray requests** shows **Booked for <day · time>** with **Booked · waiting for film**, which changes to **Due · waiting for film** once the time has passed. The technician's **Requested case** queue shows a **Booked for** column, with the soonest booking first.
 
 ### 4. Technician: receive the request and save the film
 
@@ -286,6 +292,7 @@ Filterable log of logins, case and patient mutations, AI runs, endorsements, del
 | `users` | `users.js` | Admin add / enable / disable / delete |
 | `?view=report&caseId=` | `reportView.js` | Report popup and sign-off |
 | `?view=sepsis&patientId=` / `?view=notes&patientId=` | `src/lib/chartWindow.js` → `clinical.js` | One patient's Sepsis Monitor / Care Notes in its own window |
+| `?view=patient&patientId=` | `src/lib/chartWindow.js` → `patients.js` | Patient chart window opened from the review page |
 
 Shared pieces:
 
@@ -320,7 +327,8 @@ Shared pieces:
 | `GET` | `/api/auth/me` | any | Session user |
 | `POST` | `/api/auth/logout` | any | Audit only |
 | `GET` | `/api/cases` | any | Doctors: `finalized` and `requested`. Technicians: `requested` only, film and report stripped |
-| `POST` | `/api/cases/request` | doctor, admin | book a chest X-ray; optional `scheduledAt`, no film |
+| `GET` | `/api/cases/availability?from=&to=` | any signed-in user | per-day and per-slot booking status, quota and places left (up to 62 days) |
+| `POST` | `/api/cases/request` | doctor, admin | book a chest X-ray for `{ patientId, day, time }` within the slot and daily quota; no film |
 | `POST` | `/api/cases` | technician, admin | multipart PNG, JPG, WebP, or uncompressed DICOM; **starts CURV** |
 | `GET` | `/api/cases/:id` | any | Doctors: requested or endorsed. Technicians: requested only |
 | `PUT` | `/api/cases/:id` | radiologist, admin | report / remarks / urgent; `findings` (boxes) and `measurements` only when sent |

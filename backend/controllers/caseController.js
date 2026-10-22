@@ -18,6 +18,7 @@ const { nameFieldsFrom } = require('../utils/patientName');
 const { toPublicCase, statusFilter, publicStatus, clinicianEdited } = require('../utils/caseStatus');
 const { upsertPatientFromCase, removeCaseRecord } = require('../utils/recordSync');
 const { queueChartFindings } = require('../utils/chartFindings');
+const xraySlots = require('../utils/xraySlots');
 const { normalizeRole, isReferringDoctor, isTechnician } = require('../utils/roles');
 const { OWNED } = Case;
 
@@ -328,6 +329,24 @@ function queueAnalysis(doc, userId, fileBuffer) {
   return doc.save().then(() => enqueueAnalysis(doc, userId, tmpPath));
 }
 
+exports.availability = catchAsync(async (req, res, next) => {
+  const from = String(req.query.from || '');
+  const to = String(req.query.to || from);
+  let days;
+  try {
+    days = await xraySlots.availability(from, to);
+  } catch (err) {
+    return next(ApiError.badRequest(err.message));
+  }
+  res.json({
+    success: true,
+    slotCapacity: xraySlots.SLOT_CAPACITY,
+    dailyQuota: xraySlots.DAILY_QUOTA,
+    slotMinutes: xraySlots.SLOT_MINUTES,
+    days,
+  });
+});
+
 exports.requestExam = catchAsync(async (req, res, next) => {
   const patientId = String(req.body?.patientId || '').trim();
   if (!patientId) return next(ApiError.badRequest('patientId is required.'));
@@ -335,12 +354,17 @@ exports.requestExam = catchAsync(async (req, res, next) => {
   if (!patient) return next(ApiError.badRequest('Register the patient before requesting an X-ray.'));
   const open = await Case.findOne({ ...OWNED, patientId, status: 'requested' });
   if (open) return next(ApiError.badRequest('This patient already has an open X-ray request.'));
-  let scheduledAt = null;
-  if (req.body?.scheduledAt) {
+  let day = String(req.body?.day || '').trim();
+  let time = String(req.body?.time || '').trim();
+  if (!day && req.body?.scheduledAt) {
     const booked = new Date(req.body.scheduledAt);
     if (Number.isNaN(booked.getTime())) return next(ApiError.badRequest('Choose a valid day on the calendar.'));
-    scheduledAt = booked;
+    ({ day, time } = xraySlots.localParts(booked));
   }
+  if (!day || !time) return next(ApiError.badRequest('Choose a day and a time for the X-ray.'));
+  const problem = await xraySlots.slotProblem(day, time);
+  if (problem) return next(ApiError.badRequest(problem));
+  const scheduledAt = xraySlots.slotInstant(day, time);
 
   const doc = await Case.create({
     caseId: newCaseId(),
@@ -364,7 +388,12 @@ exports.requestExam = catchAsync(async (req, res, next) => {
     createdBy: req.user.userId,
     createdByName: req.user.name,
   });
-  await addAuditLog(req.user.userId, 'CASE_CREATED', `Requested chest X-ray ${doc.caseId} for ${patientId}`, doc.caseId, null, 'requested');
+  const lost = await xraySlots.overbooked(doc.caseId, day, time);
+  if (lost) {
+    await Case.deleteOne({ _id: doc._id });
+    return next(new ApiError(409, lost));
+  }
+  await addAuditLog(req.user.userId, 'CASE_CREATED', `Requested chest X-ray ${doc.caseId} for ${patientId} on ${day} ${time}`, doc.caseId, null, 'requested');
   res.status(201).json({
     success: true,
     case: toPublicCase(doc, publicCaseOpts(req, doc)),
