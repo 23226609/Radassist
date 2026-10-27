@@ -51,7 +51,10 @@ function sampleRGBA(src, sw, sh, dw, dh) {
 }
 
 function encodeJpeg(rgba, width, height) {
-  const encoded = jpeg.encode({ data: rgba, width, height }, JPEG_QUALITY);
+  const data = rgba instanceof Uint8Array && rgba.byteOffset === 0
+    ? rgba
+    : Uint8Array.from(rgba);
+  const encoded = jpeg.encode({ data, width, height }, JPEG_QUALITY);
   return Buffer.from(encoded.data);
 }
 

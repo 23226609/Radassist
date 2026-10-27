@@ -63,6 +63,7 @@ function samples(dataset, raw) {
   if (raw.length < expected) throw new Error('This DICOM pixel data is shorter than the film size.');
   const mask = stored > 0 && stored < bits ? (1 << stored) - 1 : 0xffff;
   const values = new Float32Array(rows * cols * channels);
+  const pad = firstNumber(dataset.PixelPaddingValue, null);
   for (let i = 0; i < rows * cols * channels; i += 1) {
     let n;
     if (bits === 8) n = raw[i];
@@ -70,7 +71,156 @@ function samples(dataset, raw) {
     if (!signed && bits !== 8) n &= mask;
     values[i] = n;
   }
-  return { rows, cols, channels, values };
+  let frameRows = rows;
+  let frameCols = cols;
+  let frameValues = values;
+  // A viewer shows the exposed field. The black detector outside the
+  // collimator is not part of the photograph.
+  const field = exposedField(dataset, rows, cols);
+  if (field) {
+    const cropped = cropFrame(frameValues, frameRows, frameCols, channels, field);
+    frameRows = cropped.rows;
+    frameCols = cropped.cols;
+    frameValues = cropped.values;
+  }
+  if (channels === 1) {
+    const trimmed = dropEdgeBlankColumns(frameValues, frameRows, frameCols, pad);
+    frameRows = trimmed.rows;
+    frameCols = trimmed.cols;
+    frameValues = trimmed.values;
+  }
+  if (channels !== 1) return { rows: frameRows, cols: frameCols, channels, values: frameValues };
+  // Full-width zero rows through the chest (MIMIC-CXR blanks burned-in text).
+  // The viewer shows the film with those rows left out. Edge collimation stays.
+  const dropped = dropInteriorEmptyRows(frameValues, frameRows, frameCols, pad);
+  return { rows: dropped.rows, cols: frameCols, channels, values: dropped.values };
+}
+
+function edgeValue(dataset, names, fallback) {
+  for (const name of names) {
+    if (dataset[name] != null && dataset[name] !== '') return firstNumber(dataset[name], fallback);
+  }
+  return fallback;
+}
+
+function exposedField(dataset, rows, cols) {
+  const shape = String(dataset.CollimatorShape || dataset.ShutterShape || '').toUpperCase();
+  const names = [
+    'CollimatorLeftVerticalEdge', 'CollimatorRightVerticalEdge', 'CollimatorUpperHorizontalEdge', 'CollimatorLowerHorizontalEdge',
+    'ShutterLeftVerticalEdge', 'ShutterRightVerticalEdge', 'ShutterUpperHorizontalEdge', 'ShutterLowerHorizontalEdge',
+  ];
+  const tagged = names.some((key) => dataset[key] != null && dataset[key] !== '');
+  if (!tagged && shape !== 'RECTANGULAR') return null;
+  let left = edgeValue(dataset, ['CollimatorLeftVerticalEdge', 'ShutterLeftVerticalEdge'], 0);
+  let right = edgeValue(dataset, ['CollimatorRightVerticalEdge', 'ShutterRightVerticalEdge'], cols);
+  let top = edgeValue(dataset, ['CollimatorUpperHorizontalEdge', 'ShutterUpperHorizontalEdge'], 0);
+  let bottom = edgeValue(dataset, ['CollimatorLowerHorizontalEdge', 'ShutterLowerHorizontalEdge'], rows);
+  if (![left, right, top, bottom].every(Number.isFinite)) return null;
+  left = Math.max(0, Math.min(cols - 1, Math.round(left)));
+  top = Math.max(0, Math.min(rows - 1, Math.round(top)));
+  right = Math.max(0, Math.min(cols, Math.round(right)));
+  bottom = Math.max(0, Math.min(rows, Math.round(bottom)));
+  if (right - left < cols * 0.5 || bottom - top < rows * 0.5) return null;
+  if (left === 0 && top === 0 && right === cols && bottom === rows) return null;
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+function cropFrame(values, rows, cols, channels, field) {
+  const { left, top, width, height } = field;
+  const next = new Float32Array(width * height * channels);
+  for (let y = 0; y < height; y += 1) {
+    const src = ((top + y) * cols + left) * channels;
+    next.set(values.subarray(src, src + width * channels), y * width * channels);
+  }
+  return { values: next, rows: height, cols: width, channels };
+}
+
+function dropEdgeBlankColumns(values, rows, cols, pad = null) {
+  if (!values || rows < 1 || cols < 16) return { values, rows, cols };
+  const blank = new Uint8Array(cols);
+  for (let x = 0; x < cols; x += 1) {
+    let n = 0;
+    for (let y = 0; y < rows; y += 1) {
+      const v = values[y * cols + x];
+      if (v === 0 || (pad != null && v === pad)) n += 1;
+    }
+    blank[x] = n / rows > 0.95 ? 1 : 0;
+  }
+  let left = 0;
+  while (left < cols && blank[left]) left += 1;
+  let right = cols - 1;
+  while (right >= left && blank[right]) right -= 1;
+  if (left < 8) left = 0;
+  if (cols - 1 - right < 8) right = cols - 1;
+  const width = right - left + 1;
+  if (width >= cols || width < cols * 0.5) return { values, rows, cols };
+  return cropFrame(values, rows, cols, 1, { left, top: 0, width, height: rows });
+}
+
+function dropInteriorEmptyRows(values, rows, cols, pad = null) {
+  if (!values || rows < 3 || cols < 1) return { values, rows };
+  const blankFrac = new Float32Array(rows);
+  for (let y = 0; y < rows; y += 1) {
+    let blank = 0;
+    const off = y * cols;
+    for (let x = 0; x < cols; x += 1) {
+      const n = values[off + x];
+      if (n === 0 || (pad != null && n === pad)) blank += 1;
+    }
+    blankFrac[y] = blank / cols;
+  }
+  const drop = new Uint8Array(rows);
+  let y = 0;
+  let removed = 0;
+  while (y < rows) {
+    if (blankFrac[y] <= 0.95) {
+      y += 1;
+      continue;
+    }
+    let y0 = y;
+    let y1 = y;
+    while (y1 < rows && blankFrac[y1] > 0.95) y1 += 1;
+    if (y0 > 0 && y1 < rows && (y1 - y0) >= 8) {
+      while (y0 > 0 && blankFrac[y0 - 1] > 0.35) y0 -= 1;
+      while (y1 < rows && blankFrac[y1] > 0.35) y1 += 1;
+      // Keep a real edge. Do not eat the collimated border.
+      if (y0 > 0 && y1 < rows) {
+        drop.fill(1, y0, y1);
+        removed += y1 - y0;
+      }
+    }
+    y = Math.max(y + 1, y1);
+  }
+  if (!removed) return { values, rows };
+  const next = new Float32Array((rows - removed) * cols);
+  const src = [];
+  let dst = 0;
+  for (let r = 0; r < rows; r += 1) {
+    if (drop[r]) continue;
+    next.set(values.subarray(r * cols, (r + 1) * cols), dst * cols);
+    src.push(r);
+    dst += 1;
+  }
+  const keptRows = rows - removed;
+  // Soften the cut where a blank band was removed. A long blend is what
+  // drew the grey stripes; this only eases the two rows that now meet.
+  const span = 18;
+  if (keptRows > span * 4) {
+    for (let i = 1; i < src.length; i += 1) {
+      if (src[i] - src[i - 1] <= 1) continue;
+      const a = Math.max(0, i - span);
+      const b = Math.min(keptRows - 1, i + span - 1);
+      const above = next.slice(a * cols, (a + 1) * cols);
+      const below = next.slice(b * cols, (b + 1) * cols);
+      const gap = b - a;
+      for (let r = a; r <= b; r += 1) {
+        const t = (r - a) / gap;
+        const off = r * cols;
+        for (let x = 0; x < cols; x += 1) next[off + x] = above[x] * (1 - t) + below[x] * t;
+      }
+    }
+  }
+  return { values: next, rows: keptRows };
 }
 
 function toGray(dataset, frame) {
@@ -139,7 +289,7 @@ function sampleAt(values, channels, cols, rows, x, y, channel) {
   return values[(sy * cols + sx) * channels + channel];
 }
 
-function dicomToPng(buffer) {
+function renderDicom(buffer) {
   const dataset = readDataset(buffer);
   const raw = pixelBytes(dataset.PixelData);
   const frame = samples(dataset, raw);
@@ -168,7 +318,17 @@ function dicomToPng(buffer) {
       png.data[o + 3] = 255;
     }
   }
-  return PNG.sync.write(png);
+  return {
+    buffer: PNG.sync.write(png),
+    rows: frame.rows,
+    cols: frame.cols,
+    width: fit.cols,
+    height: fit.rows,
+  };
+}
+
+function dicomToPng(buffer) {
+  return renderDicom(buffer).buffer;
 }
 
 function prepareFilm(file) {
@@ -183,23 +343,18 @@ function prepareFilm(file) {
       size: file.size || buffer.length,
     };
   }
-  const png = dicomToPng(buffer);
+  const rendered = renderDicom(buffer);
+  const png = rendered.buffer;
   const display = shrinkForDisplay(png, 'image/png');
   const stored = display.shrunk ? display.buffer : png;
   const asJpeg = display.shrunk;
   const base = (name.replace(/\.dcm$/i, '') || 'xray').replace(/\.(png|jpe?g)$/i, '');
   let spacing = pixelSpacingMm(buffer);
-  if (spacing) {
-    const dataset = readDataset(buffer);
-    const rows = firstNumber(dataset.Rows, 0);
-    const cols = firstNumber(dataset.Columns, 0);
-    const fit = fittedSize(cols, rows);
-    if (fit.cols !== cols || fit.rows !== rows) {
-      spacing = [
-        spacing[0] * (rows / fit.rows),
-        spacing[1] * (cols / fit.cols),
-      ];
-    }
+  if (spacing && rendered.width && rendered.height) {
+    spacing = [
+      spacing[0] * (rendered.rows / rendered.height),
+      spacing[1] * (rendered.cols / rendered.width),
+    ];
   }
   return {
     buffer: stored,
@@ -210,4 +365,7 @@ function prepareFilm(file) {
   };
 }
 
-module.exports = { isDicomBuffer, dicomToPng, prepareFilm, fittedSize };
+module.exports = {
+  isDicomBuffer, dicomToPng, prepareFilm, fittedSize,
+  dropInteriorEmptyRows, dropEdgeBlankColumns, exposedField, cropFrame,
+};

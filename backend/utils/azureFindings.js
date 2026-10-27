@@ -57,8 +57,17 @@ Rules:
   Use a normal/negative label only when the report itself says the study is
   normal or has no acute finding. Never replace a named abnormality with a
   stock normal phrase.
-- At most 6 findings, ordered most clinically important first.
-- Group related observations into ONE finding. Never emit one finding per sentence.
+- Read the Findings section and the Impression or Conclusion section as one report.
+  A sentence that appears only under Impression is still a finding and still needs a box.
+  Also read a "Clinician-added findings" section when it is present.
+  Ignore Thinking, reasoning, and Radiologist remarks.
+- Return one finding for every distinct positive observation in those sections,
+  up to 12, most important first. A sentence that only says something is
+  absent ("no pleural effusion", "without edema", "no pneumothorax") is not
+  its own finding and is not given a box.
+- Two sentences may share one finding only when they describe the same
+  observation in the same place. Do not hide a separate positive observation
+  inside another finding's detail, and do not drop one because it was added later.
 - Never emit two findings with the same label.
 - A unilateral white-out / opaque hemithorax is ONE finding. Do not add a
   second card that only says the opposite lung is clear; put that in "detail".
@@ -76,8 +85,10 @@ Rules:
     0.90 reserved for an unmistakable sign (large pneumothorax, obvious
          device, large effusion). Never use ≥ 0.90 for a routine "normal".
   If no image is attached, omit imageSupport.
-- "severity" is "normal" for negative/normal statements, "minor" for incidental
-  findings, "significant" for anything needing follow-up.
+- "severity" is "normal" when the sentence says the anatomy is clear, normal,
+  or absent, including "no pleural effusion" and "without edema". A positive
+  abnormality, device, fracture, or measurement is never "normal": use
+  "minor" or "significant".
 - "zone" is exactly one of: ${ZONE_KEYS.join(', ')}.
   Pick the zone using the PATIENT's right/left as stated in the report, not
   the viewer's right/left. Use "both_lungs" for bilateral lung findings,
@@ -150,6 +161,17 @@ function jitteredBox(zoneKey, occurrence) {
   ];
 }
 
+function namesAbnormality(text) {
+  return /\b(effusion|pneumothorax|consolidat|opacit|atelecta|fracture|nodule|mass|edema|oedema|cardiomegaly|tube|device|white-?out|pneumonia|infiltrat|thickening|hernia|low lung volumes|volume loss|collapse|fibrosis)\b/i.test(String(text || ''));
+}
+
+function isDenial(text) {
+  const sentences = String(text || '').split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
+  if (!sentences.length) return false;
+  const denial = /\b(no|not|without|negative for|absence of|free of|no evidence of|no sign of|unremarkable|within normal limits)\b/i;
+  return sentences.every((sentence) => denial.test(sentence) || !namesAbnormality(sentence));
+}
+
 function normalise(raw, zoneCounts) {
   const label = String(raw?.label || '').trim();
   if (!label) return null;
@@ -158,9 +180,12 @@ function normalise(raw, zoneCounts) {
     (p) => p.toLowerCase() === String(raw?.pattern || '').trim().toLowerCase()
   ) || 'Other';
 
-  const severity = ['normal', 'minor', 'significant'].includes(raw?.severity)
+  let severity = ['normal', 'minor', 'significant'].includes(raw?.severity)
     ? raw.severity
     : 'minor';
+  const said = `${label} ${raw?.detail || ''} ${raw?.location || ''}`;
+  if (isDenial(said)) severity = 'normal';
+  else if (severity === 'normal' && namesAbnormality(said)) severity = 'minor';
 
   const zone = ZONE_KEYS.includes(raw?.zone) ? raw.zone : 'whole_chest';
   const visionBox = clampBbox(raw?.bbox);
@@ -302,7 +327,7 @@ function parseFindingsList(parsed) {
   const list = Array.isArray(parsed) ? parsed : parsed?.findings;
   if (!Array.isArray(list)) throw new Error('Azure OpenAI response had no findings array.');
   const zoneCounts = new Map();
-  return list.slice(0, 6).map((f) => normalise(f, zoneCounts)).filter(Boolean);
+  return list.slice(0, 12).map((f) => normalise(f, zoneCounts)).filter(Boolean);
 }
 
 function parseSummary(content) {
@@ -337,8 +362,9 @@ Return ONLY JSON of the form:
 {"findings":[{"label":"...","detail":"...","location":"...","severity":"normal|minor|significant"}]}
 
 Rules:
-- At most 6 findings, most clinically important first.
-- Group related observations into ONE finding. Never one finding per sentence.
+- Read Findings and Impression. Include an observation that appears only in Impression.
+- At most 12 findings, most clinically important first.
+- Group two sentences only when they describe the same observation.
 - "label" is a short clinical phrase under 60 characters, e.g. "Mild cardiomegaly".
 - "detail" is one plain sentence a ward clinician can read, stating what the report says.
 - "location" is the anatomy in the report's own words, or "" if it does not say.
@@ -348,6 +374,7 @@ Rules:
 - If the report describes a normal study, return a single finding saying so.`;
 
 const THINKING_BLOCK = /(^|\n)([ \t]*#*\s*Thinking\s*:?[ \t]*\n[\s\S]*?)(?=\n[ \t]*#*\s*(?:Findings|Impression|Conclusion|Radiologist remarks|Clinician-added findings)\s*:?[ \t]*\n|$)/gi;
+const REMARKS_BLOCK = /(^|\n)[ \t]*#*\s*Radiologist remarks\s*:?[ \t]*\n[\s\S]*$/i;
 
 // Same rule as src/lib/reportExport.js: the model's reasoning is never part
 // of the endorsed report.
@@ -358,6 +385,13 @@ function withoutThinking(reportText) {
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+// Findings and Impression are what the radiologist edits. Thinking and
+// remarks are not drawn on the film.
+function clinicalReportText(reportText) {
+  const text = withoutThinking(reportText).replace(REMARKS_BLOCK, '$1').replace(/\n{3,}/g, '\n\n').trim();
+  return text;
 }
 
 async function chatJson(systemPrompt, userContent, maxTokens) {
@@ -415,18 +449,19 @@ async function chatJson(systemPrompt, userContent, maxTokens) {
  * @returns {Promise<{ findings: Array<object>, diagnosis: string }>}
  */
 async function summariseFindings(reportText, image = null) {
-  const text = String(reportText || '').trim();
+  const text = clinicalReportText(reportText);
   if (!text) throw new Error('This case has no report text to summarise.');
 
   const dataUrl = toDataUrl(image);
+  const instruction = `${text}\n\nPlace a box for every distinct observation in Findings and in Impression. The attached image is this case's chest X-ray.`;
   const userContent = dataUrl
     ? [
-        { type: 'text', text: `${text}\n\nThe attached image is this case's chest X-ray. Place each bbox on the anatomy you can see.` },
+        { type: 'text', text: instruction },
         { type: 'image_url', image_url: { url: dataUrl } },
       ]
-    : text;
+    : instruction;
 
-  const parsed = await chatJson(SYSTEM_PROMPT, userContent, 1100);
+  const parsed = await chatJson(SYSTEM_PROMPT, userContent, 2000);
   const findings = parseFindingsList(parsed);
   const diagnosis = pickDiagnosis(
     parseDiagnosis(parsed?.diagnosis) || parseDiagnosis(findings[0]?.label),
@@ -457,7 +492,7 @@ async function summariseDiagnosis(reportText) {
  * @returns {Promise<Array<{label: string, detail: string, location: string, severity: string}>>}
  */
 async function summariseChartFindings(reportText) {
-  const text = withoutThinking(reportText);
+  const text = clinicalReportText(reportText);
   if (!text) throw new Error('This case has no report text to summarise.');
   const parsed = await chatJson(CHART_PROMPT, text, 700);
   const list = Array.isArray(parsed?.findings) ? parsed.findings : [];
@@ -473,7 +508,7 @@ async function summariseChartFindings(reportText) {
       location: String(raw?.location || '').trim().slice(0, 80),
       severity: ['normal', 'minor', 'significant'].includes(raw?.severity) ? raw.severity : 'minor',
     });
-    if (findings.length === 6) break;
+    if (findings.length === 12) break;
   }
   if (!findings.length) throw new Error('Azure AI did not return any findings for this report.');
   return findings;
@@ -484,6 +519,7 @@ module.exports = {
   summariseDiagnosis,
   summariseChartFindings,
   withoutThinking,
+  clinicalReportText,
   isConfigured,
   clampBbox,
   parseDiagnosis,

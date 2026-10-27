@@ -83,6 +83,13 @@ test("asks for first and last name", () => {
   assert.ok([...root.querySelectorAll("input")].some((i) => i.getAttribute("placeholder") === "Last name"));
 });
 
+test("the registration form fills the window", () => {
+  const main = root.querySelector("main");
+  assert.ok(main.className.includes("h-full"));
+  assert.ok(main.className.includes("overflow-hidden"));
+  assert.ok(main.querySelector(".md\\:grid-cols-2"), "patient and film sit side by side");
+});
+
 test("shows an Upload X-Ray drop zone", () => {
   assert.ok(root.textContent.includes("2. Upload X-Ray"));
   const zone = dropZone();

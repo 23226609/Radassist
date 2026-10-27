@@ -15,7 +15,7 @@ import { el, mount } from "../dom.js";
 import { state, setPage, toast } from "../state.js";
 import { api, clearFilmSpacingAdjust, filmSpacingAdjust } from "../api.js";
 import { svgIcon } from "./icons.js";
-import { downloadReportDocx, downloadReportPdf, previewReportPdf, applyRemarksToReport, splitReportAndRemarks, withoutThinking, restoreThinking, normalizeReportShape } from "../lib/reportExport.js";
+import { downloadReportDocx, downloadReportPdf, previewReportPdf, openPreviewWindow, applyRemarksToReport, splitReportAndRemarks, withoutThinking, restoreThinking, normalizeReportShape } from "../lib/reportExport.js";
 import { urgentBadge, patientDisplayName, doctorInCharge } from "../lib/tags.js";
 import { isGenerating, isAwaitingApprove, isAwaitingAi, statusLabel } from "../lib/caseStatus.js";
 import { forgetCases } from "../lib/records.js";
@@ -160,10 +160,18 @@ function boxKey(f) {
 // it back, but it is not drawn. Finalized cases arrive without `source`
 // (the signed report carries no AI/manual tags), so a box placed by Azure
 // or by hand is then recognised by its `bboxSource` instead.
+function deniesFinding(f) {
+  const text = `${f?.label || ""} ${f?.sentence || ""}`.replace(/\s+/g, " ").trim();
+  if (!/\b(no|without|negative for|absence of|free of|no evidence of|no sign of)\b/i.test(text)) return false;
+  const rest = text.replace(/\b(no|without|negative for|absence of|free of|no evidence of|no sign of)\b[^.]*/gi, " ");
+  return !/\b(low lung volumes|volume loss|atelecta|consolidat|pneumonia|collapse|fracture|nodule|mass|cardiomegaly|white-?out|infiltrat|fibrosis|effusion|pneumothorax|edema|oedema)\b/i.test(rest);
+}
+
 function filmBoxes(findings) {
   return (findings || []).filter((f) => {
     if (!hasBbox(f) || f.status === "rejected") return false;
     if (isDrawnBox(f)) return true;
+    if (deniesFinding(f)) return false;
     if (f.source) return f.source === "Azure" && f.severity !== "normal";
     return Boolean(f.bboxSource) && f.severity !== "normal";
   });
@@ -454,6 +462,7 @@ export async function renderReviewPage({ target }) {
   );
   let busy = false;
   let msg = "";
+  let noticeTimer = null;
   let imageSrc = null; // resolved object URL once the blob is fetched
   let showBoxes = true;
   let showMeasures = true;
@@ -516,6 +525,28 @@ export async function renderReviewPage({ target }) {
   }
 
   signal.addEventListener("abort", stopGeneratingWatch);
+
+  function clearNoticeTimer() {
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
+
+  // The green bar under the toolbar. It leaves on its own so it does not
+  // sit on the film after the radiologist has already seen it.
+  function showNotice(text) {
+    msg = text || "";
+    clearNoticeTimer();
+    if (!msg || signal.aborted || leaving) return;
+    const shown = msg;
+    noticeTimer = setTimeout(() => {
+      noticeTimer = null;
+      if (signal.aborted || leaving || msg !== shown) return;
+      msg = "";
+      document.getElementById("draft-notice")?.remove();
+    }, 5000);
+  }
+
+  signal.addEventListener("abort", clearNoticeTimer);
 
   let loadedFilmId = "";
 
@@ -642,6 +673,7 @@ export async function renderReviewPage({ target }) {
   function markUnsaved() {
     reportDirty = true;
     hintMongo("Unsaved changes. Press Save draft or Save remarks.");
+    document.getElementById("save-draft")?.classList.add("ring-2", "ring-slate-400", "ring-offset-1");
   }
 
   function measureLineEls(NS, line) {
@@ -1092,11 +1124,11 @@ export async function renderReviewPage({ target }) {
     busy = true; render();
     try {
       await persistClinicianEdits();
-      msg = "Draft saved.";
-      toast(msg);
+      showNotice("Draft saved.");
+      toast("Draft saved.");
     } catch (err) {
-      msg = err.message;
-      toast(msg);
+      showNotice(err.message);
+      toast(err.message);
     } finally { busy = false; render(); }
   }
 
@@ -1132,13 +1164,14 @@ export async function renderReviewPage({ target }) {
       await persistClinicianEdits();
       const data = await api.finalizeCase(getEffectiveCaseId());
       localCase = data.case || data;
-      msg = localCase?.chartFindingsState === "running"
+      const endorsed = localCase?.chartFindingsState === "running"
         ? "Report endorsed. Azure AI is writing the findings on the patient chart."
         : "Report finalized and approved.";
-      toast(msg);
+      showNotice(endorsed);
+      toast(endorsed);
     } catch (err) {
-      msg = err.message;
-      toast(msg);
+      showNotice(err.message);
+      toast(err.message);
     } finally { busy = false; render(); }
   }
 
@@ -1147,13 +1180,14 @@ export async function renderReviewPage({ target }) {
     render();
     try {
       const stored = await persistClinicianEdits();
-      msg = stored.status === "finalized"
+      const saved = stored.status === "finalized"
         ? "Remarks saved. The finalized report was not changed."
         : "Remarks saved and added to the report.";
-      toast(msg);
+      showNotice(saved);
+      toast(saved);
     } catch (err) {
-      msg = err.message;
-      toast(msg);
+      showNotice(err.message);
+      toast(err.message);
     } finally {
       busy = false;
       render();
@@ -1208,8 +1242,8 @@ export async function renderReviewPage({ target }) {
   }
 
   async function download(kind) {
-    const preview = kind === "preview" ? window.open("", "_blank") : null;
-    if (preview?.document) preview.document.title = "Preparing report…";
+    const preview = kind === "preview" ? openPreviewWindow() : null;
+    if (kind === "preview" && !preview) toast("Pop-up blocked — the PDF will download instead. Allow pop-ups for a preview window.");
     busy = true;
     render();
     try {
@@ -1270,6 +1304,7 @@ export async function renderReviewPage({ target }) {
 
     const btn = "inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50";
     const btnLight = `${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`;
+    const unsavedDraft = bodyDirty || remarksDirty || boxesDirty || measuresDirty;
     const listMax = boxes.length > 0 && measures.length > 0 ? "max-h-28" : "max-h-36";
 
     const root = el(
@@ -1347,11 +1382,6 @@ export async function renderReviewPage({ target }) {
             onClick: shareReport,
           }, svgIcon("share", { size: 14 }), localCase.shared || localCase.shareToken ? "Copy share link" : "Share"),
           edit && el("button", {
-            class: btnLight,
-            disabled: busy,
-            onClick: saveDraft,
-          }, "Save draft"),
-          edit && el("button", {
             class: `${btn} bg-green-600 text-white hover:bg-green-700`,
             disabled: busy,
             onClick: finalize,
@@ -1366,7 +1396,7 @@ export async function renderReviewPage({ target }) {
         )
       ),
 
-      msg && el("p", { class: "shrink-0 rounded bg-green-50 px-3 py-1.5 text-sm text-green-700" }, msg),
+      msg && el("p", { id: "draft-notice", class: "shrink-0 rounded bg-green-50 px-3 py-1.5 text-sm text-green-700" }, msg),
       awaitingAi && el("p", { class: "shrink-0 rounded bg-violet-50 px-3 py-1.5 text-sm text-violet-900" },
         "The film is registered. The draft report is generated automatically and will appear here as pending approve."
       ),
@@ -1602,7 +1632,16 @@ export async function renderReviewPage({ target }) {
         ),
 
         el("section", { class: "flex min-h-0 flex-col gap-3" },
-          el("div", { class: "card flex min-h-0 flex-1 flex-col !p-3", id: "report-panel" },
+          el("div", { class: "flex min-h-0 flex-1 flex-col" },
+            edit && el("div", { class: "mb-2 flex justify-end" },
+              el("button", {
+                id: "save-draft",
+                class: `${btn} bg-slate-900 px-3.5 py-2 text-sm text-white shadow-sm hover:bg-slate-700 ${unsavedDraft ? "ring-2 ring-slate-400 ring-offset-1" : ""}`,
+                disabled: busy,
+                onClick: saveDraft,
+              }, svgIcon("save", { size: 16 }), "Save draft")
+            ),
+            el("div", { class: "card flex min-h-0 flex-1 flex-col !p-3", id: "report-panel" },
             el("h2", { class: "shrink-0 text-base font-bold text-slate-900" }, "Report"),
             edit
               ? el("textarea", {
@@ -1619,6 +1658,7 @@ export async function renderReviewPage({ target }) {
             edit && el("p", { class: "mt-1 shrink-0 text-xs text-slate-500" },
               "Save draft keeps your edits and Azure adds boxes for new findings. Boxes you drew, resized or deleted stay as you left them."
             )
+          )
           ),
           el("div", { class: "card shrink-0 !p-3" },
             el("div", { class: "flex flex-wrap items-center justify-between gap-2" },

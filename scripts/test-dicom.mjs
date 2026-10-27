@@ -4,7 +4,8 @@ import { createRequire } from "node:module";
 
 const require = createRequire(new URL("../backend/package.json", import.meta.url));
 const { PNG } = require("pngjs");
-const { prepareFilm, dicomToPng, fittedSize } = require("./utils/dicom.js");
+const dcmjs = require("dcmjs");
+const { prepareFilm, dicomToPng, fittedSize, dropInteriorEmptyRows, dropEdgeBlankColumns, exposedField } = require("./utils/dicom.js");
 const { shrinkForDisplay } = require("./utils/displayFilm.js");
 
 const DICOM = Buffer.from(
@@ -64,6 +65,87 @@ test("a large film is stored as a smaller jpeg", () => {
   const decoded = jpeg.decode(display.buffer);
   assert.equal(decoded.width, 1600);
   assert.ok(display.colScale > 1);
+});
+
+function filmWithBlackSide({ collimator = false, black = 12, cols = 40, rows = 20 } = {}) {
+  const pixels = new Uint16Array(rows * cols);
+  for (let y = 0; y < rows; y += 1) {
+    for (let x = black; x < cols; x += 1) pixels[y * cols + x] = 3000;
+  }
+  const dataset = {
+    _meta: { TransferSyntaxUID: { Value: ["1.2.840.10008.1.2.1"] } },
+    SOPClassUID: "1.2.840.10008.5.1.4.1.1.1.1",
+    SOPInstanceUID: "1.2.3.4.5",
+    StudyInstanceUID: "1.2.3.4",
+    SeriesInstanceUID: "1.2.3.4.6",
+    Modality: "DX",
+    Rows: rows,
+    Columns: cols,
+    BitsAllocated: 16,
+    BitsStored: 12,
+    HighBit: 11,
+    PixelRepresentation: 0,
+    SamplesPerPixel: 1,
+    PhotometricInterpretation: "MONOCHROME2",
+    WindowCenter: 2048,
+    WindowWidth: 4096,
+    RescaleSlope: 1,
+    RescaleIntercept: 0,
+    PixelData: pixels.buffer,
+  };
+  if (collimator) {
+    dataset.CollimatorShape = "RECTANGULAR";
+    dataset.CollimatorLeftVerticalEdge = black;
+    dataset.CollimatorRightVerticalEdge = cols;
+    dataset.CollimatorUpperHorizontalEdge = 0;
+    dataset.CollimatorLowerHorizontalEdge = rows;
+  }
+  return Buffer.from(dcmjs.data.datasetToBuffer(dataset));
+}
+
+test("a rectangular collimator keeps the exposed field and drops the black detector", () => {
+  const field = exposedField({
+    CollimatorShape: "RECTANGULAR",
+    CollimatorLeftVerticalEdge: 616,
+    CollimatorRightVerticalEdge: 3056,
+    CollimatorUpperHorizontalEdge: 0,
+    CollimatorLowerHorizontalEdge: 2540,
+  }, 2544, 3056);
+  assert.deepEqual(field, { left: 616, top: 0, right: 3056, bottom: 2540, width: 2440, height: 2540 });
+  assert.equal(exposedField({ CollimatorLeftVerticalEdge: -1, CollimatorRightVerticalEdge: 10, CollimatorUpperHorizontalEdge: 0, CollimatorLowerHorizontalEdge: 10 }, 10, 10), null);
+  const image = PNG.sync.read(dicomToPng(filmWithBlackSide({ collimator: true })));
+  assert.equal(image.width, 28);
+  assert.equal(image.height, 20);
+  assert.ok(image.data[0] > 100, "the stored film must start at the chest, not the black detector");
+});
+
+test("a thick black side bar is left out even when the collimator tag is missing", () => {
+  const image = PNG.sync.read(dicomToPng(filmWithBlackSide({ collimator: false })));
+  assert.equal(image.width, 28);
+  assert.ok(image.data[0] > 100);
+  const cols = 20;
+  const rows = 4;
+  const values = new Float32Array(rows * cols);
+  for (let y = 0; y < rows; y += 1) {
+    for (let x = 4; x < cols; x += 1) values[y * cols + x] = 100;
+  }
+  const kept = dropEdgeBlankColumns(values, rows, cols);
+  assert.equal(kept.cols, cols, "a thin dark edge stays");
+});
+
+test("interior full-width zero rows are left out, edge collimation stays", () => {
+  const cols = 4;
+  const rows = 12;
+  const values = new Float32Array(rows * cols);
+  for (let x = 0; x < cols; x += 1) values[1 * cols + x] = 10 + x;
+  for (let y = 2; y <= 9; y += 1) values.fill(0, y * cols, (y + 1) * cols);
+  for (let x = 0; x < cols; x += 1) values[10 * cols + x] = 50 + x;
+  const dropped = dropInteriorEmptyRows(values, rows, cols);
+  assert.equal(dropped.rows, 4);
+  assert.deepEqual([...dropped.values.slice(0, 4)], [0, 0, 0, 0]);
+  assert.deepEqual([...dropped.values.slice(4, 8)], [10, 11, 12, 13]);
+  assert.deepEqual([...dropped.values.slice(8, 12)], [50, 51, 52, 53]);
+  assert.deepEqual([...dropped.values.slice(12, 16)], [0, 0, 0, 0]);
 });
 
 test("prepareFilm stores a png and leaves a jpeg alone", () => {

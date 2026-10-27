@@ -115,13 +115,16 @@ async function availability(fromDay, toDay, now = new Date()) {
 }
 
 // Why this slot cannot be booked, or '' when it can.
-async function slotProblem(day, time, now = new Date()) {
+// An urgent patient can still be added when the day or the time is full.
+// A closed day or a time that has passed stays closed.
+async function slotProblem(day, time, now = new Date(), { urgent = false } = {}) {
   if (!isValidDay(day)) return 'Choose a day on the calendar.';
   if (!TIME_RE.test(time || '') || !SLOT_TIMES.includes(time)) return 'Choose one of the listed times.';
   const [info] = await availability(day, day, now);
   if (info.status === 'closed') return 'The X-ray room is closed that day.';
   const slot = info.slots.find((s) => s.time === time);
   if (slot.status === 'past') return 'That time has already passed.';
+  if (urgent) return '';
   if (info.booked >= DAILY_QUOTA) return `The daily quota of ${DAILY_QUOTA} X-rays is full for ${day}.`;
   if (slot.status === 'full') return `${time} on ${day} is fully booked.`;
   return '';
@@ -132,11 +135,14 @@ async function slotProblem(day, time, now = new Date()) {
 async function overbooked(caseId, day, time) {
   const rows = await Case.find(
     { ...OWNED, scheduledAt: { $gte: slotInstant(day, '00:00'), $lt: slotInstant(addDays(day, 1), '00:00') } },
-    { caseId: 1, scheduledAt: 1 }
+    { caseId: 1, scheduledAt: 1, urgent: 1 }
   ).sort({ _id: 1 }).lean();
-  const dayIndex = rows.findIndex((r) => r.caseId === caseId);
+  const self = rows.find((r) => r.caseId === caseId);
+  if (self?.urgent) return '';
+  const routine = rows.filter((r) => !r.urgent);
+  const dayIndex = routine.findIndex((r) => r.caseId === caseId);
   if (dayIndex >= DAILY_QUOTA) return `The daily quota of ${DAILY_QUOTA} X-rays is full for ${day}.`;
-  const sameSlot = rows.filter((r) => localParts(r.scheduledAt).time === time);
+  const sameSlot = routine.filter((r) => localParts(r.scheduledAt).time === time);
   if (sameSlot.findIndex((r) => r.caseId === caseId) >= SLOT_CAPACITY) return `${time} on ${day} was just taken. Choose another time.`;
   return '';
 }

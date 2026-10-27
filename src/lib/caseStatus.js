@@ -47,7 +47,7 @@ export function worklistLabel(c = {}) {
   if (stage === "endorsed") return "Endorsed";
   if (isGenerating(c)) return "Generating";
   if (stage === "draft") return "Pending approve";
-  return "Outstanding";
+  return "Generating";
 }
 
 export function statusLabel(s, c) {

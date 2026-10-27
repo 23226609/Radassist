@@ -117,6 +117,131 @@ def _looks_like_dicom(image_path: str) -> bool:
         return False
 
 
+def _edge_value(dataset, names, default):
+    for name in names:
+        value = getattr(dataset, name, None)
+        if value not in (None, ""):
+            return _first_float(value, default)
+    return default
+
+
+def _exposed_field(dataset, rows, cols):
+    """Column and row range a viewer shows. Outside it the detector is black."""
+    shape = str(getattr(dataset, "CollimatorShape", "") or getattr(dataset, "ShutterShape", "") or "").upper()
+    names = (
+        "CollimatorLeftVerticalEdge",
+        "CollimatorRightVerticalEdge",
+        "CollimatorUpperHorizontalEdge",
+        "CollimatorLowerHorizontalEdge",
+        "ShutterLeftVerticalEdge",
+        "ShutterRightVerticalEdge",
+        "ShutterUpperHorizontalEdge",
+        "ShutterLowerHorizontalEdge",
+    )
+    tagged = any(getattr(dataset, name, None) not in (None, "") for name in names)
+    if not tagged and shape != "RECTANGULAR":
+        return None
+    left = _edge_value(dataset, ("CollimatorLeftVerticalEdge", "ShutterLeftVerticalEdge"), 0)
+    right = _edge_value(dataset, ("CollimatorRightVerticalEdge", "ShutterRightVerticalEdge"), cols)
+    top = _edge_value(dataset, ("CollimatorUpperHorizontalEdge", "ShutterUpperHorizontalEdge"), 0)
+    bottom = _edge_value(dataset, ("CollimatorLowerHorizontalEdge", "ShutterLowerHorizontalEdge"), rows)
+    if None in (left, right, top, bottom):
+        return None
+    left = max(0, min(cols - 1, int(round(left))))
+    top = max(0, min(rows - 1, int(round(top))))
+    right = max(0, min(cols, int(round(right))))
+    bottom = max(0, min(rows, int(round(bottom))))
+    if right - left < cols * 0.5 or bottom - top < rows * 0.5:
+        return None
+    if left == 0 and top == 0 and right == cols and bottom == rows:
+        return None
+    return left, top, right, bottom
+
+
+def _drop_edge_blank_columns(arr, pad=None):
+    """Drop a thick black bar on the left or right edge of the detector."""
+    import numpy as np
+
+    if arr.ndim != 2 or arr.shape[1] < 16:
+        return arr
+    rows, cols = arr.shape
+    if pad is None:
+        blank = (arr == 0).mean(axis=0) > 0.95
+    else:
+        blank = ((arr == 0) | (arr == pad)).mean(axis=0) > 0.95
+    left = 0
+    while left < cols and blank[left]:
+        left += 1
+    right = cols - 1
+    while right >= left and blank[right]:
+        right -= 1
+    if left < 8:
+        left = 0
+    if cols - 1 - right < 8:
+        right = cols - 1
+    width = right - left + 1
+    if width >= cols or width < cols * 0.5:
+        return arr
+    return arr[:, left:right + 1]
+
+
+def _drop_interior_empty_rows(arr, pad=None):
+    """Leave out full-width zero rows in the middle of the film.
+
+    MIMIC-CXR sets burned-in text to black. Those rows are not part of the
+    film a viewer shows. Collimation at the top and bottom stays.
+    """
+    import numpy as np
+
+    if arr.ndim != 2 or arr.shape[0] < 3:
+        return arr
+    rows = arr.shape[0]
+    blank = arr == 0
+    if pad is not None:
+        blank = blank | (arr == pad)
+    frac = blank.mean(axis=1)
+    drop = np.zeros(rows, dtype=bool)
+    y = 0
+    while y < rows:
+        if frac[y] <= 0.95:
+            y += 1
+            continue
+        y0 = y
+        y1 = y
+        while y1 < rows and frac[y1] > 0.95:
+            y1 += 1
+        if y0 > 0 and y1 < rows and (y1 - y0) >= 8:
+            while y0 > 0 and frac[y0 - 1] > 0.35:
+                y0 -= 1
+            while y1 < rows and frac[y1] > 0.35:
+                y1 += 1
+            if y0 > 0 and y1 < rows:
+                drop[y0:y1] = True
+        y = max(y + 1, y1)
+    if not drop.any():
+        return arr
+    kept = arr[~drop]
+    src = np.flatnonzero(~drop)
+    span = 18
+    if kept.shape[0] <= span * 4:
+        return kept
+    out = kept.copy()
+    for i in range(1, len(src)):
+        if src[i] - src[i - 1] <= 1:
+            continue
+        a = max(0, i - span)
+        b = min(out.shape[0] - 1, i + span - 1)
+        if b <= a:
+            continue
+        above = out[a].copy()
+        below = out[b].copy()
+        gap = b - a
+        for r in range(a, b + 1):
+            t = (r - a) / gap
+            out[r] = above * (1.0 - t) + below * t
+    return out
+
+
 def _first_float(value, default=None):
     if value is None or value == "":
         return default
@@ -151,6 +276,13 @@ def _render_dicom(image_path: str) -> str:
     rgb = arr.ndim == 3 and arr.shape[-1] in (3, 4)
     if not rgb:
         arr = arr.astype("float32")
+        field = _exposed_field(dataset, arr.shape[0], arr.shape[1])
+        if field is not None:
+            left, top, right, bottom = field
+            arr = arr[top:bottom, left:right]
+        pad = _first_float(getattr(dataset, "PixelPaddingValue", None), None)
+        arr = _drop_edge_blank_columns(arr, pad)
+        arr = _drop_interior_empty_rows(arr, pad)
         slope = _first_float(getattr(dataset, "RescaleSlope", 1), 1.0)
         intercept = _first_float(getattr(dataset, "RescaleIntercept", 0), 0.0)
         arr = arr * slope + intercept

@@ -160,7 +160,7 @@ click(buttonNamed(root, "Confirm booking"));
 await tick();
 await tick();
 test("Confirm books that day and time", () => {
-  assert.deepEqual(requested, { patientId: "PT-2026-0018", day: OPEN_DAY, time: "09:30" });
+  assert.deepEqual(requested, { patientId: "PT-2026-0018", day: OPEN_DAY, time: "09:30", urgent: false });
   assert.equal(root.querySelector("#book-xray"), null, "dialog closes after booking");
 });
 
@@ -177,7 +177,7 @@ test("the chart shows the booked day, time and status", () => {
   api.listCases = async () => ({
     cases: [
       { caseId: "R2", patientId: "PT-2", name: "Later Patient", status: "requested", scheduledAt: "2030-01-02T02:00:00.000Z", requestedByName: "Dr. Alex Wong" },
-      { caseId: "R1", patientId: "PT-1", name: "Sooner Patient", status: "requested", scheduledAt: "2030-01-01T01:30:00.000Z", requestedByName: "Dr. Alex Wong" },
+      { caseId: "R1", patientId: "PT-1", name: "Sooner Patient", status: "requested", urgent: true, scheduledAt: "2030-01-01T01:30:00.000Z", requestedByName: "Dr. Alex Wong" },
     ],
   });
   state.user = { role: "technician", userId: "t1", name: "Jamie Lee" };
@@ -188,9 +188,71 @@ test("the chart shows the booked day, time and status", () => {
     assert.ok(q.textContent.includes("Booked for"));
     const rows = [...q.querySelectorAll("tbody tr")].map((r) => r.textContent);
     assert.ok(rows[0].includes("Sooner Patient"));
+    assert.ok(rows[0].includes("Urgent"));
+    assert.ok(!rows[1].includes("Urgent"));
     assert.ok(rows[1].includes("Later Patient"));
+    assert.ok(q.textContent.includes("1–2 of 2"));
   });
   q.remove();
+}
+
+{
+  const many = Array.from({ length: 12 }, (_, i) => ({
+    caseId: `R${i}`,
+    patientId: `PT-${i}`,
+    name: `Patient ${String(i).padStart(2, "0")}`,
+    status: "requested",
+    scheduledAt: new Date(Date.UTC(2030, 0, 1, i)).toISOString(),
+    requestedByName: "Dr. Alex Wong",
+  }));
+  api.listCases = async () => ({ cases: many });
+  const q = document.createElement("div");
+  document.body.appendChild(q);
+  await renderRequestedPage({ target: q });
+  test("the technician queue pages 10 requests at a time", () => {
+    assert.equal(q.querySelectorAll("tbody tr").length, 10);
+    assert.ok(q.textContent.includes("1–10 of 12"));
+    assert.ok(!q.textContent.includes("Patient 11"));
+    click(buttonNamed(q, "Next"));
+    assert.equal(q.querySelectorAll("tbody tr").length, 2);
+    assert.ok(q.textContent.includes("Patient 10"));
+    assert.ok(q.textContent.includes("Patient 11"));
+    assert.ok(q.textContent.includes("11–12 of 12"));
+  });
+  q.remove();
+}
+
+{
+  chart.patient.urgent = true;
+  chart.cases = chart.cases.filter((c) => c.status !== "requested");
+  requested = null;
+  state.user = { role: "doctor", userId: "d1", name: "Dr. Alex Wong" };
+  state.selectedPatientId = "PT-2026-0018";
+  await renderPatientPage({ target: root });
+  click(buttonNamed(root, "Book chest X-ray"));
+  await tick();
+  await tick();
+  test("an urgent patient can book a full day and a full time", () => {
+    assert.ok(!cell(FULL_DAY).disabled, "a full day stays open for an urgent patient");
+    assert.ok(root.querySelector("#book-xray").textContent.includes("a full day can still take the booking"));
+    click(cell(FULL_DAY));
+  });
+  const fullTimes = root.querySelector("#book-times");
+  test("a full time on that day can be chosen", () => {
+    assert.ok(fullTimes, "times for the full day");
+    const nine = fullTimes.querySelector('[data-time="09:00"]');
+    assert.ok(!nine.disabled);
+    assert.ok(nine.textContent.includes("Urgent"));
+    click(nine);
+    assert.ok(!buttonNamed(root, "Confirm booking").disabled);
+  });
+  click(buttonNamed(root, "Confirm booking"));
+  await tick();
+  await tick();
+  test("Confirm sends the booking as urgent", () => {
+    assert.deepEqual(requested, { patientId: "PT-2026-0018", day: FULL_DAY, time: "09:00", urgent: true });
+  });
+  chart.patient.urgent = false;
 }
 
 console.log("\n=== patient chart window ===");

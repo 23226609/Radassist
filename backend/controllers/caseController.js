@@ -362,7 +362,8 @@ exports.requestExam = catchAsync(async (req, res, next) => {
     ({ day, time } = xraySlots.localParts(booked));
   }
   if (!day || !time) return next(ApiError.badRequest('Choose a day and a time for the X-ray.'));
-  const problem = await xraySlots.slotProblem(day, time);
+  const urgent = req.body?.urgent === true || req.body?.urgent === 'true';
+  const problem = await xraySlots.slotProblem(day, time, new Date(), { urgent });
   if (problem) return next(ApiError.badRequest(problem));
   const scheduledAt = xraySlots.slotInstant(day, time);
 
@@ -382,6 +383,7 @@ exports.requestExam = catchAsync(async (req, res, next) => {
     reportText: '',
     findings: [],
     editLog: [],
+    urgent,
     scheduledAt,
     requestedBy: req.user.userId,
     requestedByName: req.user.name,

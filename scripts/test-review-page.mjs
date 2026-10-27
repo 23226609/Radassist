@@ -31,8 +31,8 @@ URL.createObjectURL = (blob) => {
 };
 URL.revokeObjectURL = () => {};
 let opened = null;
-window.open = (url) => {
-  opened = { url, location: {}, closed: false, close() { this.closed = true; } };
+window.open = (url, name, features) => {
+  opened = { url, name, features, location: {}, closed: false, close() { this.closed = true; }, focus() {} };
   return opened;
 };
 if (!window.location?.href) {
@@ -195,6 +195,17 @@ await test("no finding cards, and only abnormal Azure boxes on the film", () => 
   assert.deepEqual(boxLabels(), ["Bibasilar atelectasis"]);
 });
 
+await test("a sentence that only denies a disease is not drawn on the film", async () => {
+  await open("radiologist", {
+    findings: [
+      box("Low lung volumes"),
+      box("No pleural effusion or pneumothorax", "minor"),
+      box("No pulmonary vascular congestion or edema", "minor"),
+    ],
+  });
+  assert.deepEqual(boxLabels(), ["Low lung volumes"]);
+});
+
 await test("Hide boxes / Show boxes", async () => {
   await click(root.querySelector("#toggle-bboxes"));
   assert.equal(boxLabels().length, 0);
@@ -255,6 +266,26 @@ await test("Save draft with no report change does not call Azure", async () => {
   assert.ok(!calls.some((c) => c[0] === "summarise"));
 });
 
+await test("Save draft sits on the right and Draft saved leaves after 5 seconds", async () => {
+  const save = button("Save draft");
+  assert.equal(save.parentElement.nextElementSibling?.id, "report-panel", "Save draft should sit on the report box");
+  assert.ok(save.parentElement.className.includes("justify-end"), "Save draft should stay on the right");
+  assert.ok(save.className.includes("bg-slate-900"));
+  assert.ok(!save.className.includes("amber") && !save.className.includes("ha-blue"));
+  assert.ok(save.querySelector("svg"), "Save draft should show a save icon");
+  const labels = buttons().map((b) => b.textContent.replace(/\s+/g, " ").trim());
+  assert.ok(labels.indexOf("Save draft") > labels.indexOf("Mark urgent"));
+  const reportBox = root.querySelector("#report-text");
+  const original = reportBox.value;
+  type(reportBox, `${original} `);
+  assert.ok(save.className.includes("ring-2"), "unsaved edits should ring the Save draft button");
+  type(reportBox, original);
+  await click(save, 200);
+  assert.equal(root.querySelector("#draft-notice")?.textContent, "Draft saved.");
+  await tick(5200);
+  assert.equal(root.querySelector("#draft-notice"), null);
+});
+
 await test("Save remarks adds them to the report and keeps the report edit", async () => {
   calls.length = 0;
   type(root.querySelector("#remarks-box"), "Compare with old films.");
@@ -284,12 +315,14 @@ await test("Mark urgent / Remove urgent", async () => {
   assert.ok(button("Mark urgent"));
 });
 
-await test("Preview PDF saves, then shows the PDF in a new tab", async () => {
+await test("Preview PDF saves, then shows the PDF in a pop-up window", async () => {
   opened = null;
   calls.length = 0;
   downloads.length = 0;
   await click(button("Preview PDF"), 1500);
-  assert.ok(opened, "no tab opened");
+  assert.ok(opened, "no window opened");
+  assert.ok(/popup/.test(opened.features || ""), "should open a pop-up window, not a tab");
+  assert.equal(opened.name, "radassist-pdf-preview", "previews reuse one named window");
   assert.ok(calls.some((c) => c[0] === "update"), "unsaved edits were not saved first");
   assert.equal(downloads.length, 1, "no PDF produced");
   assert.equal(downloads[0].type, "application/pdf");

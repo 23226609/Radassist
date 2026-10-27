@@ -15,7 +15,7 @@ export function togglePage(selected, ids, on) {
 
 export function rowCheckbox(id, selected, onToggle) {
   return el("td", {
-    class: "w-10 p-3",
+    class: "w-8 px-1 py-1",
     onClick: (e) => e.stopPropagation(),
   },
     el("input", {
@@ -31,7 +31,7 @@ export function rowCheckbox(id, selected, onToggle) {
 
 export function headerCheckbox(ids, selected, onTogglePage) {
   const all = ids.length > 0 && ids.every((id) => selected.has(id));
-  return el("th", { class: "w-10 p-3" },
+  return el("th", { class: "w-8 px-1 py-1" },
     el("input", {
       type: "checkbox",
       class: "h-4 w-4 accent-cyan-600",

@@ -717,8 +717,32 @@ export async function downloadReportPdf(c) {
   triggerDownload(await reportPdfBlob(c), `${s.fileBase}.pdf`);
 }
 
-// `win` must be opened synchronously in the click handler; a window opened
-// after an await is blocked as a popup. Without one the PDF is downloaded.
+const PREVIEW_WINDOW = "radassist-pdf-preview";
+
+// Must be called synchronously in the click handler; a window opened after an
+// await is blocked as a pop-up. Returns null when the browser blocked it.
+export function openPreviewWindow() {
+  if (typeof window.open !== "function") return null;
+  const width = Math.min(960, (window.screen?.availWidth || 960) - 40);
+  const height = Math.min(1000, (window.screen?.availHeight || 900) - 40);
+  const left = Math.max(0, (window.screenX || 0) + ((window.outerWidth || width) - width) / 2);
+  const top = Math.max(0, (window.screenY || 0) + 30);
+  let win = null;
+  try {
+    win = window.open("", PREVIEW_WINDOW, `popup,width=${width},height=${height},left=${left},top=${top}`);
+  } catch {
+    win = null;
+  }
+  if (!win) return null;
+  try {
+    win.document.title = "Preparing report…";
+    win.document.body.innerHTML = '<p style="font:14px system-ui,sans-serif;color:#334155;padding:24px">Preparing the PDF preview…</p>';
+  } catch { /* a PDF from an earlier preview is still showing */ }
+  try { win.focus(); } catch { /* some browsers refuse focus */ }
+  return win;
+}
+
+// Without an open `win` the PDF is downloaded instead.
 export async function previewReportPdf(c, win) {
   if (!win || win.closed) {
     await downloadReportPdf(c);

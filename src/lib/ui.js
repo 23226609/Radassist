@@ -48,7 +48,6 @@ export function statusChips({ value, onChange, extra }) {
   const opts = [
     { id: "all", label: "All" },
     { id: "requested", label: "Requested" },
-    { id: "pending", label: "Outstanding" },
     { id: "pending_approve", label: "Pending approve" },
     { id: "finalized", label: "Endorsed" },
     ...(extra || []),
@@ -137,18 +136,45 @@ export function bookingWhen(iso) {
   return `${day} · ${time}`;
 }
 
-function uploadedAt(c = {}) {
-  const value = c.registeredAt || ((c.imageId || c.imageUrl) ? c.createdAt : null);
+export function registeredAt(c = {}) {
+  const value = c.registeredAt || ((c.imageId || c.imageUrl) ? c.createdAt : null) || c.createdAt;
   const time = value ? new Date(value).getTime() : 0;
   return Number.isFinite(time) ? time : 0;
 }
 
-export function sortWorklist(cases) {
+export function registeredDate(c = {}) {
+  const time = registeredAt(c);
+  if (!time) return "—";
+  const d = new Date(time);
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${month}-${day}`;
+}
+
+export function sortByRegistered(cases, dir = "desc") {
+  const sign = dir === "asc" ? 1 : -1;
   return [...(cases || [])].sort((a, b) => {
-    const urgent = Number(Boolean(b.urgent)) - Number(Boolean(a.urgent));
-    if (urgent) return urgent;
-    const recent = uploadedAt(b) - uploadedAt(a);
-    if (recent) return recent;
-    return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+    const diff = (registeredAt(a) - registeredAt(b)) * sign;
+    if (diff) return diff;
+    return String(a.caseId || a._id || "").localeCompare(String(b.caseId || b._id || ""));
   });
+}
+
+export function dateSortHeader({ label = "Reg. Date", dir = "desc", onToggle } = {}) {
+  const newest = dir !== "asc";
+  return el("button", {
+    type: "button",
+    class: "inline-flex items-center gap-1 font-semibold hover:text-ha-blue",
+    title: newest ? "Newest first. Click for oldest first." : "Oldest first. Click for newest first.",
+    "aria-label": `Sort by registration date, ${newest ? "newest first" : "oldest first"}`,
+    "data-sort": newest ? "desc" : "asc",
+    onClick: (e) => { e.stopPropagation(); onToggle?.(); },
+  },
+    label,
+    el("span", { class: "text-[10px] leading-none", "aria-hidden": "true" }, newest ? "▼" : "▲")
+  );
+}
+
+export function sortWorklist(cases) {
+  return sortByRegistered(cases, "desc");
 }

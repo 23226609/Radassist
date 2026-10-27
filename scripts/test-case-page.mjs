@@ -84,6 +84,10 @@ test("cases list shows the study", () => {
   assert.ok(listRoot.textContent.includes("Dr. Priya Nair"));
   assert.ok(listRoot.textContent.includes("Doctor"));
   assert.ok(listRoot.querySelector("#filter-my-cases"), "doctors should see My cases");
+  assert.ok(![...listRoot.querySelectorAll("aside button")].some((b) => /Outstanding/.test(b.textContent)),
+    "Outstanding queue should not be on the archive");
+  assert.ok(listRoot.querySelector("table.table-fixed"), "table should stay inside the page width");
+  assert.ok(listRoot.querySelector('[aria-label*="registration date"]'), "Reg. Date should be sortable");
   assert.ok(![...listRoot.querySelectorAll("button")].some((b) => b.textContent.trim() === "Delete"),
     "doctors should not delete cases from the list");
 });
@@ -121,7 +125,7 @@ test("cases list shows the study", () => {
 
   test("doctor in charge filter keeps that doctor's studies", () => {
     assert.equal(listRoot.querySelector("#filter-doctor")?.value, "USR-DOCTOR-0001");
-    const allChip = [...listRoot.querySelectorAll('[role="tab"]')].find((b) => b.textContent.trim() === "All");
+    const allChip = [...listRoot.querySelectorAll('[role="tab"]')].find((b) => b.firstChild?.textContent.trim() === "All");
     assert.equal(allChip?.getAttribute("aria-selected"), "true");
     assert.equal(listRoot.querySelector("#filter-my-cases")?.getAttribute("aria-selected"), "false");
     assert.ok(listRoot.textContent.includes("CASE-ALEX"));
@@ -137,7 +141,7 @@ test("cases list shows the study", () => {
 
   test("My cases keeps only studies this doctor is in charge of", () => {
     const mineChip = listRoot.querySelector("#filter-my-cases");
-    const allChip = [...listRoot.querySelectorAll('[role="tab"]')].find((b) => b.textContent.trim() === "All");
+    const allChip = [...listRoot.querySelectorAll('[role="tab"]')].find((b) => b.firstChild?.textContent.trim() === "All");
     assert.equal(mineChip?.getAttribute("aria-selected"), "true");
     assert.equal(allChip?.getAttribute("aria-selected"), "false");
     assert.ok(listRoot.textContent.includes("CASE-1"));

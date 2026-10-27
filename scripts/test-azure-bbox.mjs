@@ -5,7 +5,7 @@ import assert from "node:assert";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { clampBbox } = require("../backend/utils/azureFindings.js");
+const { clampBbox, clinicalReportText } = require("../backend/utils/azureFindings.js");
 
 let passed = 0;
 let failed = 0;
@@ -42,6 +42,30 @@ test("enforces a minimum 8% size so tiny boxes stay clickable", () => {
   const [x, y, w, h] = clampBbox([40, 40, 2, 2]);
   assert.ok(w >= 8 && h >= 8, `got ${w}x${h}`);
   assert.equal(x, 40);
+});
+
+test("Findings and Impression are sent to Azure, Thinking and remarks are not", () => {
+  const text = [
+    "Findings:",
+    "The lungs are clear.",
+    "",
+    "Thinking:",
+    "The model compared both lungs.",
+    "",
+    "Impression:",
+    "Small right pleural effusion.",
+    "",
+    "Radiologist remarks",
+    "Compare with old films.",
+  ].join("\n");
+  const clinical = clinicalReportText(text);
+  assert.ok(clinical.includes("Findings:"));
+  assert.ok(clinical.includes("The lungs are clear."));
+  assert.ok(clinical.includes("Impression:"));
+  assert.ok(clinical.includes("Small right pleural effusion."));
+  assert.ok(!/thinking/i.test(clinical));
+  assert.ok(!clinical.includes("compared both lungs"));
+  assert.ok(!clinical.includes("Compare with old films"));
 });
 
 test("rejects unusable input", () => {

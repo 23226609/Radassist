@@ -466,6 +466,23 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
     return cells;
   }
 
+  function patientNeedsUrgentFilm() {
+    const obs = (patient?.observations || []).slice(-1)[0] || {};
+    return Boolean(patient?.urgent) || reviewState(obs, heartRateDraft).level === "urgent";
+  }
+
+  function dayCanTakeBooking(info) {
+    if (!info) return false;
+    if (["open", "few"].includes(info.status)) return true;
+    return patientNeedsUrgentFilm() && info.status === "full";
+  }
+
+  function timeCanTakeBooking(slot) {
+    if (!slot) return false;
+    if (slot.status === "open") return true;
+    return patientNeedsUrgentFilm() && slot.status === "full";
+  }
+
   async function loadSlots() {
     const year = bookCursor.getFullYear();
     const month = bookCursor.getMonth();
@@ -480,8 +497,8 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
       slotDays = Object.fromEntries((data.days || []).map((d) => [d.day, d]));
       slotQuota = { daily: data.dailyQuota, perSlot: data.slotCapacity, minutes: data.slotMinutes };
       const chosen = slotDays[bookedDay];
-      if (chosen && !["open", "few"].includes(chosen.status)) bookedDay = "";
-      if (bookedTime && !slotDays[bookedDay]?.slots.some((s) => s.time === bookedTime && s.status === "open")) bookedTime = "";
+      if (chosen && !dayCanTakeBooking(chosen)) bookedDay = "";
+      if (bookedTime && !slotDays[bookedDay]?.slots.some((s) => s.time === bookedTime && timeCanTakeBooking(s))) bookedTime = "";
     } catch (err) {
       slotsError = err.message || "Could not load availability.";
     } finally {
@@ -506,7 +523,7 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
 
   function pickDay(key) {
     const info = slotDays[key];
-    if (!info || !["open", "few"].includes(info.status)) return;
+    if (!dayCanTakeBooking(info)) return;
     if (bookedDay !== key) bookedTime = "";
     bookedDay = key;
     paint();
@@ -521,7 +538,12 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
     busy = true;
     paint();
     try {
-      await api.requestExam({ patientId: patient.patientId, day: bookedDay, time: bookedTime });
+      await api.requestExam({
+        patientId: patient.patientId,
+        day: bookedDay,
+        time: bookedTime,
+        urgent: patientNeedsUrgentFilm(),
+      });
       booking = false;
       await load();
       toast(`Chest X-ray booked for ${longDay(bookedDay)} at ${bookedTime}.`);
@@ -590,7 +612,8 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
       ),
       el("p", { class: "mt-2 text-xs text-slate-600" },
         "Drag the exam onto a day, or click the day, then choose a time.",
-        slotQuota ? ` Quota: ${slotQuota.daily} X-rays a day, ${slotQuota.perSlot} per ${slotQuota.minutes}-minute slot.` : ""
+        slotQuota ? ` Quota: ${slotQuota.daily} X-rays a day, ${slotQuota.perSlot} per ${slotQuota.minutes}-minute slot.` : "",
+        patientNeedsUrgentFilm() ? " This patient is urgent, so a full day can still take the booking." : ""
       ),
       el("div", { class: "mt-2 flex flex-wrap items-center justify-between gap-2" },
         el("div", {
@@ -618,8 +641,9 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
           const key = dayKey(day);
           const info = slotDays[key];
           const chosen = key === bookedDay;
-          const bookable = info && ["open", "few"].includes(info.status);
-          const [cellCls, labelCls] = info ? DAY_STYLE[info.status] : ["border-gray-200 bg-white", "text-slate-400"];
+          const bookable = dayCanTakeBooking(info);
+          let [cellCls, labelCls] = info ? DAY_STYLE[info.status] : ["border-gray-200 bg-white", "text-slate-400"];
+          if (bookable && info?.status === "full") cellCls = cellCls.replace("cursor-not-allowed", "hover:bg-red-100");
           return el("button", {
             type: "button",
             "data-day": key,
@@ -646,11 +670,13 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
         el("div", { class: "mt-2 grid grid-cols-4 gap-1 sm:grid-cols-7" },
           ...chosenDay.slots.map((slot) => {
             const picked = slot.time === bookedTime;
-            const open = slot.status === "open";
+            const open = timeCanTakeBooking(slot);
             const tone = picked
               ? "border-ha-blue bg-ha-blue text-white"
               : open
-                ? (slot.left === 1 ? "border-amber-300 bg-white hover:bg-amber-50" : "border-emerald-300 bg-white hover:bg-emerald-50")
+                ? (slot.status === "full"
+                  ? "border-red-300 bg-white text-red-800 hover:bg-red-50"
+                  : slot.left === 1 ? "border-amber-300 bg-white hover:bg-amber-50" : "border-emerald-300 bg-white hover:bg-emerald-50")
                 : "cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400";
             return el("button", {
               type: "button",
@@ -660,7 +686,9 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
               onClick: () => { bookedTime = slot.time; paint(); },
             },
               el("div", { class: "font-bold" }, slot.time),
-              el("div", { class: "text-[10px]" }, open ? `${slot.left} of ${slot.capacity} free` : (slot.status === "full" ? "Full" : "Passed"))
+              el("div", { class: "text-[10px]" }, open
+                ? (slot.status === "full" ? "Urgent" : `${slot.left} of ${slot.capacity} free`)
+                : (slot.status === "full" ? "Full" : "Passed"))
             );
           })
         )

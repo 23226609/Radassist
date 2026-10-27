@@ -82,7 +82,7 @@ export function paintNamePreview(f) {
   }
 }
 
-export function nameFieldGroup({ f, disabled, onChange }) {
+export function nameFieldGroup({ f, disabled, onChange, middleBelow = false }) {
   function bind(key, { placeholder, id }) {
     return el("input", {
       id,
@@ -105,24 +105,29 @@ export function nameFieldGroup({ f, disabled, onChange }) {
     });
   }
 
-  return el("div", {},
-    el("div", { class: "grid gap-3 sm:grid-cols-8" },
-      el("div", { class: "sm:col-span-3" },
-        labeledField({ label: "First name", required: true, forId: "patient-first-name" },
-          bind("firstName", { id: "patient-first-name", placeholder: "First name" })
-        )
-      ),
-      el("div", { class: "sm:col-span-2" },
-        labeledField({ label: "Middle name", optional: true, forId: "patient-middle-name" },
-          bind("middleName", { id: "patient-middle-name", placeholder: "Middle name (optional)" })
-        )
-      ),
-      el("div", { class: "sm:col-span-3" },
-        labeledField({ label: "Last name", required: true, forId: "patient-last-name" },
-          bind("lastName", { id: "patient-last-name", placeholder: "Last name" })
-        )
+  const first = labeledField({ label: "First name", required: true, forId: "patient-first-name" },
+    bind("firstName", { id: "patient-first-name", placeholder: "First name" })
+  );
+  const middle = labeledField({ label: "Middle name", optional: true, forId: "patient-middle-name" },
+    bind("middleName", { id: "patient-middle-name", placeholder: "Middle name (optional)" })
+  );
+  const last = labeledField({ label: "Last name", required: true, forId: "patient-last-name" },
+    bind("lastName", { id: "patient-last-name", placeholder: "Last name" })
+  );
+  const names = middleBelow
+    ? el("div", { class: "grid grid-cols-2 gap-2" },
+        first,
+        last,
+        el("div", { class: "col-span-2" }, middle)
       )
-    ),
+    : el("div", { class: "grid gap-3 sm:grid-cols-8" },
+        el("div", { class: "sm:col-span-3" }, first),
+        el("div", { class: "sm:col-span-2" }, middle),
+        el("div", { class: "sm:col-span-3" }, last)
+      );
+
+  return el("div", {},
+    names,
     el("div", {
       class: "mt-3 flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2",
     },

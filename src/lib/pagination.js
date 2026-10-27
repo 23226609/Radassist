@@ -19,10 +19,34 @@ export function paginate(items, page, pageSize = PAGE_SIZE) {
   };
 }
 
+/**
+ * How many table rows fit in `scroller` without scrolling, measured from the
+ * rows on screen. Returns `current` when nothing can be measured (tests).
+ */
+export function fitPageSize(scroller, current, { min = 3, max = 100 } = {}) {
+  const rows = scroller?.querySelectorAll?.("tbody tr") || [];
+  const room = scroller?.clientHeight || 0;
+  if (!room || !rows.length) return current;
+  const head = scroller.querySelector("thead")?.offsetHeight || 0;
+  const rowHeight = Math.max(...[...rows].map((r) => r.offsetHeight || 0));
+  if (!rowHeight) return current;
+  return Math.min(max, Math.max(min, Math.floor((room - head - 2) / rowHeight)));
+}
+
+/** Measure now and again after layout, then call `apply` when the size changes. */
+export function scheduleFit(scroller, current, apply) {
+  const run = () => {
+    const fit = fitPageSize(scroller, current);
+    if (fit !== current) apply(fit);
+  };
+  run();
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+}
+
 export function paginationBar({ page, pages, total, from, to, onPage }) {
   if (!total) return null;
   return el("div", {
-    class: "flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-4 py-3 text-sm text-slate-600",
+    class: "flex flex-wrap items-center justify-between gap-2 px-1 py-0.5 text-xs text-slate-600",
   },
     el("p", {}, `${from}–${to} of ${total}`),
     pages > 1 && el("div", { class: "flex items-center gap-2" },

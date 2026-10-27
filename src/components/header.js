@@ -131,7 +131,9 @@ export function Shell({ onLogout }) {
   // modules column becomes a drawer behind a Menu button and the shell is
   // pinned to the window height.
   const focus = state.page === "review";
-  const main = el("div", { class: focus ? "h-full min-w-0" : "min-w-0 flex-1 overflow-auto" });
+  // Work lists and registration stay inside the window, with no page scroll.
+  const pinned = focus || state.page === "dashboard" || state.page === "cases" || state.page === "requests" || state.page === "new";
+  const main = el("div", { class: pinned ? "flex h-full min-h-0 min-w-0 flex-col" : "min-w-0 flex-1 overflow-auto" });
   const modules = sidebar({ drawer: focus });
   const backdrop = focus
     ? el("div", { id: "app-modules-backdrop", class: "absolute inset-0 z-20 hidden bg-black/30", onClick: () => toggleModules(false) })
@@ -152,7 +154,7 @@ export function Shell({ onLogout }) {
     backdrop?.classList.toggle("hidden", !open);
     menuButton?.setAttribute("aria-expanded", open ? "true" : "false");
   }
-  const root = el("div", { class: `flex ${focus ? "h-screen" : "min-h-screen"} flex-col bg-gray-200 font-sans text-sm text-slate-900` },
+  const root = el("div", { class: `flex ${pinned ? "h-screen" : "min-h-screen"} flex-col bg-gray-200 font-sans text-sm text-slate-900` },
     el("header", { class: "z-10 flex flex-wrap items-center justify-between gap-2 border-b-4 border-[#d9d3bc] bg-ha-paper p-2 text-stone-900 shadow-md" },
       el("div", { class: "flex min-w-0 items-center gap-2" },
         menuButton,
@@ -179,7 +181,7 @@ export function Shell({ onLogout }) {
     el("div", { class: "relative flex min-h-0 flex-1 overflow-hidden" },
       modules,
       backdrop,
-      el("main", { class: "min-w-0 flex-1 overflow-auto bg-gray-100 p-2 shadow-inner" }, main)
+      el("main", { class: `min-w-0 flex-1 ${pinned ? "flex min-h-0 flex-col overflow-hidden" : "overflow-auto"} bg-gray-100 p-2 shadow-inner` }, main)
     ),
     el("footer", { class: "flex justify-between gap-2 border-t border-gray-400 bg-gray-300 p-1 px-2 text-[10px] text-gray-600 sm:px-4 sm:text-xs" },
       el("span", {}, "Inpatient and X-ray simulator · demonstration data only"),

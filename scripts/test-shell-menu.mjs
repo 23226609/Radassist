@@ -86,6 +86,13 @@ test("radiologists do not see Audit log in the menu", () => {
   document.body.appendChild(nurseRoot);
   test("technicians do not see Audit log in the menu", () => {
     assert.ok([...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.includes("Requested case")));
+    state.page = "requests";
+    const { root: requestRoot } = Shell({ onLogout() {} });
+    assert.ok(requestRoot.classList.contains("h-screen"), "requested case stays inside the window");
+    state.page = "new";
+    const { root: registerRoot } = Shell({ onLogout() {} });
+    assert.ok(registerRoot.classList.contains("h-screen"), "registration stays inside the window");
+    state.page = "dashboard";
     assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.includes("Lab Orders")));
     assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.includes("Medication Chart")));
     assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.includes("X-ray Worklist")));

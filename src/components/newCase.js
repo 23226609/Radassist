@@ -7,6 +7,7 @@ import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { nameFieldsFrom } from "../lib/patientName.js";
 import { isTechnician } from "../lib/roles.js";
+import { urgentBadge } from "../lib/tags.js";
 import { startAnalysisWatch } from "../lib/analysisJob.js";
 import {
   labeledField,
@@ -18,7 +19,7 @@ import {
   searchQueryFrom,
 } from "./patientFields.js";
 
-const CONTROL = "w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-ha-blue focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100";
+const CONTROL = "w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm outline-none focus:border-ha-blue focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100";
 
 export async function renderNewCasePage({ target }) {
   const f = {
@@ -200,163 +201,175 @@ export async function renderNewCasePage({ target }) {
 
   function render() {
     const lock = locked();
+    const backTo = isTechnician(state.user) ? "requests" : "dashboard";
     const root = el(
       "main",
-      { class: "page-enter mx-auto max-w-5xl px-5 py-8" },
-      el("button", {
-        class: "mb-4 inline-flex items-center gap-1 text-slate-700 hover:text-slate-900",
-        onClick: () => setPage("dashboard"),
-      }, svgIcon("arrow-left", { size: 16 }), isTechnician(state.user) ? "Requested case" : "Work list"),
-      el("h1", { class: "text-3xl font-bold text-slate-900" }, "Registration"),
-      el("p", { class: "mt-2 text-slate-500" },
-        "Register the patient for a chest X-ray and save the film. The draft report starts as soon as the film is stored, then the radiologist reports it."
-      ),
-      requests.length ? el("label", { class: "mt-4 block text-sm font-semibold text-slate-800" },
-        "Open request",
-        el("select", {
-          class: `mt-1 ${CONTROL}`,
-          value: f.requestCaseId,
-          onChange: (e) => {
-            f.requestCaseId = e.target.value;
-            const hit = requests.find((row) => (row.caseId || row._id) === f.requestCaseId);
-            if (hit) applyPerson(hit);
-            else render();
-          },
-        },
-          el("option", { value: "" }, "No request — register a new film"),
-          ...requests.map((row) => el("option", { value: row.caseId || row._id },
-            `${row.patientId} · ${row.patientName || row.caseId} · requested`
-          ))
-        )
-      ) : null,
-
-      el("section", { class: "card mt-6" },
-        el("h2", { class: "text-lg font-bold text-slate-900" }, "1. Patient"),
-        el("div", { class: "mt-4 flex flex-wrap gap-3" },
-          el("input", {
-            class: "min-w-[12rem] flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-ha-blue focus:ring-4 focus:ring-blue-100",
-            value: f.patientId,
-            placeholder: "Patient ID (e.g. PT-2026-0001)",
-            onInput: (e) => {
-              f.patientId = e.target.value;
-              found = null;
-              search.schedule(searchQueryFrom(f));
-            },
-          }),
-          el("button", {
-            class: "rounded-xl bg-slate-900 px-4 py-2.5 font-semibold text-white hover:bg-slate-800",
-            onClick: lookup,
-          }, "Lookup")
-        ),
-        found === false ? el("p", { class: "mt-3 text-sm text-slate-500" }, "New patient — fill in details below.") : null,
-        lock
-          ? el("p", { class: "mt-3 text-sm text-green-700" },
-              `Found existing record for ${f.patientId} (filled in known details).`)
-          : null,
-        el("div", { id: "patient-matches", class: "mt-4" }),
-        el("div", { class: "mt-4" },
-          nameFieldGroup({
-            f,
-            disabled: lock,
-            onChange: () => {
-              paintNamePreview(f);
-              if (!lock) search.schedule(searchQueryFrom(f));
-            },
-          })
-        ),
-        el("div", { class: "mt-4 grid gap-4 sm:grid-cols-2" },
-          labeledField({ label: "Age", required: true, forId: "case-age" },
-            el("input", {
-              id: "case-age",
-              type: "number",
-              min: "0",
-              disabled: lock,
-              class: CONTROL,
-              placeholder: "Age",
-              value: f.age,
-              onInput: (e) => {
-                f.age = e.target.value;
-                paintNamePreview(f);
-              },
-            })
-          ),
-          labeledField({ label: "Sex", required: true },
-            sexPills({ f, disabled: lock, onChange: () => paintNamePreview(f) })
-          ),
-          el("div", { class: "sm:col-span-2" },
-            labeledField({ label: "Clinical history", optional: true, forId: "case-history" },
-              el("input", {
-                id: "case-history",
-                disabled: lock,
-                class: CONTROL,
-                placeholder: "Clinical history",
-                value: f.history,
-                onInput: (e) => (f.history = e.target.value),
-              })
+      { class: "flex h-full min-h-0 flex-col overflow-hidden bg-[#d4d0c8] p-2" },
+      el("div", { class: "flex h-full min-h-0 flex-col overflow-hidden border border-gray-500 bg-[#ece9d8] shadow-sm" },
+        el("div", { class: "flex shrink-0 items-center justify-between gap-2 border-b border-gray-400 bg-[#d4d0c8] px-2 py-1" },
+          el("div", { class: "min-w-0" },
+            el("h1", { class: "text-sm font-bold text-slate-900" }, "Registration"),
+            el("p", { class: "truncate text-[11px] text-slate-600" },
+              "Register the patient and save the film. The draft report starts once the film is stored."
             )
-          )
-        )
-      ),
-
-      el("section", { class: "card mt-4" },
-        el("h2", { class: "text-lg font-bold text-slate-900" }, "2. Upload X-Ray"),
-        el("label", {
-          id: "xray-drop",
-          class: "mt-4 flex cursor-pointer flex-col items-center rounded-xl border-2 border-dashed border-slate-300 p-8 hover:bg-slate-50",
-          dataset: { drop: "xray" },
-          onDragEnter: (e) => e.preventDefault(),
-          onDragOver,
-          onDragLeave,
-          onDrop,
-        },
-          svgIcon("image", { size: 32, class: "text-ha-blue" }),
-          el("b", { class: "mt-2" }, state.selectedFile ? state.selectedFile.name : "Drag an X-ray here, or choose DICOM, PNG, JPG, JPEG, or WebP"),
-          el("span", { class: "text-xs text-slate-500 mt-1" },
-            state.selectedFile
-              ? "Remove the film below if you want a different image, or drop another file to replace it."
-              : "DICOM, PNG, JPG, JPEG, or WebP. A DICOM film is rendered before CURV sees it."
           ),
-          el("input", { type: "file", accept: ".dcm,.png,.jpg,.jpeg,.webp,image/*,application/dicom", class: "hidden", onChange: onPickFile })
+          el("button", {
+            type: "button",
+            class: "inline-flex shrink-0 items-center gap-1 border border-gray-500 bg-[#ece9d8] px-2 py-0.5 text-[11px] font-semibold hover:bg-white",
+            onClick: () => setPage(backTo),
+          }, svgIcon("arrow-left", { size: 14 }), isTechnician(state.user) ? "Requested case" : "Work list")
         ),
-        state.selectedFile
-          ? el("div", { class: "mt-3 flex items-center gap-3" },
-              preview && !isTechnician(state.user) ? el("img", { src: preview, class: "h-28 rounded-lg grayscale" }) : null,
-              el("div", { class: "min-w-0 flex-1" },
-                el("p", { class: "truncate text-sm font-medium text-slate-800" }, state.selectedFile?.name || "Selected film"),
-                el("p", { class: "text-sm text-slate-500" },
-                  preview
-                    ? "Preview only. The original file is stored when you upload."
-                    : "DICOM selected. The pixels are rendered to a viewable film when you save, and that film is what CURV reads."
-                )
-              ),
+        requests.length ? el("label", { class: "flex shrink-0 items-center gap-2 border-b border-gray-300 bg-[#f4f7fb] px-2 py-1 text-xs font-semibold text-slate-800" },
+          "Open request",
+          requests.find((row) => (row.caseId || row._id) === f.requestCaseId)?.urgent ? urgentBadge() : null,
+          el("select", {
+            class: `min-w-0 flex-1 ${CONTROL}`,
+            value: f.requestCaseId,
+            onChange: (e) => {
+              f.requestCaseId = e.target.value;
+              const hit = requests.find((row) => (row.caseId || row._id) === f.requestCaseId);
+              if (hit) applyPerson(hit);
+              else render();
+            },
+          },
+            el("option", { value: "" }, "No request — register a new film"),
+            ...requests.map((row) => el("option", { value: row.caseId || row._id },
+              `${row.urgent ? "Urgent · " : ""}${row.patientId} · ${row.patientName || row.caseId} · requested`
+            ))
+          )
+        ) : null,
+        el("div", { class: "grid min-h-0 flex-1 grid-cols-1 gap-2 p-2 md:grid-cols-2" },
+          el("section", { class: "flex min-h-0 flex-col overflow-hidden border border-gray-400 bg-white p-2" },
+            el("h2", { class: "text-sm font-bold text-slate-900" }, "1. Patient"),
+            el("div", { class: "mt-2 flex gap-2" },
+              el("input", {
+                class: `min-w-0 flex-1 ${CONTROL}`,
+                value: f.patientId,
+                placeholder: "Patient ID (e.g. PT-2026-0001)",
+                onInput: (e) => {
+                  f.patientId = e.target.value;
+                  found = null;
+                  search.schedule(searchQueryFrom(f));
+                },
+              }),
               el("button", {
                 type: "button",
-                class: "inline-flex shrink-0 items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
-                disabled: busy,
-                onClick: (e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  clearFile();
+                class: "shrink-0 rounded border border-gray-500 bg-slate-900 px-3 py-1 text-sm font-semibold text-white hover:bg-slate-800",
+                onClick: lookup,
+              }, "Lookup")
+            ),
+            found === false ? el("p", { class: "mt-1 text-xs text-slate-500" }, "New patient — fill in details below.") : null,
+            lock
+              ? el("p", { class: "mt-1 text-xs text-green-700" },
+                  `Found existing record for ${f.patientId} (filled in known details).`)
+              : null,
+            el("div", { id: "patient-matches", class: "mt-2 max-h-24 overflow-y-auto" }),
+            el("div", { class: "mt-2 min-h-0 flex-1 overflow-y-auto" },
+              nameFieldGroup({
+                f,
+                middleBelow: true,
+                disabled: lock,
+                onChange: () => {
+                  paintNamePreview(f);
+                  if (!lock) search.schedule(searchQueryFrom(f));
                 },
-              }, svgIcon("x", { size: 16 }), "Remove")
+              }),
+              el("div", { class: "mt-2 grid gap-2 sm:grid-cols-2" },
+                labeledField({ label: "Age", required: true, forId: "case-age" },
+                  el("input", {
+                    id: "case-age",
+                    type: "number",
+                    min: "0",
+                    disabled: lock,
+                    class: CONTROL,
+                    placeholder: "Age",
+                    value: f.age,
+                    onInput: (e) => {
+                      f.age = e.target.value;
+                      paintNamePreview(f);
+                    },
+                  })
+                ),
+                labeledField({ label: "Sex", required: true },
+                  sexPills({ f, disabled: lock, onChange: () => paintNamePreview(f) })
+                ),
+                el("div", { class: "sm:col-span-2" },
+                  labeledField({ label: "Clinical history", optional: true, forId: "case-history" },
+                    el("input", {
+                      id: "case-history",
+                      disabled: lock,
+                      class: CONTROL,
+                      placeholder: "Clinical history",
+                      value: f.history,
+                      onInput: (e) => (f.history = e.target.value),
+                    })
+                  )
+                )
+              )
             )
-          : null
-      ),
-
-      el("section", { class: "card mt-4" },
-        el("h2", { class: "font-bold text-slate-900" }, "3. Upload"),
-        el("p", { class: "mt-2 text-sm text-slate-500" },
-          "The film is stored, then the draft report is generated automatically. The radiologist finds it on the work list as pending approve."
+          ),
+          el("section", { class: "flex min-h-0 flex-col overflow-hidden border border-gray-400 bg-white p-2" },
+            el("h2", { class: "text-sm font-bold text-slate-900" }, "2. Upload X-Ray"),
+            el("label", {
+              id: "xray-drop",
+              class: "mt-2 flex min-h-0 flex-1 cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-slate-300 px-3 py-3 text-center hover:bg-slate-50",
+              dataset: { drop: "xray" },
+              onDragEnter: (e) => e.preventDefault(),
+              onDragOver,
+              onDragLeave,
+              onDrop,
+            },
+              svgIcon("image", { size: 28, class: "text-ha-blue" }),
+              el("b", { class: "mt-1 text-sm" }, state.selectedFile ? state.selectedFile.name : "Drag an X-ray here, or choose DICOM, PNG, JPG, JPEG, or WebP"),
+              el("span", { class: "mt-1 text-xs text-slate-500" },
+                state.selectedFile
+                  ? "Drop another file to replace it, or remove it below."
+                  : "DICOM, PNG, JPG, JPEG, or WebP. A DICOM film is rendered before CURV sees it."
+              ),
+              el("input", { type: "file", accept: ".dcm,.png,.jpg,.jpeg,.webp,image/*,application/dicom", class: "hidden", onChange: onPickFile })
+            ),
+            state.selectedFile
+              ? el("div", { class: "mt-2 flex shrink-0 items-center gap-2" },
+                  preview && !isTechnician(state.user) ? el("img", { src: preview, class: "h-14 rounded grayscale" }) : null,
+                  el("div", { class: "min-w-0 flex-1" },
+                    el("p", { class: "truncate text-sm font-medium text-slate-800" }, state.selectedFile?.name || "Selected film"),
+                    el("p", { class: "truncate text-xs text-slate-500" },
+                      preview
+                        ? "Preview only. The original file is stored when you upload."
+                        : "DICOM selected. The pixels are rendered to a viewable film when you save, and that film is what CURV reads."
+                    )
+                  ),
+                  el("button", {
+                    type: "button",
+                    class: "inline-flex shrink-0 items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
+                    disabled: busy,
+                    onClick: (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      clearFile();
+                    },
+                  }, svgIcon("x", { size: 14 }), "Remove")
+                )
+              : null
+          )
         ),
-        busy && el("div", { class: "my-3 h-2 overflow-hidden rounded bg-slate-200" },
-          el("div", { class: "h-2 bg-ha-blue transition-all", style: { width: `${progress}%` } })
-        ),
-        statusMsg && el("p", { class: "mb-2 text-xs text-slate-500" }, statusMsg),
-        el("button", {
-          class: "mt-3 inline-flex items-center gap-2 rounded-xl bg-ha-blue px-4 py-2.5 font-semibold text-white hover:bg-[#074f85] disabled:opacity-60",
-          disabled: busy,
-          onClick: analyze,
-        }, busy ? "Saving…" : "Save with film")
+        el("div", { class: "flex shrink-0 items-center justify-between gap-3 border-t border-gray-400 bg-[#f7f7f7] px-2 py-1.5" },
+          el("div", { class: "min-w-0" },
+            el("p", { class: "truncate text-[11px] text-slate-600" },
+              "The film is stored, then the draft report is generated. The radiologist finds it as pending approve."
+            ),
+            busy && el("div", { class: "mt-1 h-1.5 overflow-hidden rounded bg-slate-200" },
+              el("div", { class: "h-1.5 bg-ha-blue transition-all", style: { width: `${progress}%` } })
+            ),
+            statusMsg && el("p", { class: "text-[11px] text-slate-500" }, statusMsg)
+          ),
+          el("button", {
+            type: "button",
+            class: "inline-flex shrink-0 items-center gap-2 rounded bg-ha-blue px-3 py-1.5 text-sm font-semibold text-white hover:bg-[#074f85] disabled:opacity-60",
+            disabled: busy,
+            onClick: analyze,
+          }, busy ? "Saving…" : "Save with film")
+        )
       ),
       uploadError && el("div", {
         class: "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4",

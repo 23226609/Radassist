@@ -69,7 +69,8 @@ const cases = Array.from({ length: PAGE_SIZE + 1 }, (_, i) => ({
   caseId: `CASE-${String(i + 1).padStart(2, "0")}`,
   patientId: `PT-${String(i + 1).padStart(2, "0")}`,
   status: "pending_approve",
-  createdAt: "2026-09-13T00:00:00.000Z",
+  createdAt: `2026-09-${String(13 + i).padStart(2, "0")}T00:00:00.000Z`,
+  registeredAt: `2026-09-${String(13 + i).padStart(2, "0")}T00:00:00.000Z`,
   diagnosis: `Finding ${i + 1}`,
   createdByName: i % 2 ? "Dr. Priya Nair" : "Dr. Alex Wong",
 }));
@@ -87,13 +88,16 @@ await renderDashboardPage({ target: root });
 test("dashboard table shows one page of rows", () => {
   const rows = root.querySelectorAll("tbody tr");
   assert.equal(rows.length, PAGE_SIZE);
-  assert.ok(root.textContent.includes("PT-01"));
-  assert.ok(root.textContent.includes("Finding 1"));
+  assert.ok(root.textContent.includes("PT-11"), "newest registration should be first");
+  assert.ok(root.textContent.includes("Finding 11"));
   assert.ok(root.textContent.includes("Uploaded by"));
   assert.ok(root.textContent.includes("Dr. Alex Wong"));
-  assert.ok(!root.textContent.includes("PT-11"));
+  assert.ok(!root.textContent.includes("PT-01"));
   assert.ok(root.textContent.includes(`1–${PAGE_SIZE} of ${cases.length}`));
   assert.ok(root.textContent.includes("Page 1 of 2"));
+  assert.ok(![...root.querySelectorAll("aside button")].some((b) => /Outstanding/.test(b.textContent)),
+    "Outstanding queue should not be on the worklist");
+  assert.ok(root.querySelector("table.table-fixed"), "table should stay inside the page width");
 });
 
 const next = [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === "Next");
@@ -103,10 +107,22 @@ next.dispatchEvent(new window.Event("click"));
 test("next page shows the remaining rows", () => {
   const rows = root.querySelectorAll("tbody tr");
   assert.equal(rows.length, 1);
-  assert.ok(root.textContent.includes("PT-11"));
-  assert.ok(root.textContent.includes("Finding 11"));
-  assert.ok(!root.textContent.includes("PT-01"));
+  assert.ok(root.textContent.includes("PT-01"));
+  assert.ok(root.textContent.includes("Finding 1"));
+  assert.ok(!root.textContent.includes("PT-11"));
   assert.ok(root.textContent.includes(`11–11 of ${cases.length}`));
+});
+
+const dateHead = root.querySelector('[aria-label*="registration date"]');
+assert.ok(dateHead, "Reg. Date should be sortable");
+dateHead.dispatchEvent(new window.Event("click"));
+
+test("Reg. Date sort flips to oldest first", () => {
+  const sorted = root.querySelector('[aria-label*="registration date"]');
+  assert.equal(sorted?.getAttribute("data-sort"), "asc");
+  const first = root.querySelector("tbody tr")?.textContent || "";
+  assert.ok(first.includes("PT-01"), "oldest registration should move to the top");
+  assert.ok(!root.textContent.includes("PT-11"));
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -118,7 +118,7 @@ Stored in `cases`. One study / one film.
 - Share: `shareToken` (set when someone shares an endorsed report)
 - Patient-chart findings (endorsed cases only): `chartFindings[]` (`label`, `detail`, `location`, `severity` `normal` \| `minor` \| `significant`), `chartFindingsState` (`''` not requested \| `running` \| `done` \| `failed` \| `unavailable` Azure not configured), `chartFindingsAt`, `chartFindingsError`. These are separate from `findings[]` (the film boxes) and are never written into the report
 
-Work-list labels: **Requested**, **Outstanding**, **Generating**, **Pending approve**, **Endorsed**. The left queue calls a draft **Partially endorsed** and a locked report **Fully endorsed**, matching the RIS slide. Stored status for an endorsed report is still `finalized`.
+Work-list labels: **Requested**, **Generating**, **Pending approve**, **Endorsed**. The left queue calls a draft **Partially endorsed** and a locked report **Fully endorsed**, matching the RIS slide. Stored status for an endorsed report is still `finalized`.
 
 A **finding** is one box on the film: `label`, `bbox` `[left, top, width, height]` in percent, `sentence`, `severity` (`normal` boxes are not drawn), `status`, `source` (`Azure` or `manual`), and `bboxSource`:
 
@@ -209,7 +209,7 @@ Backend:
 
 ### 5. Radiologist: work list and endorse
 
-Open **X-ray Worklist**. **Reg. Date** is the day the technician saved the film. A request with no film yet shows **—**. Outstanding films that are still running show **Generating**, and the list updates on its own when the draft is ready. When CURV finishes they show **Pending approve**. The left queue filters All work, Outstanding, Partially endorsed, Fully endorsed, Requested, and Urgent attention.
+Open **X-ray Worklist**. **Reg. Date** is the day the technician saved the film. A request with no film yet shows **—**. Films that are still running show **Generating**, and the list updates on its own when the draft is ready. When CURV finishes they show **Pending approve**. Click **Reg. Date** to sort newest or oldest first. The left queue filters All work, Partially endorsed, Fully endorsed, Requested, and Urgent attention.
 
 `POST /api/cases/:id/analyze` is the re-run path after a draft exists. It is not required to produce the first draft.
 

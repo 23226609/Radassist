@@ -33,7 +33,7 @@ async function test(name, fn) {
   }
 }
 
-const book = (caseId, day, time) => rows.push({ caseId, scheduledAt: slots.slotInstant(day, time) });
+const book = (caseId, day, time, urgent = false) => rows.push({ caseId, urgent, scheduledAt: slots.slotInstant(day, time) });
 // Thursday 22 Oct 2026, 11:10 in Hong Kong.
 const now = new Date('2026-10-22T03:10:00Z');
 
@@ -99,6 +99,22 @@ const now = new Date('2026-10-22T03:10:00Z');
     assert.match(await slots.slotProblem('2026-13-40', '10:00', now), /day/);
     assert.match(await slots.slotProblem('2026-10-23', '10:15', now), /listed times/);
     assert.match(await slots.slotProblem('2026-10-25', '10:00', now), /closed/);
+  });
+
+  await test('an urgent patient can still be added when the day is full', async () => {
+    rows = [];
+    ['09:00', '09:00', '09:30', '09:30', '10:00'].forEach((t, i) => book(`Q${i}`, '2026-10-23', t));
+    assert.equal(await slots.slotProblem('2026-10-23', '15:00', now, { urgent: true }), '');
+    assert.match(await slots.slotProblem('2026-10-23', '15:00', now), /daily quota/);
+    assert.match(await slots.slotProblem('2026-10-22', '10:00', now, { urgent: true }), /passed/);
+    assert.match(await slots.slotProblem('2026-10-25', '10:00', now, { urgent: true }), /closed/);
+    rows = [];
+    book('A', '2026-10-23', '15:00');
+    book('B', '2026-10-23', '15:00');
+    book('RUSH', '2026-10-23', '15:00', true);
+    book('LATE', '2026-10-23', '15:00');
+    assert.equal(await slots.overbooked('RUSH', '2026-10-23', '15:00'), '');
+    assert.match(await slots.overbooked('LATE', '2026-10-23', '15:00'), /just taken/);
   });
 
   await test('the later of two racing bookings for the last place loses', async () => {
