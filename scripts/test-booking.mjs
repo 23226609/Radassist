@@ -12,6 +12,16 @@ globalThis.Node = window.Node;
 globalThis.Event = window.Event;
 globalThis.CustomEvent = window.CustomEvent;
 globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
+for (const Ctor of [window.HTMLSelectElement, window.HTMLInputElement, window.HTMLOptionElement, window.HTMLTextAreaElement]) {
+  const proto = Ctor?.prototype;
+  if (proto && !Object.getOwnPropertyDescriptor(proto, "value")?.set) {
+    Object.defineProperty(proto, "value", {
+      configurable: true,
+      get() { return this.getAttribute("value") ?? this.textContent ?? ""; },
+      set(v) { this.setAttribute("value", String(v)); },
+    });
+  }
+}
 Object.defineProperty(window, "location", {
   configurable: true,
   value: { href: "http://localhost:5173/#/review/CASE-1", origin: "http://localhost:5173", search: "" },
@@ -304,12 +314,34 @@ console.log("\n=== patient chart window ===");
     assert.ok(!buttonNamed(win, "Delete"), "no Delete in the window");
     assert.ok(!buttonNamed(win, "New case"), "no New case in the window");
     assert.ok(!buttonNamed(win, "Enquiry of Patient Master Index"));
+    assert.ok(!buttonNamed(win, "Sepsis monitor"), "the window menu replaces the sepsis button");
+    assert.ok(!buttonNamed(win, "Care notes"), "the window menu replaces the care notes button");
+    assert.ok(!buttonNamed(win, "X-ray Worklist"));
+    assert.ok(!buttonNamed(win, "Case archive"));
   });
   const study = [...win.querySelectorAll("button")].find((b) => b.textContent.includes("CASE-1") && b.textContent.includes("Mild"));
   click(study);
   test("a study clicked in the window opens in the main window", () => {
     assert.equal(opener.location.hash, "#/cases/CASE-1");
     assert.ok(opener.focused);
+  });
+  const popped = [];
+  window.open = (...args) => { popped.push(args); return { focus() {} }; };
+  click(buttonNamed(win, "Sepsis Monitor"));
+  await tick();
+  await tick();
+  test("Sepsis Monitor stays inside the chart window", () => {
+    assert.equal(popped.length, 0);
+    assert.ok(win.textContent.includes("Enter / Update Vitals"));
+    assert.ok(win.textContent.includes("MODULES"));
+  });
+  click(buttonNamed(win, "Nursing / Care Notes"));
+  await tick();
+  await tick();
+  test("Care notes stay inside the chart window", () => {
+    assert.equal(popped.length, 0);
+    assert.ok(win.textContent.includes("New Progress Note"));
+    assert.ok(!win.textContent.includes("Enter / Update Vitals"));
   });
   win.remove();
   delete window.opener;

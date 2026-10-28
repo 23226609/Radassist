@@ -14,7 +14,7 @@ import { CASES_CHANGED } from "../lib/analysisJob.js";
 import { forgetPatients } from "../lib/records.js";
 import { canEditPatient, canEditReport, canUpload, canRequestExam, isTechnician, isAdmin as roleIsAdmin } from "../lib/roles.js";
 import { reviewState, cmsAssessmentStamp } from "./clinical.js";
-import { sepsisButton, careNotesButton, PATIENT_UPDATED } from "../lib/chartWindow.js";
+import { sepsisButton, careNotesButton, PATIENT_UPDATED, isChartWindow } from "../lib/chartWindow.js";
 
 const CHART_POLL_MS = 4000;
 const CARE_NOTES_SHOWN = 3;
@@ -36,6 +36,39 @@ const DAY_STYLE = {
 
 function longDay(key) {
   return new Date(`${key}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+}
+
+const FREQ_LABEL = {
+  PRN: "when needed",
+  OD: "once a day",
+  BD: "twice a day",
+  TDS: "three times a day",
+  QID: "four times a day",
+  QDS: "four times a day",
+  NOCTE: "at night",
+  MANE: "in the morning",
+};
+
+function medicineOrders(record) {
+  return (Array.isArray(record?.medOrders) ? record.medOrders : [])
+    .filter((row) => String(row?.drug || row?.name || "").trim())
+    .slice()
+    .sort((a, b) => String(b?.at || "").localeCompare(String(a?.at || "")));
+}
+
+function ordersAsText(orders) {
+  return orders.map((row) => [row.drug || row.name, row.dose, row.frequency].filter(Boolean).join(" ")).join("; ");
+}
+
+function sameMedicineList(text, orders) {
+  const norm = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const left = norm(text);
+  return Boolean(left) && left === norm(ordersAsText(orders));
+}
+
+function freqLabel(value) {
+  const raw = String(value || "").trim();
+  return FREQ_LABEL[raw.toUpperCase()] || raw;
 }
 
 function dayLabel(info) {
@@ -722,8 +755,8 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
 
     const root = el(
       "div",
-      { class: "flex h-full min-h-[70vh] flex-col p-2" },
-      el("div", { class: "relative flex h-full flex-col border-2 border-white border-b-gray-500 border-r-gray-500 bg-[#d4d0c8] p-2 shadow-sm" },
+      { class: "flex h-full min-h-0 flex-1 flex-col overflow-hidden" },
+      el("div", { class: "relative flex h-full min-h-0 flex-col overflow-hidden border-2 border-white border-b-gray-500 border-r-gray-500 bg-[#d4d0c8] p-1.5 shadow-sm" },
         el("div", { class: "flex items-center justify-between border-b border-[#d9d3bc] bg-ha-paper px-2 py-1 font-bold text-stone-900" },
           embedded
             ? el("span", { class: "text-sm" }, "Patient chart")
@@ -732,8 +765,8 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
                 onClick: () => setPage("patients"),
               }, "Enquiry of Patient Master Index"),
           el("div", { class: "flex flex-wrap items-center justify-end gap-2" },
-            patient && sepsisButton(patient, { onSaved: chartSaved }),
-            patient && careNotesButton(patient, { onSaved: chartSaved }),
+            patient && !isChartWindow() && sepsisButton(patient, { onSaved: chartSaved }),
+            patient && !isChartWindow() && careNotesButton(patient, { onSaved: chartSaved }),
             !embedded && isAdmin() && el("button", {
               class: "rounded border border-stone-400 bg-white px-2 py-0.5 text-[11px] font-semibold text-stone-900 hover:bg-stone-100",
               disabled: busy,
@@ -759,49 +792,47 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
         ),
         error
           ? el("p", { class: "p-4 text-red-700" }, error)
-          : el("div", { class: "mt-2 flex-1 space-y-3 overflow-auto border-2 border-gray-500 bg-slate-100 p-3" },
-              el("header", { class: "rounded-lg border border-slate-200 bg-white p-4" },
-                el("div", { class: "flex flex-wrap justify-between gap-2" },
-                  el("div", {},
-                    el("p", { class: "font-mono font-bold text-ha-blue" }, "Hospital patient number ", patient?.patientId || ""),
-                    el("h2", { class: "mt-1 text-xl font-bold" },
-                      patientDisplayName(patient) || "Patient",
-                      patient?.urgent ? urgentBadge({ class: "ml-2" }) : null
-                    ),
-                    el("p", { class: "text-xs text-gray-600" },
-                      [patient?.age && `${patient.age} years`, patient?.sex].filter(Boolean).join(" · ") || "No demographics yet"
-                    )
+          : el("div", { class: "mt-1 flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden border-2 border-gray-500 bg-slate-100 p-1.5" },
+              el("header", { class: "flex shrink-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 rounded border border-slate-200 bg-white px-3 py-1.5" },
+                el("div", { class: "flex min-w-0 flex-wrap items-baseline gap-x-2" },
+                  el("h2", { class: "text-base font-bold" },
+                    patientDisplayName(patient) || "Patient",
+                    patient?.urgent ? urgentBadge({ class: "ml-2" }) : null
+                  ),
+                  el("span", { class: "font-mono text-xs font-bold text-ha-blue" }, patient?.patientId || ""),
+                  el("span", { class: "text-xs text-gray-600" },
+                    [patient?.age && `${patient.age} years`, patient?.sex].filter(Boolean).join(" · ") || "No demographics yet"
                   )
                 ),
-                el("dl", { class: "mt-4 grid gap-3 text-xs sm:grid-cols-2" },
-                  el("div", {}, el("dt", { class: "font-bold text-gray-500" }, "Clinical history"), el("dd", { class: "mt-1" }, historyDraft || "No history recorded.")),
-                  el("div", {}, el("dt", { class: "font-bold text-gray-500" }, "Prior medicines"), el("dd", { class: "mt-1" }, medicinesDraft || "No medicines recorded.")),
-                  el("div", {}, el("dt", { class: "font-bold text-gray-500" }, "Lab test results"), el("dd", { class: "mt-1" }, labResultsDraft || "No lab results recorded.")),
-                  el("div", {}, el("dt", { class: "font-bold text-gray-500" }, "Latest diagnosis"), el("dd", { class: "mt-1" }, patient?.lastDiagnosis || "No diagnosis yet."))
+                el("p", { class: "text-xs text-slate-600" },
+                  "Latest diagnosis: ",
+                  el("span", { class: "font-semibold text-slate-900" }, patient?.lastDiagnosis || "No diagnosis yet.")
                 )
               ),
               (() => {
                 const obs = (patient?.observations || []).slice(-1)[0] || {};
                 const review = reviewState(obs, heartRateDraft);
                 const stamp = cmsAssessmentStamp(obs.at);
-                const tile = (label, value) => el("article", { class: "rounded border border-slate-200 bg-slate-50 p-3" },
-                  el("p", { class: "text-xs text-gray-500" }, label),
-                  el("p", { class: "text-lg font-bold" }, value || "—")
+                const tile = (label, value) => el("article", { class: "rounded border border-slate-200 bg-slate-50 px-2 py-1" },
+                  el("p", { class: "text-[10px] text-gray-500" }, label),
+                  el("p", { class: "text-sm font-bold leading-tight" }, value || "—")
                 );
-                return el("section", { class: "rounded-lg border border-slate-200 bg-white p-4" },
-                  el("h3", { class: "flex items-center gap-2 font-bold" }, "Health metrics and trends"),
+                return el("section", { class: "shrink-0 rounded border border-slate-200 bg-white px-2 py-1.5" },
                   review.level !== "none"
-                    ? el("div", {
+                    ? el("p", {
                         role: "status",
                         class: review.level === "urgent"
-                          ? "my-3 rounded border border-red-300 bg-red-50 p-2 text-xs text-red-900"
-                          : "my-3 rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900",
+                          ? "mt-1 rounded border border-red-300 bg-red-50 px-2 py-1 text-xs text-red-900"
+                          : "mt-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-900",
                       },
                         el("strong", {}, review.title),
-                        stamp ? el("span", {}, " · ", stamp) : null,
-                        el("div", { class: "mt-1 font-bold" }, review.reasons.join("; "), ". Record a new assessment."))
+                        stamp ? ` · ${stamp}` : "",
+                        " · ",
+                        review.reasons.join("; "),
+                        ". Record a new assessment."
+                      )
                     : null,
-                  el("div", { class: "mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3" },
+                  el("div", { class: "mt-1 grid grid-cols-3 gap-1 sm:grid-cols-6" },
                     tile("Blood pressure", obs.sbp ? `${obs.sbp} mmHg` : "—"),
                     tile("Heart rate", obs.hr ? `${obs.hr} bpm` : (heartRateDraft || "—")),
                     tile("Respiratory rate", obs.rr ? `${obs.rr} breaths/min` : "—"),
@@ -812,85 +843,95 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
                 );
               })(),
 
-              el("div", { class: "grid gap-3 lg:grid-cols-3" },
-                el("section", { class: "rounded border border-gray-200 p-3" },
-                  el("h2", { class: "text-sm font-bold text-slate-900" }, "Prior medicines"),
-                  edit
-                    ? el("textarea", {
-                        class: "input mt-2 min-h-[88px]",
-                        rows: 3,
-                        placeholder: "Medicines taken before…",
-                        onInput: (e) => { medicinesDraft = e.target.value; },
-                      }, medicinesDraft)
-                    : el("p", { class: "mt-2 whitespace-pre-wrap text-sm" }, medicinesDraft || "No medicines recorded.")
-                ),
-                el("section", { class: "rounded border border-gray-200 p-3" },
-                  el("h2", { class: "text-sm font-bold text-slate-900" }, "Heart rate"),
-                  edit
-                    ? el("input", {
-                        class: "input mt-2",
-                        placeholder: "e.g. 78 bpm",
-                        value: heartRateDraft,
-                        onInput: (e) => { heartRateDraft = e.target.value; },
-                      })
-                    : el("p", { class: "mt-2 text-sm" }, heartRateDraft || "Not recorded.")
-                ),
-                el("section", { class: "rounded border border-gray-200 p-3" },
-                  el("h2", { class: "text-sm font-bold text-slate-900" }, "Lab test results"),
-                  edit
-                    ? el("textarea", {
-                        class: "input mt-2 min-h-[88px]",
-                        rows: 3,
-                        placeholder: "Lab results…",
-                        onInput: (e) => { labResultsDraft = e.target.value; },
-                      }, labResultsDraft)
-                    : el("p", { class: "mt-2 whitespace-pre-wrap text-sm" }, labResultsDraft || "No lab results recorded.")
-                )
-              ),
-
-              el("div", { class: "grid gap-3 lg:grid-cols-2" },
-                el("section", { class: "rounded border border-gray-200 p-3" },
-                  el("h2", { class: "text-sm font-bold text-slate-900" }, "Clinical history"),
+              el("div", { class: "grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden sm:grid-cols-2" },
+              el("div", { class: "flex min-h-0 flex-col gap-2 overflow-auto" },
+              (() => {
+                const orders = medicineOrders(patient);
+                const taken = String(medicinesDraft || "").trim();
+                const showTaken = (edit && !taken) || (taken && !sameMedicineList(taken, orders));
+                return el("section", { class: "shrink-0 rounded border border-gray-200 bg-white p-3" },
+                  el("h2", { class: "text-sm font-bold text-slate-900" }, "Medicines"),
+                  el("div", { class: "mt-2 space-y-2" },
+                    showTaken ? el("div", {},
+                      el("h3", { class: "text-xs font-bold text-slate-500" }, "Taken before"),
+                      edit
+                        ? el("textarea", {
+                            id: "patient-medicines",
+                            class: "input mt-1 h-14 resize-none text-sm",
+                            rows: 2,
+                            placeholder: "Medicines the patient was already taking…",
+                            onInput: (e) => { medicinesDraft = e.target.value; },
+                          }, medicinesDraft)
+                        : el("p", { class: "mt-1 text-sm leading-5" }, taken)
+                    ) : null,
+                    el("div", {},
+                      el("h3", { class: "text-xs font-bold text-slate-500" }, "Given in hospital"),
+                      orders.length
+                        ? el("ul", { class: "mt-1 space-y-0.5 text-sm leading-5" },
+                            ...orders.map((row) => {
+                              const detail = [row.route, freqLabel(row.frequency), row.prescribedBy].filter(Boolean).join(" · ");
+                              return el("li", {},
+                                el("span", { class: "font-semibold text-slate-900" }, [row.drug || row.name, row.dose].filter(Boolean).join(" · ")),
+                                detail ? el("span", { class: "text-slate-600" }, " · ", detail) : null
+                              );
+                            })
+                          )
+                        : el("p", { class: "mt-1 text-sm text-slate-500" }, "No hospital medicines recorded.")
+                    )
+                  )
+                );
+              })(),
+                el("section", { class: "flex min-h-[6rem] flex-1 flex-col overflow-hidden rounded border border-gray-200 bg-white p-3" },
+                  el("h2", { class: "shrink-0 text-sm font-bold text-slate-900" }, "Clinical history"),
                   edit
                     ? el("textarea", {
                         id: "patient-history",
-                        class: "input mt-2 min-h-[120px]",
-                        rows: 5,
+                        class: "input mt-2 min-h-0 flex-1 resize-none text-sm",
+                        rows: 3,
                         placeholder: "Relevant history for this patient…",
                         onInput: (e) => { historyDraft = e.target.value; },
                       }, historyDraft)
-                    : el("p", { class: "mt-2 whitespace-pre-wrap text-sm" }, historyDraft || "No history recorded.")
+                    : el("p", { class: "mt-2 min-h-0 flex-1 overflow-auto text-sm leading-5" }, historyDraft || "No history recorded.")
                 ),
-                el("section", { class: "rounded border border-gray-200 p-3" },
-                  el("h2", { class: "text-sm font-bold text-slate-900" }, "Diagnosis"),
-                  patient?.lastDiagnosis
-                    ? el("p", { class: "mt-2 font-semibold" }, patient.lastDiagnosis)
-                    : el("p", { class: "mt-2 text-slate-400" }, "No diagnosis yet."),
-                  cases.length > 1 && el("ul", { class: "mt-3 space-y-2 text-sm text-slate-600" },
-                    ...cases.map((c) =>
-                      el("li", {},
-                        el("button", {
-                          class: "text-left hover:text-ha-blue",
-                          onClick: () => showCase(c.caseId),
-                        },
-                          c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : "Study",
-                          " · ",
-                          c.diagnosis || "No diagnosis",
-                          el("span", { class: "ml-2 text-slate-400" }, statusLabel(c.status))
-                        )
-                      )
-                    )
-                  )
+                el("section", { class: "shrink-0 rounded border border-gray-200 bg-white p-3" },
+                  el("h2", { class: "text-sm font-bold text-slate-900" }, "Lab test results"),
+                  edit
+                    ? el("textarea", {
+                        class: "input mt-2 h-14 resize-none text-sm",
+                        rows: 2,
+                        placeholder: "Lab results…",
+                        onInput: (e) => { labResultsDraft = e.target.value; },
+                      }, labResultsDraft)
+                    : el("p", { class: "mt-1 text-sm leading-5" }, labResultsDraft || "No lab results recorded.")
+                ),
+                edit ? el("label", { class: "flex shrink-0 items-center gap-2 rounded border border-gray-200 bg-white px-3 py-2 text-sm" },
+                  el("span", { class: "shrink-0 font-bold text-slate-900" }, "Heart rate"),
+                  el("input", {
+                    class: "input",
+                    placeholder: "e.g. 78 bpm",
+                    value: heartRateDraft,
+                    onInput: (e) => { heartRateDraft = e.target.value; },
+                  })
+                ) : null,
+                el("section", { class: "shrink-0 rounded border border-gray-200 bg-white p-3" },
+                  el("h2", { class: "text-sm font-bold text-slate-900" }, "Remarks"),
+                  edit
+                    ? el("textarea", {
+                        id: "patient-remarks",
+                        class: "input mt-2 h-14 resize-none text-sm",
+                        rows: 2,
+                        placeholder: "Chart notes. These are not written into a report.",
+                        onInput: (e) => { remarksDraft = e.target.value; },
+                      }, remarksDraft)
+                    : el("p", { id: "patient-remarks", class: "mt-1 text-sm leading-5" }, remarksDraft || "No remarks have been added.")
                 )
               ),
 
-              !isTechnician(state.user) && el("section", { id: "patient-findings", class: "rounded border border-gray-200 p-3" },
-                el("div", { class: "flex flex-wrap items-baseline justify-between gap-2" },
-                  el("h2", { class: "text-sm font-bold text-slate-900" }, "Findings"),
-                  el("span", { class: "text-[11px] text-slate-500" }, "Written by Azure AI from each endorsed report")
-                ),
+              el("div", { class: "flex min-h-0 flex-col gap-2 overflow-hidden" },
+              !isTechnician(state.user) && el("section", { id: "patient-findings", class: "shrink-0 overflow-auto rounded border border-gray-200 bg-white p-3" },
+                el("h2", { class: "text-sm font-bold text-slate-900" }, "Findings"),
                 endorsed.length === 0
-                  ? el("p", { class: "mt-2 text-slate-400" }, "Findings appear here after a radiologist endorses a report.")
+                  ? el("p", { class: "mt-1 text-sm text-slate-400" }, "Findings appear here after a radiologist endorses a report.")
                   : el("div", { class: "mt-2 space-y-2" }, ...endorsed.map(chartFindingsBlock))
               ),
 
@@ -898,43 +939,32 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
                 const notes = (patient?.careNotes || []).slice().reverse();
                 if (!notes.length) return null;
                 const shown = allCareNotes ? notes : notes.slice(0, CARE_NOTES_SHOWN);
-                return el("section", { id: "patient-care-notes", class: "rounded border border-gray-200 p-3" },
-                  el("div", { class: "flex flex-wrap items-baseline justify-between gap-2" },
+                return el("section", { id: "patient-care-notes", class: "flex min-h-0 flex-1 flex-col overflow-hidden rounded border border-gray-200 bg-white p-3" },
+                  el("div", { class: "flex shrink-0 items-baseline justify-between gap-2" },
                     el("h2", { class: "text-sm font-bold text-slate-900" }, `Care notes (${notes.length})`),
                     careNotesButton(patient, {
                       onSaved: chartSaved,
                       label: "Open Nursing / Care Notes",
-                      className: "text-[11px] font-semibold text-ha-blue hover:underline",
+                      className: "text-xs font-semibold text-ha-blue hover:underline",
                     })
                   ),
-                  el("ul", { class: "mt-2 divide-y divide-slate-100" },
-                    ...shown.map((row) => el("li", { class: "py-2 text-sm" },
-                      el("p", { class: "font-semibold text-slate-900" }, row.author || "—", row.role ? ` · ${row.role}` : ""),
-                      el("p", { class: "text-xs text-slate-500" }, [row.category, cmsAssessmentStamp(row.at)].filter(Boolean).join(" · ")),
-                      el("p", { class: "mt-1 whitespace-pre-wrap text-slate-700" }, row.note || "—")
+                  el("ul", { class: "mt-1 min-h-0 flex-1 divide-y divide-slate-100 overflow-auto" },
+                    ...shown.map((row) => el("li", { class: "py-1.5 text-sm leading-5" },
+                      el("p", { class: "text-slate-800" },
+                        el("span", { class: "font-semibold" }, row.author || "—"),
+                        row.role ? el("span", { class: "text-slate-500" }, ` · ${row.role}`) : null,
+                        el("span", { class: "text-slate-500" }, " · ", [row.category, cmsAssessmentStamp(row.at)].filter(Boolean).join(" · "))
+                      ),
+                      el("p", { class: "text-slate-700" }, row.note || "—")
                     ))
                   ),
                   notes.length > CARE_NOTES_SHOWN && el("button", {
                     type: "button",
-                    class: "mt-1 text-xs font-semibold text-ha-blue hover:underline",
+                    class: "mt-1 shrink-0 text-left text-xs font-semibold text-ha-blue hover:underline",
                     onClick: () => { allCareNotes = !allCareNotes; paint(); },
                   }, allCareNotes ? "Show latest only" : `Show all ${notes.length} notes`)
                 );
               })(),
-
-              el("section", { class: "rounded border border-gray-200 p-3" },
-                el("h2", { class: "text-sm font-bold text-slate-900" }, "Remarks"),
-                edit
-                  ? el("textarea", {
-                      id: "patient-remarks",
-                      class: "input mt-2 min-h-[120px]",
-                      rows: 5,
-                      placeholder: "Notes about this patient. These stay on the chart and are not written into a report.",
-                      onInput: (e) => { remarksDraft = e.target.value; },
-                    }, remarksDraft)
-                  : el("p", { id: "patient-remarks", class: "mt-2 whitespace-pre-wrap text-sm" }, remarksDraft || "No remarks have been added."),
-                el("p", { class: "mt-2 text-xs text-slate-500" }, "Patient remarks are saved on the chart only. They do not change any study report.")
-              ),
 
               booking && canRequestExam(state.user) && el("div", {
                 class: "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4",
@@ -944,52 +974,53 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
                 onClick: (e) => { if (e.target === e.currentTarget) { booking = false; paint(); } },
               },
               bookingDialog()),
-              el("section", { class: "overflow-hidden rounded border border-gray-200" },
-                el("div", { class: "border-b bg-gray-50 px-3 py-2" },
-                  el("h2", { class: "text-sm font-bold" }, "X-ray requests")
-                ),
-                cases.filter((c) => c.status === "requested").length === 0
-                  ? el("p", { class: "p-3 text-slate-400" }, "No open chest X-ray request.")
-                  : el("ul", { class: "divide-y" },
-                      ...cases.filter((c) => c.status === "requested").map((c) => {
-                        const due = c.scheduledAt && new Date(c.scheduledAt).getTime() <= Date.now();
-                        return el("li", { class: "flex items-center justify-between gap-3 px-3 py-3" },
-                          el("div", {},
-                            el("div", { class: "font-semibold" }, "Chest X-ray"),
-                            el("p", { class: "text-sm text-slate-600" },
-                              c.scheduledAt ? `Booked for ${bookingWhen(c.scheduledAt)}` : (c.createdAt ? `Requested ${new Date(c.createdAt).toLocaleString()}` : "Requested"),
-                              c.requestedByName ? ` · ${c.requestedByName}` : ""
-                            )
-                          ),
-                          el("span", {
-                            class: `rounded px-2 py-0.5 text-xs font-semibold ${due ? "bg-amber-100 text-amber-900" : "bg-sky-100 text-sky-900"}`,
-                          }, due ? "Due · waiting for film" : "Booked · waiting for film")
-                        );
-                      })
-                    )
+              cases.some((c) => c.status === "requested") && el("section", { class: "shrink-0 overflow-hidden rounded border border-gray-200 bg-white" },
+                el("h2", { class: "border-b bg-gray-50 px-3 py-1.5 text-sm font-bold" }, "X-ray requests"),
+                el("ul", { class: "divide-y text-sm" },
+                  ...cases.filter((c) => c.status === "requested").map((c) => {
+                    const due = c.scheduledAt && new Date(c.scheduledAt).getTime() <= Date.now();
+                    return el("li", { class: "flex items-center justify-between gap-3 px-3 py-1.5" },
+                      el("p", { class: "min-w-0 truncate" },
+                        el("span", { class: "font-semibold" }, "Chest X-ray"),
+                        el("span", { class: "text-slate-600" },
+                          " · ",
+                          c.scheduledAt ? `Booked for ${bookingWhen(c.scheduledAt)}` : (c.createdAt ? `Requested ${new Date(c.createdAt).toLocaleString()}` : "Requested"),
+                          c.requestedByName ? ` · ${c.requestedByName}` : ""
+                        )
+                      ),
+                      el("span", {
+                        class: `shrink-0 rounded px-2 py-0.5 text-xs font-semibold ${due ? "bg-amber-100 text-amber-900" : "bg-sky-100 text-sky-900"}`,
+                      }, due ? "Due · waiting for film" : "Booked · waiting for film")
+                    );
+                  })
+                )
               ),
-              el("section", { class: "overflow-hidden rounded border border-gray-200" },
-                el("div", { class: "border-b bg-gray-50 px-3 py-2" },
-                  el("h2", { class: "text-sm font-bold" }, "Studies")
-                ),
+              el("section", { class: "shrink-0 overflow-hidden rounded border border-gray-200 bg-white" },
+                el("h2", { class: "border-b bg-gray-50 px-3 py-1.5 text-sm font-bold" }, "Studies"),
                 cases.filter((c) => c.status !== "requested").length === 0
-                  ? el("p", { class: "p-3 text-slate-400" }, "No studies yet.")
+                  ? el("p", { class: "px-3 py-2 text-sm text-slate-400" }, "No studies yet.")
                   : el("ul", { class: "divide-y" },
                       ...cases.filter((c) => c.status !== "requested").map((c) =>
                         el("li", {},
                           el("button", {
-                            class: "flex w-full items-center justify-between gap-3 px-3 py-3 text-left hover:bg-slate-50",
+                            class: "flex w-full items-center gap-3 px-3 py-1.5 text-left text-sm hover:bg-slate-50",
                             onClick: () => showCase(c.caseId),
                           },
-                            el("div", {},
-                              el("div", { class: "font-semibold" }, c.caseId, c.urgent ? urgentBadge({ class: "ml-2" }) : null),
-                              el("p", { class: "text-sm text-slate-600" }, c.diagnosis || "No diagnosis")
+                            el("span", { class: "shrink-0 font-mono text-xs text-slate-500" },
+                              c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : "Study"
                             ),
-                            el("span", { class: "text-xs text-slate-500" }, statusLabel(c.status, c))
+                            el("span", { class: "min-w-0 flex-1 truncate font-semibold" },
+                              c.caseId,
+                              c.urgent ? urgentBadge({ class: "ml-2" }) : null,
+                              el("span", { class: "font-normal text-slate-600" }, " · ", c.diagnosis || "No diagnosis")
+                            ),
+                            el("span", { class: "shrink-0 text-xs text-slate-500" }, statusLabel(c.status, c))
                           )
                         )
                       )
                     )
+              )
+              )
               )
             )
       )

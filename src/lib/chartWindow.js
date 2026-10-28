@@ -5,9 +5,11 @@
 
 import { el, mount } from "../dom.js";
 import { state, subscribe, toast } from "../state.js";
+import { svgIcon } from "../components/icons.js";
 import { renderMonitorPage, renderNotesPage } from "../components/clinical.js";
 import { renderPatientPage } from "../components/patients.js";
 import { patientDisplayName } from "./tags.js";
+import { roleOf } from "./roles.js";
 
 export const PATIENT_UPDATED = "radassist-patient-updated";
 
@@ -29,13 +31,14 @@ const VIEWS = {
   patient: {
     title: "Patient chart",
     windowName: "radassist-patient",
-    width: 980,
+    width: 1360,
     pages: ["review"],
     render: renderPatientPage,
   },
 };
 
 let current = null;
+let chartShell = null;
 
 function windowParams() {
   try {
@@ -59,11 +62,14 @@ export function isChartWindow() {
   return Boolean(VIEWS[windowParams().get("view")]);
 }
 
-function windowFeatures(width) {
-  const height = Math.min(900, (window.screen?.availHeight || 900) - 40);
-  const left = Math.max(0, (window.screenX || 0) + (window.outerWidth || width) - width - 20);
-  const top = Math.max(0, (window.screenY || 0) + 60);
-  return `popup,width=${width},height=${height},left=${left},top=${top}`;
+function windowBox(width, { fill = false } = {}) {
+  const availW = window.screen?.availWidth || width;
+  const availH = window.screen?.availHeight || 900;
+  const w = Math.min(width, Math.max(640, availW - 40));
+  const h = fill ? Math.max(640, availH - 40) : Math.min(900, Math.max(640, availH - 40));
+  const left = Math.max(0, (window.screenX || 0) + (window.outerWidth || w) - w - 20);
+  const top = Math.max(0, window.screenY || 0);
+  return { w, h, features: `popup,width=${w},height=${h},left=${left},top=${top}` };
 }
 
 /**
@@ -73,36 +79,117 @@ function windowFeatures(width) {
 export function openChartWindow(view, { patientId, name = "" } = {}) {
   const spec = VIEWS[view];
   if (!spec || !patientId || typeof window.open !== "function") return false;
+  const box = windowBox(spec.width, { fill: view === "patient" });
   let win = null;
   try {
-    win = window.open(chartWindowUrl(view, patientId, name), spec.windowName, windowFeatures(spec.width));
+    win = window.open(chartWindowUrl(view, patientId, name), spec.windowName, box.features);
   } catch {
     win = null;
   }
   if (!win) return false;
-  try { win.focus(); } catch { /* some browsers refuse focus */ }
+  try {
+    if (view === "patient") win.resizeTo(box.w, box.h);
+    win.focus();
+  } catch { /* some browsers refuse resize or focus */ }
   return true;
 }
 
-// The page inside the separate window.
+function openInMain(hash) {
+  try {
+    const main = window.opener;
+    if (main && !main.closed) {
+      main.location.hash = hash;
+      main.focus();
+      return;
+    }
+  } catch { /* opener navigated elsewhere */ }
+}
+
+function chartMenu(active) {
+  const here = [
+    { view: "patient", icon: "users", label: "Patient Master" },
+    { view: "sepsis", icon: "activity", label: "Sepsis Monitor" },
+    ...(roleOf(state.user) === "doctor"
+      ? [{ hash: "#/labs", icon: "file-text", label: "Lab Orders & Results" }]
+      : []),
+    { view: "notes", icon: "edit", label: "Nursing / Care Notes" },
+  ];
+  const item = (entry) => {
+    const on = entry.view && entry.view === active;
+    return el("button", {
+      type: "button",
+      class: `flex w-full items-center gap-2 border-b border-gray-300 border-l-4 px-3 py-2 text-left text-sm ${
+        on
+          ? "border-l-ha-blue bg-blue-100 font-semibold text-ha-blue"
+          : "border-l-transparent text-gray-700 hover:bg-gray-300"
+      }`,
+      onClick: () => (entry.view ? showChartView(entry.view) : openInMain(entry.hash)),
+    }, svgIcon(entry.icon, { size: 16 }), entry.label);
+  };
+  return el("aside", {
+    class: "flex w-52 shrink-0 flex-col overflow-y-auto border-r border-gray-400 bg-gray-200",
+    "aria-label": "Modules",
+  },
+    el("div", { class: "border-b border-gray-400 bg-gray-300 p-2 text-xs font-bold text-gray-700" }, "MODULES"),
+    el("nav", { class: "flex-1 p-1" },
+      ...here.map(item)
+    )
+  );
+}
+
+function savedInWindow(patient) {
+  try {
+    window.opener?.postMessage({ type: PATIENT_UPDATED, patient }, window.location.origin);
+  } catch { /* opener closed */ }
+}
+
+// The page inside the separate window. The module menu switches the chart,
+// the sepsis monitor, and care notes in this same window.
 export function renderChartWindow({ target }) {
   const params = windowParams();
-  const spec = VIEWS[params.get("view")];
-  const patientId = params.get("patientId") || "";
-  const name = params.get("name") || "";
+  chartShell = {
+    target,
+    view: params.get("view") || "patient",
+    patientId: params.get("patientId") || "",
+    name: params.get("name") || "",
+  };
+  paintChartWindow();
+}
+
+export function showChartView(view) {
+  if (!chartShell || !VIEWS[view]) return;
+  chartShell.view = view;
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", view);
+    history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch { /* keep the in-memory view */ }
+  paintChartWindow();
+}
+
+function paintChartWindow() {
+  const { target, view, patientId, name } = chartShell;
+  const spec = VIEWS[view] || VIEWS.patient;
+  const heading = `${spec.title} · ${name || patientId} (${patientId})`;
   try { document.title = `${spec.title} · ${name || patientId}`; } catch { /* tests */ }
-  const body = el("div");
+  const body = el("div", { class: "flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-gray-100" });
   mount(target,
-    el("div", { class: "flex min-h-screen flex-col bg-[#d4d0c8]" },
-      el("div", { class: "flex items-center justify-between gap-2 bg-[#008080] px-3 py-2 text-sm font-bold text-white" },
-        el("span", { class: "truncate" }, `${spec.title} · ${name || patientId} (${patientId})`),
+    el("div", { class: "flex h-screen min-h-0 flex-col bg-gray-200 text-sm text-slate-900" },
+      el("div", { class: "flex items-center justify-between gap-2 border-b-4 border-[#d9d3bc] bg-ha-paper px-3 py-2 font-bold text-stone-900" },
+        el("span", { class: "flex min-w-0 items-center gap-2 truncate" },
+          svgIcon("activity", { size: 18 }),
+          heading
+        ),
         el("button", {
           type: "button",
-          class: "rounded px-2 py-0.5 text-xs font-bold hover:bg-white/20",
+          class: "rounded border border-stone-400 bg-white px-2 py-1 text-xs font-semibold text-stone-800 hover:bg-[#e4dfcc]",
           onClick: () => window.close(),
         }, "Close window")
       ),
-      body
+      el("div", { class: "flex min-h-0 flex-1 overflow-hidden" },
+        chartMenu(view),
+        body
+      )
     )
   );
   if (!patientId) {
@@ -113,11 +200,7 @@ export function renderChartWindow({ target }) {
     target: body,
     patientId,
     embedded: true,
-    onSaved: (patient) => {
-      try {
-        window.opener?.postMessage({ type: PATIENT_UPDATED, patient }, window.location.origin);
-      } catch { /* opener closed */ }
-    },
+    onSaved: savedInWindow,
   });
 }
 
@@ -170,7 +253,11 @@ export function openChartPanel(view, { patientId, name = "", onSaved } = {}) {
   closeChartPanel();
 
   let minimised = false;
-  const body = el("div", { class: "min-h-0 flex-1 overflow-auto bg-[#d4d0c8]" });
+  const body = el("div", {
+    class: view === "patient"
+      ? "flex min-h-0 flex-1 flex-col overflow-hidden bg-[#d4d0c8]"
+      : "min-h-0 flex-1 overflow-auto bg-[#d4d0c8]",
+  });
   const minBtn = el("button", {
     type: "button",
     class: "rounded px-2 py-0.5 text-xs font-bold hover:bg-white/20",
@@ -207,8 +294,10 @@ export function openChartPanel(view, { patientId, name = "", onSaved } = {}) {
     "aria-label": `${spec.title} for ${name || patientId}`,
     class: "fixed bottom-4 right-4 z-40 flex flex-col overflow-hidden rounded border-2 border-gray-500 bg-white shadow-2xl",
     style: {
-      width: `min(${spec.width - 60}px, calc(100vw - 2rem))`,
-      height: "min(78vh, 760px)",
+      width: view === "patient"
+        ? "min(1360px, calc(100vw - 2rem))"
+        : `min(${spec.width - 60}px, calc(100vw - 2rem))`,
+      height: view === "patient" ? "min(92vh, 960px)" : "min(78vh, 760px)",
       minWidth: "320px",
       minHeight: "160px",
       resize: "both",
@@ -229,6 +318,10 @@ export function openChartPanel(view, { patientId, name = "", onSaved } = {}) {
 
 function openChart(view, patient, onSaved) {
   const name = patientDisplayName(patient) || "";
+  if (isChartWindow()) {
+    showChartView(view);
+    return;
+  }
   if (openChartWindow(view, { patientId: patient.patientId, name })) return;
   toast(`Pop-up blocked — showing ${VIEWS[view].title} on this page. Allow pop-ups for a separate window.`);
   openChartPanel(view, { patientId: patient.patientId, name, onSaved });

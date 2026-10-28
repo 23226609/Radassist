@@ -132,7 +132,7 @@ export function Shell({ onLogout }) {
   // pinned to the window height.
   const focus = state.page === "review";
   // Work lists and registration stay inside the window, with no page scroll.
-  const pinned = focus || state.page === "dashboard" || state.page === "cases" || state.page === "requests" || state.page === "new";
+  const pinned = focus || state.page === "dashboard" || state.page === "cases" || state.page === "requests" || state.page === "new" || state.page === "patient" || state.page === "monitor";
   const main = el("div", { class: pinned ? "flex h-full min-h-0 min-w-0 flex-col" : "min-w-0 flex-1 overflow-auto" });
   const modules = sidebar({ drawer: focus });
   const backdrop = focus

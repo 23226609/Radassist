@@ -92,6 +92,9 @@ test("radiologists do not see Audit log in the menu", () => {
     state.page = "new";
     const { root: registerRoot } = Shell({ onLogout() {} });
     assert.ok(registerRoot.classList.contains("h-screen"), "registration stays inside the window");
+    state.page = "patient";
+    const { root: patientRoot } = Shell({ onLogout() {} });
+    assert.ok(patientRoot.classList.contains("h-screen"), "patient chart stays inside the window");
     state.page = "dashboard";
     assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.includes("Lab Orders")));
     assert.ok(![...nurseRoot.querySelectorAll("button")].some((b) => b.textContent.includes("Medication Chart")));

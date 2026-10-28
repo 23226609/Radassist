@@ -49,6 +49,16 @@ const chart = {
     age: "61",
     sex: "Male",
     history: "Cough for two weeks.",
+    medicines: "Metformin 500 mg twice daily",
+    medOrders: [{
+      at: "2026-09-20T02:00:00.000Z",
+      drug: "Amoxicillin · 500 mg capsule",
+      dose: "1",
+      route: "Oral",
+      frequency: "TDS",
+      prescribedBy: "Dr. Alex Wong",
+      status: "active",
+    }],
     remarks: "",
     lastDiagnosis: "Mild cardiomegaly",
     urgent: true,
@@ -128,6 +138,15 @@ test("patient chart shows history, diagnosis and remarks", () => {
   assert.ok(root.querySelector("#patient-remarks"), "remarks box missing");
   assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Save notes"));
   assert.ok([...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "New case"));
+});
+
+test("patient chart lists medicines taken before and given in hospital", () => {
+  assert.ok(root.textContent.includes("Taken before"));
+  assert.ok(root.textContent.includes("Metformin 500 mg twice daily"));
+  assert.ok(root.textContent.includes("Given in hospital"));
+  assert.ok(root.textContent.includes("Amoxicillin · 500 mg capsule"));
+  assert.ok(root.textContent.includes("three times a day"));
+  assert.ok(root.textContent.includes("Dr. Alex Wong"));
 });
 
 test("technicians do not see report findings on the chart", () => {
@@ -405,7 +424,7 @@ const sepsis = await import("../src/lib/chartWindow.js");
     assert.ok(root.querySelector("#patient-findings"), "chart must stay on screen");
   });
 
-  const hr = popup.querySelector("input");
+  const hr = popup.querySelector("#sepsis-hr");
   hr.value = "128";
   hr.dispatchEvent(new window.Event("input"));
   buttonNamed(popup, "Record Vitals & Run Clinical Evaluation").dispatchEvent(new window.Event("click"));

@@ -21,12 +21,16 @@ function cmsWindow(title, ...body) {
   );
 }
 
-function activePatientBar(patient) {
+function activePatientBar(patient, { compact = false } = {}) {
   if (!patient) return null;
   const where = [patient.ward, patient.bed].filter(Boolean).join(" ");
-  return el("div", { class: "my-2 flex justify-between border border-gray-400 bg-[#ffffcc] p-2 text-sm font-bold" },
-    el("span", {}, `Active Patient: ${patientDisplayName(patient) || patient.patientId} (${patient.patientId})`),
-    el("span", {}, where ? `Location: ${where}` : "Location: not admitted")
+  return el("div", {
+    class: compact
+      ? "mt-1 flex shrink-0 justify-between gap-2 border border-gray-400 bg-[#ffffcc] px-2 py-1 text-xs font-bold"
+      : "my-2 flex justify-between border border-gray-400 bg-[#ffffcc] p-2 text-sm font-bold",
+  },
+    el("span", { class: "min-w-0 truncate" }, `Active Patient: ${patientDisplayName(patient) || patient.patientId} (${patient.patientId})`),
+    el("span", { class: "shrink-0" }, where ? `Location: ${where}` : "Location: not admitted")
   );
 }
 
@@ -179,15 +183,15 @@ function trendSlots(observations) {
   return Array.from({ length: 12 }, (_, i) => series[i] || null);
 }
 
-function trendLane(metric, slots, hour) {
+function trendLane(metric, slots, hour, bar = "h-12") {
   const selected = slots[hour];
   const shown = selected ? num(selected[metric.key]) : null;
   return el("div", {},
-    el("div", { class: "mb-1 flex justify-between gap-2 text-[11px] font-bold text-gray-600" },
+    el("div", { class: "mb-0.5 flex justify-between gap-2 text-[11px] font-bold text-gray-600" },
       el("span", {}, metric.label),
       el("span", { class: metric.text }, shown == null ? "—" : String(selected[metric.key]))
     ),
-    el("div", { class: "flex h-12 items-end gap-0.5" },
+    el("div", { class: `flex ${bar} items-end gap-0.5` },
       ...slots.map((row, i) => {
         const n = row ? num(row[metric.key]) : null;
         const pct = n == null ? 8 : Math.max(12, Math.min(100, (n / metric.max) * 100));
@@ -304,15 +308,15 @@ function assessmentPreface(patient, review, stamp, hour, {
   );
 }
 
-function scoreLane(slots, hour) {
+function scoreLane(slots, hour, bar = "h-12") {
   const selected = slots[hour];
   const shown = selected ? teachingScore(selected) : null;
   return el("div", {},
-    el("div", { class: "mb-1 flex justify-between gap-2 text-[11px] font-bold text-gray-600" },
+    el("div", { class: "mb-0.5 flex justify-between gap-2 text-[11px] font-bold text-gray-600" },
       el("span", {}, "Teaching score (%)"),
       el("span", { class: "text-violet-800" }, shown == null ? "—" : `${shown}%`)
     ),
-    el("div", { class: "flex h-12 items-end gap-0.5" },
+    el("div", { class: `flex ${bar} items-end gap-0.5` },
       ...slots.map((row, i) => {
         const n = row ? teachingScore(row) : null;
         const pct = n == null ? 8 : Math.max(12, Math.min(100, n));
@@ -326,31 +330,41 @@ function scoreLane(slots, hour) {
   );
 }
 
-function trendPanel(observations, hour, onHour, patientId) {
+function trendPanel(observations, hour, onHour, patientId, { compact = false, onEvaluate, onReturn } = {}) {
   const slots = trendSlots(observations);
   const saved = (observations || []).slice(-12).length;
-  const lanes = TREND_METRICS.map((metric) => trendLane(metric, slots, hour));
-  lanes.splice(3, 0, scoreLane(slots, hour));
-  return el("section", { class: "mb-3 border border-gray-400 bg-white", "aria-label": "12-hour observation trend" },
-    el("div", { class: "flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 bg-slate-50 px-3 py-2" },
+  const bar = compact ? "h-6" : "h-12";
+  const lanes = TREND_METRICS.map((metric) => trendLane(metric, slots, hour, bar));
+  lanes.splice(3, 0, scoreLane(slots, hour, bar));
+  return el("section", {
+    class: compact
+      ? "shrink-0 border border-gray-400 bg-white"
+      : "mb-3 border border-gray-400 bg-white",
+    "aria-label": "12-hour observation trend",
+  },
+    el("div", { class: `flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 bg-slate-50 px-3 ${compact ? "py-1" : "py-2"}` },
       el("h3", { class: "text-sm font-bold text-slate-800" }, `12-hour teaching trajectory${patientId ? ` (${patientId})` : ""}`),
-      el("span", { class: "text-xs text-gray-500" }, saved ? `${saved} of 12 hours saved` : "No hourly series saved yet")
+      el("span", { class: "flex items-center gap-2 text-xs text-gray-500" },
+        saved ? `${saved} of 12 hours saved` : "No hourly series saved yet",
+        compact && onReturn ? el("button", { type: "button", class: "font-bold text-sky-900 underline", onClick: onReturn }, "Latest") : null,
+        compact && onEvaluate ? el("button", { type: "button", class: "font-bold text-sky-900 underline", onClick: onEvaluate }, "Load hour") : null
+      )
     ),
-    el("div", { class: "flex flex-wrap items-center gap-1 px-3 py-2 text-xs" },
+    el("div", { class: `flex flex-wrap items-center gap-1 px-3 text-xs ${compact ? "py-1" : "py-2"}` },
       el("span", { class: "mr-1 font-bold text-gray-600" }, "Select hour"),
       ...slots.map((row, i) => el("button", {
         type: "button",
-        class: `min-w-9 rounded px-2 py-1 text-center font-bold leading-tight ${i === hour ? "bg-slate-900 text-white" : row ? "bg-slate-200 text-slate-800" : "bg-slate-100 text-slate-400"}`,
+        class: `min-w-9 rounded px-1.5 py-0.5 text-center font-bold leading-tight ${i === hour ? "bg-slate-900 text-white" : row ? "bg-slate-200 text-slate-800" : "bg-slate-100 text-slate-400"}`,
         onClick: () => onHour(i),
       },
         el("span", { class: "block" }, `H+${i}`),
-        el("span", { class: "block text-[10px] font-normal" }, row ? `${teachingScore(row)}%` : "—")
+        compact ? null : el("span", { class: "block text-[10px] font-normal" }, row ? `${teachingScore(row)}%` : "—")
       ))
     ),
-    el("div", { class: "grid gap-3 px-3 pb-2 sm:grid-cols-2 xl:grid-cols-4" },
+    el("div", { class: compact ? "grid grid-cols-4 gap-2 px-3 pb-2" : "grid gap-3 px-3 pb-2 sm:grid-cols-2 xl:grid-cols-4" },
       ...lanes
     ),
-    el("p", { class: "px-3 pb-3 text-xs text-gray-500" },
+    compact ? null : el("p", { class: "px-3 pb-3 text-xs text-gray-500" },
       "Shown only for Abnormal observations — review and Urgent review. Empty hours stay blank until an assessment is saved. Patients on No configured trigger do not use this trend."
     )
   );
@@ -481,19 +495,33 @@ export async function renderMonitorPage({ target, patientId: focusId = "", embed
   let busy = false;
   const form = { hr: "", rr: "", sbp: "", spo2: "", temp: "", wbc: "", lactate: "", crp: "" };
   let trendHour = 11;
-  let qaOpen = false;
   let hourNote = "";
   let wardFilter = "all";
   let findQuery = "";
   let showFilter = "all";
-  let sortBy = "bed";
-  let cohort = "all";
+  let chooseToken = 0;
   const canEdit = canEditPatient(state.user);
 
+  function controlValue(e) {
+    const node = e.target;
+    const raw = node?.value;
+    const options = [...(node?.options || [])];
+    const match = options.find((opt) => (opt.getAttribute("value") ?? opt.value) === raw);
+    if (match) return match.getAttribute("value") ?? raw;
+    const picked = node?.selectedOptions?.[0]?.getAttribute?.("value");
+    return picked != null ? picked : raw;
+  }
+
   async function choose(id) {
+    const token = ++chooseToken;
     state.selectedPatientId = id;
     selected = await loadPatient(id);
+    if (token !== chooseToken) return;
+    if (selected && !patients.some((p) => p.patientId === selected.patientId)) {
+      patients = [selected, ...patients];
+    }
     const obs = latestObs(selected);
+    if (token !== chooseToken) return;
     form.hr = obs?.hr || String(selected?.heartRate || "").replace(/[^\d.]/g, "");
     form.rr = obs?.rr || "";
     form.sbp = obs?.sbp || "";
@@ -504,7 +532,48 @@ export async function renderMonitorPage({ target, patientId: focusId = "", embed
     form.crp = obs?.crp || "";
     const saved = (selected?.observations || []).length;
     trendHour = Math.min(11, Math.max(0, saved - 1));
+    if (token !== chooseToken) return;
     paint();
+  }
+
+  // Ward, review, and the name box only change who is in the patient dropdown.
+  // If the open chart is no longer in that set, open the first match so the
+  // page actually changes.
+  function applyFilters() {
+    const list = matchingPatients();
+    const still = selected && list.some((p) => p.patientId === selected.patientId);
+    if (!list.length) {
+      chooseToken += 1;
+      selected = null;
+      state.selectedPatientId = "";
+      paint();
+      return;
+    }
+    paint();
+    if (!still) choose(list[0].patientId);
+  }
+
+  function matchingPatients() {
+    const admitted = patients.filter((p) => p.admissionStatus === "admitted" || p.bed);
+    const base = admitted.length ? admitted : patients;
+    const query = findQuery.trim().toLowerCase();
+    return base.filter((p) => {
+      if (wardFilter !== "all" && (p.ward || wardOf(p.bed)) !== wardFilter) return false;
+      const level = reviewState(latestObs(p) || {}, p.heartRate).level;
+      if (showFilter !== "all" && level !== showFilter) return false;
+      if (!query) return true;
+      const hay = [
+        patientDisplayName(p),
+        p.name,
+        p.firstName,
+        p.middleName,
+        p.lastName,
+        p.patientId,
+        p.bed,
+        p.ward,
+      ].filter(Boolean).join(" ").toLowerCase();
+      return hay.includes(query);
+    }).sort((a, b) => (patientDisplayName(a) || "").localeCompare(patientDisplayName(b) || ""));
   }
 
   async function saveVitals() {
@@ -532,279 +601,219 @@ export async function renderMonitorPage({ target, patientId: focusId = "", embed
   function paint() {
     const admitted = patients.filter((p) => p.admissionStatus === "admitted" || p.bed);
     const base = admitted.length ? admitted : patients;
-    const wards = [...new Set(base.map((p) => p.ward).filter(Boolean))].sort();
-    const query = findQuery.trim().toLowerCase();
-    const rank = { urgent: 0, abnormal: 1, none: 2 };
-    const list = base.filter((p) => {
-      if (wardFilter !== "all" && (p.ward || wardOf(p.bed)) !== wardFilter) return false;
-      const level = reviewState(latestObs(p) || {}, p.heartRate).level;
-      if (showFilter !== "all" && level !== showFilter) return false;
-      if (!query) return true;
-      return `${patientDisplayName(p)} ${p.patientId} ${p.bed || ""}`.toLowerCase().includes(query);
-    }).sort((a, b) => {
-      if (sortBy === "name") return (patientDisplayName(a) || "").localeCompare(patientDisplayName(b) || "");
-      if (sortBy === "review") {
-        const diff = rank[reviewState(latestObs(a) || {}, a.heartRate).level] - rank[reviewState(latestObs(b) || {}, b.heartRate).level];
-        if (diff) return diff;
-      }
-      return `${a.ward || ""}${a.bed || ""}`.localeCompare(`${b.ward || ""}${b.bed || ""}`);
-    });
+    const wards = [...new Set(base.map((p) => p.ward || wardOf(p.bed)).filter(Boolean))].sort();
+    const list = matchingPatients();
     const urgentCount = base.filter((p) => reviewState(latestObs(p) || {}, p.heartRate).level === "urgent").length;
-    const slots = selected ? trendSlots(selected.observations) : [];
-    const hourRow = slots[trendHour] || null;
-    const hourScore = hourRow ? teachingScore(hourRow) : null;
     const obsRows = (selected?.observations || []).slice().reverse();
-    const wrap = embedded
-      ? (...body) => el("div", { class: "flex flex-col p-2" }, ...body)
-      : (...body) => cmsWindow("Inpatient Observations & Sepsis Screening (Teaching)", ...body);
+    const choices = list;
+    const currentReview = selected ? reviewState(latestObs(selected) || {}, selected.heartRate) : null;
+    function returnToLatest() {
+      const saved = (selected.observations || []).length;
+      trendHour = Math.min(11, Math.max(0, saved - 1));
+      const latest = latestObs(selected) || {};
+      form.hr = latest.hr || String(selected?.heartRate || "").replace(/[^\d.]/g, "");
+      form.rr = latest.rr || "";
+      form.sbp = latest.sbp || "";
+      form.spo2 = latest.spo2 || "";
+      form.temp = latest.temp || "";
+      form.wbc = latest.wbc || "";
+      form.lactate = latest.lactate || "";
+      form.crp = latest.crp || "";
+      hourNote = "";
+      paint();
+    }
+    function loadHour() {
+      const row = trendSlots(selected.observations)[trendHour];
+      if (row) {
+        form.hr = row.hr || "";
+        form.rr = row.rr || "";
+        form.sbp = row.sbp || "";
+        form.spo2 = row.spo2 || "";
+        form.temp = row.temp || "";
+        form.wbc = row.wbc || "";
+        form.lactate = row.lactate || "";
+        form.crp = row.crp || "";
+        hourNote = `H+${trendHour} preview · teaching score ${teachingScore(row)}%. The saved assessment is unchanged until you record new vitals.`;
+      } else {
+        hourNote = `H+${trendHour} has no saved observation.`;
+      }
+      paint();
+    }
+    const vitalFields = (compact) => [
+      ["hr", compact ? "Heart rate" : "Heart Rate (bpm)", "Normal 60–100 bpm"],
+      ["rr", compact ? "Resp. rate" : "Respiratory Rate (breaths/min)", "Normal 12–20 breaths/min"],
+      ["sbp", compact ? "Systolic BP" : "Systolic BP (mmHg)", "Normal 90–120 mmHg"],
+      ["spo2", compact ? "SpO2" : "SpO2 (%)", "Normal 95–100 %"],
+      ["temp", compact ? "Temperature" : "Temperature (°C)", "Normal 36.1–37.2 °C"],
+      ["wbc", compact ? "WBC" : "WBC (x10^9/L)", "Normal 4–11"],
+      ["lactate", compact ? "Lactate" : "Lactate (mmol/L)", "Normal 0.5–2 mmol/L"],
+      ["crp", compact ? "CRP" : "CRP Level (mg/L)", "Normal 0–10 mg/L"],
+    ].map(([key, label, hint]) => el("div", {},
+      el("label", { class: "text-[11px] font-bold", title: hint }, label),
+      compact ? null : el("div", { class: "text-[10px] text-gray-500" }, hint),
+      el("input", {
+        id: key === "hr" ? "sepsis-hr" : undefined,
+        class: compact
+          ? "mt-0.5 w-full border border-gray-500 bg-white px-1.5 py-0.5 text-right text-sm"
+          : "mt-1 w-full border border-gray-500 bg-white px-2 py-1 text-right",
+        title: hint,
+        disabled: !canEdit,
+        value: form[key],
+        onInput: (e) => { form[key] = e.target.value; },
+      })
+    ));
+    const flowsheet = el("div", { class: "flex min-h-0 flex-1 flex-col overflow-hidden border border-gray-400 bg-white" },
+      el("div", { class: "flex shrink-0 justify-between bg-[#008080] px-2 py-1 text-xs font-bold text-white" },
+        el("span", {}, "Vitals Flowsheet & Alert Audit Log"),
+        el("span", {}, `Total Evaluations: ${obsRows.length}`)
+      ),
+      el("div", { class: "min-h-0 flex-1 overflow-auto" },
+        obsRows.length
+          ? el("table", { class: "w-full border-collapse text-center text-xs" },
+              el("thead", {},
+                el("tr", { class: "border-b border-gray-400 bg-gray-200" },
+                  ["Time", "Source", "HR", "RR", "BP", "SpO2", "Temp", "WBC", "Lactate", "CRP", "Teaching score", "QA", "System Alert"].map((h) =>
+                    el("th", { class: "border-r border-gray-400 p-1.5" }, h)
+                  )
+                )
+              ),
+              el("tbody", {},
+                ...obsRows.map((row, index) => {
+                  const review = reviewState(row, row.hr);
+                  const flagged = review.level !== "none";
+                  const hour = obsRows.length - 1 - index;
+                  return el("tr", { class: `border-b border-gray-300 ${review.level === "urgent" ? "bg-red-50 text-red-900" : flagged ? "bg-amber-50 text-amber-900" : ""}` },
+                    el("td", { class: "border-r border-gray-400 p-1.5" }, cmsAssessmentStamp(row.at) || "—"),
+                    el("td", { class: "border-r border-gray-400 p-1.5" }, row.by ? `${row.by} · H+${hour}` : `H+${hour}`),
+                    el("td", { class: "border-r border-gray-400 p-1.5" }, row.hr || "—"),
+                    el("td", { class: "border-r border-gray-400 p-1.5" }, row.rr || "—"),
+                    el("td", { class: "border-r border-gray-400 p-1.5" }, row.sbp || "—"),
+                    el("td", { class: "border-r border-gray-400 p-1.5" }, row.spo2 ? `${row.spo2}%` : "—"),
+                    el("td", { class: "border-r p-1.5" }, row.temp || "—"),
+                    el("td", { class: "border-r p-1.5" }, row.wbc || "—"),
+                    el("td", { class: "border-r p-1.5" }, row.lactate || "—"),
+                    el("td", { class: "border-r p-1.5" }, row.crp || "—"),
+                    el("td", { class: "border-r p-1.5" }, `${teachingScore(row)}%`),
+                    el("td", { class: "border-r p-1.5" }, "Sealed"),
+                    el("td", { class: "p-1.5" }, review.level === "urgent" ? "TRIGGERED" : flagged ? "Review" : "—")
+                  );
+                })
+              )
+            )
+          : el("p", { class: "p-4 text-sm text-gray-500" }, "No saved observations for this patient.")
+      )
+    );
+    const wrap = (...body) => el("div", { class: "flex h-full min-h-0 flex-1 flex-col overflow-hidden" },
+          el("div", { class: "relative flex h-full min-h-0 flex-col overflow-hidden border-2 border-white border-b-gray-500 border-r-gray-500 bg-[#d4d0c8] p-1.5 shadow-sm" },
+            el("div", { class: "flex shrink-0 items-center gap-2 border-b border-[#d9d3bc] bg-ha-paper px-2 py-1 text-sm font-bold text-stone-900" },
+              "Inpatient Observations & Sepsis Screening (Teaching)"
+            ),
+            el("div", { class: "flex min-h-0 flex-1 flex-col overflow-hidden" }, ...body)
+          )
+        );
     mount(target, wrap(
-      error ? el("p", { class: "mt-2 bg-red-100 p-2 text-sm text-red-900" }, error) : null,
-      activePatientBar(selected),
-      embedded ? null : el("section", { class: "my-3 rounded border border-slate-300 bg-white", "aria-label": "Ward patient worklist" },
-        el("div", { class: "flex flex-wrap justify-between gap-2 rounded-t bg-slate-800 px-3 py-2 text-white" },
-          el("h2", { class: "font-bold" }, "Ward patient worklist"),
-          el("span", { class: "text-xs" }, `${base.length} inpatients · ${urgentCount} require urgent review`)
-        ),
-        el("div", { class: "grid gap-2 border-b border-slate-200 bg-slate-50 p-2 text-xs md:grid-cols-4" },
-          el("label", { class: "flex flex-col gap-1" },
-            "Ward",
-            el("select", {
-              class: INPUT,
-              value: wardFilter,
-              onChange: (e) => { wardFilter = e.target.value; paint(); },
-            },
-              el("option", { value: "all", selected: wardFilter === "all" }, "All wards"),
-              ...wards.map((ward) => el("option", { value: ward, selected: wardFilter === ward }, ward))
-            )
-          ),
-          el("label", { class: "flex flex-col gap-1" },
-            "Find a patient",
-            el("input", {
-              id: "sepsis-find",
-              class: INPUT,
-              placeholder: "Name or patient number",
-              value: findQuery,
-              onInput: (e) => { findQuery = e.target.value; paint(); },
-            })
-          ),
-          el("label", { class: "flex flex-col gap-1" },
-            "Show",
-            el("select", {
-              class: INPUT,
-              value: showFilter,
-              onChange: (e) => { showFilter = e.target.value; paint(); },
-            },
-              el("option", { value: "all", selected: showFilter === "all" }, "All current inpatients"),
-              el("option", { value: "urgent", selected: showFilter === "urgent" }, "Urgent review"),
-              el("option", { value: "abnormal", selected: showFilter === "abnormal" }, "Abnormal observations"),
-              el("option", { value: "none", selected: showFilter === "none" }, "No configured trigger")
-            )
-          ),
-          el("label", { class: "flex flex-col gap-1" },
-            "Sort by",
-            el("select", {
-              class: INPUT,
-              value: sortBy,
-              onChange: (e) => { sortBy = e.target.value; paint(); },
-            },
-              el("option", { value: "bed", selected: sortBy === "bed" }, "Ward and bed"),
-              el("option", { value: "name", selected: sortBy === "name" }, "Patient name"),
-              el("option", { value: "review", selected: sortBy === "review" }, "Review state")
-            )
+      error ? el("p", { class: "mt-1 shrink-0 bg-red-100 p-2 text-sm text-red-900" }, error) : null,
+      el("div", { class: "mt-1 grid shrink-0 grid-cols-2 items-end gap-2 text-xs lg:grid-cols-[9rem_13rem_11rem_minmax(0,1fr)]" },
+        el("label", { class: "flex flex-col gap-0.5" },
+          "Ward",
+          el("select", {
+            id: "sepsis-ward",
+            class: INPUT,
+            value: wardFilter,
+            onChange: (e) => { wardFilter = controlValue(e); applyFilters(); },
+          },
+            el("option", { value: "all", selected: wardFilter === "all" }, "All wards"),
+            ...wards.map((ward) => el("option", { value: ward, selected: wardFilter === ward }, ward))
           )
         ),
-        el("p", { class: "px-2 py-1 text-[11px] text-gray-600" }, `Showing ${list.length} of ${base.length} patients.`),
-        el("div", { class: "max-h-80 overflow-auto" },
-          el("table", { class: "w-full min-w-[680px] text-left text-xs" },
-            el("thead", { class: "sticky top-0 bg-slate-100" },
-              el("tr", {}, ["Ward / bed", "Patient identity", "Latest observations", "Review / next assessment", "Action"].map((h) =>
-                el("th", { class: "p-2" }, h)
-              ))
-            ),
-            el("tbody", {},
-              ...list.map((p) => {
-                const obs = latestObs(p) || {};
-                const review = reviewState(obs, p.heartRate);
-                const stamp = cmsAssessmentStamp(obs.at);
-                const tone = review.level === "urgent"
-                  ? "text-red-700"
-                  : review.level === "abnormal"
-                    ? "text-orange-700"
-                    : "text-stone-700";
-                const selectedRow = selected?.patientId === p.patientId;
-                const obsLine = [
-                  obs.hr || num(p.heartRate) != null ? `HR ${obs.hr || num(p.heartRate)}` : "",
-                  obs.rr ? `RR ${obs.rr}/min` : "",
-                ].filter(Boolean).join(" · ");
-                const obsLine2 = [
-                  obs.sbp ? `BP ${obs.sbp}${obs.dbp ? `/${obs.dbp}` : ""} mmHg` : "",
-                  obs.spo2 ? `SpO₂ ${obs.spo2}%` : "",
-                ].filter(Boolean).join(" · ");
-                return el("tr", {
-                  class: `border-t ${review.level === "urgent" ? "bg-red-50" : review.level === "abnormal" ? "bg-amber-50" : ""} ${selectedRow ? "outline outline-2 -outline-offset-2 outline-blue-600" : ""}`,
-                  "aria-selected": selectedRow ? "true" : "false",
-                },
-                  el("td", { class: "p-2 font-semibold" }, p.ward || "—", el("br"), p.bed || "No bed"),
-                  el("td", { class: "p-2" },
-                    el("strong", {}, `${p.patientId} · ${(patientDisplayName(p) || "").toUpperCase()}`),
-                    el("br"),
-                    [p.age && `${p.age}y`, sexShort(p.sex) || p.sex].filter(Boolean).join(" · ")
-                  ),
-                  el("td", { class: "p-2" },
-                    obsLine || obsLine2
-                      ? el("span", {}, obsLine, obsLine && obsLine2 ? el("br") : null, obsLine2, stamp ? el("div", { class: "mt-1 text-stone-600" }, stamp) : null)
-                      : (p.heartRate || "No observations")
-                  ),
-                  el("td", { class: "p-2" },
-                    el("strong", { class: tone }, review.title),
-                    ...review.reasons.map((reason) => el("div", { class: `mt-0.5 ${tone}` }, reason)),
-                    stamp ? el("div", { class: "mt-1 text-stone-600" }, "Assessment due: ", stamp) : null
-                  ),
-                  el("td", { class: "p-2" },
-                    el("button", {
-                      class: "rounded border border-blue-600 bg-white px-2 py-2 font-semibold text-blue-800",
-                      onClick: () => choose(p.patientId),
-                    }, "Open assessment")
-                  )
-                );
-              })
-            )
+        el("label", { class: "flex flex-col gap-0.5" },
+          "Review",
+          el("select", {
+            id: "sepsis-review",
+            class: INPUT,
+            value: showFilter,
+            onChange: (e) => { showFilter = controlValue(e); applyFilters(); },
+          },
+            el("option", { value: "all", selected: showFilter === "all" }, "All inpatients"),
+            el("option", { value: "urgent", selected: showFilter === "urgent" }, `Urgent review (${urgentCount})`),
+            el("option", { value: "abnormal", selected: showFilter === "abnormal" }, "Abnormal observations"),
+            el("option", { value: "none", selected: showFilter === "none" }, "No configured trigger")
+          )
+        ),
+        el("label", { class: "flex flex-col gap-0.5" },
+          "Filter",
+          el("input", {
+            id: "sepsis-find",
+            class: INPUT,
+            placeholder: "Name or number",
+            value: findQuery,
+            onInput: (e) => { findQuery = e.target.value; applyFilters(); },
+          })
+        ),
+        el("label", { class: "flex min-w-0 flex-col gap-0.5" },
+          `Patient (${choices.length})`,
+          el("select", {
+            id: "sepsis-patient",
+            class: INPUT,
+            value: choices.some((p) => p.patientId === selected?.patientId) ? selected.patientId : "",
+            onChange: (e) => { const id = controlValue(e); if (id) choose(id); },
+          },
+            el("option", { value: "" }, choices.length ? "Select a patient" : "No patients match"),
+            ...choices.map((p) => el("option", {
+              value: p.patientId,
+              selected: p.patientId === selected?.patientId,
+            }, `${patientDisplayName(p) || p.patientId} · ${p.patientId}${p.bed ? ` · ${p.bed}` : ""}`))
           )
         )
       ),
-      selected && reviewState(latestObs(selected) || {}, selected.heartRate).level !== "none"
-        ? el("div", {},
-            assessmentPreface(
-              selected,
-              reviewState(latestObs(selected) || {}, selected.heartRate),
-              cmsAssessmentStamp(latestObs(selected)?.at),
-              trendHour,
-              {
-                patients,
-                cohort,
-                hourScore,
-                onCohort: (value) => { cohort = value; paint(); },
-                onPatient: (id) => { if (id && id !== selected?.patientId) choose(id); },
-                onReturn: () => {
-                  const saved = (selected.observations || []).length;
-                  trendHour = Math.min(11, Math.max(0, saved - 1));
-                  const latest = latestObs(selected) || {};
-                  form.hr = latest.hr || String(selected?.heartRate || "").replace(/[^\d.]/g, "");
-                  form.rr = latest.rr || "";
-                  form.sbp = latest.sbp || "";
-                  form.spo2 = latest.spo2 || "";
-                  form.temp = latest.temp || "";
-                  form.wbc = latest.wbc || "";
-                  form.lactate = latest.lactate || "";
-                  form.crp = latest.crp || "";
-                  hourNote = "";
-                  paint();
-                },
-                onEvaluate: () => {
-                  const row = trendSlots(selected.observations)[trendHour];
-                  if (row) {
-                    form.hr = row.hr || "";
-                    form.rr = row.rr || "";
-                    form.sbp = row.sbp || "";
-                    form.spo2 = row.spo2 || "";
-                    form.temp = row.temp || "";
-                    form.wbc = row.wbc || "";
-                    form.lactate = row.lactate || "";
-                    form.crp = row.crp || "";
-                    hourNote = `H+${trendHour} preview · teaching score ${teachingScore(row)}%. The saved assessment is unchanged until you record new vitals.`;
-                  } else {
-                    hourNote = `H+${trendHour} has no saved observation.`;
-                  }
-                  paint();
-                },
-                qaOpen,
-                onToggleQa: () => { qaOpen = !qaOpen; paint(); },
-                embedded,
-              }
-            ),
-            hourNote ? el("p", { class: "mb-2 text-xs font-bold text-sky-900" }, hourNote) : null,
-            trendPanel(selected.observations, trendHour, (hour) => { trendHour = hour; hourNote = ""; paint(); }, selected.patientId)
-          )
-        : null,
-      selected && el("div", { class: embedded ? "flex flex-col gap-3" : "flex flex-1 flex-col gap-4 overflow-hidden lg:flex-row" },
-        el("div", { class: embedded ? "flex flex-col border border-gray-400 bg-[#e4e4e4] p-3" : "flex w-full flex-col overflow-auto border border-gray-400 bg-[#e4e4e4] p-3 lg:w-1/3" },
-          el("h3", { class: "mb-3 flex items-center justify-between border-b border-gray-400 pb-1 font-bold text-ha-blue" },
-            el("span", {}, "Enter / Update Vitals"),
-            el("span", { class: "rounded bg-blue-100 px-1.5 py-0.5 text-xs font-normal text-blue-800" }, "New assessment")
-          ),
-          el("div", { class: "flex flex-col gap-3" },
-            ...[
-              ["hr", "Heart Rate (bpm)", "Normal 60–100 bpm"],
-              ["rr", "Respiratory Rate (breaths/min)", "Normal 12–20 breaths/min"],
-              ["sbp", "Systolic BP (mmHg)", "Normal 90–120 mmHg"],
-              ["spo2", "SpO2 (%)", "Normal 95–100 %"],
-              ["temp", "Temperature (°C)", "Normal 36.1–37.2 °C"],
-              ["wbc", "WBC (x10^9/L)", "Normal 4–11"],
-              ["lactate", "Lactate (mmol/L)", "Normal 0.5–2 mmol/L"],
-              ["crp", "CRP Level (mg/L)", "Normal 0–10 mg/L"],
-            ].map(([key, label, hint]) => el("div", {},
-              el("label", { class: "text-xs font-bold" }, label),
-              el("div", { class: "text-[10px] text-gray-500" }, hint),
-              el("input", {
-                class: "mt-1 w-full border border-gray-500 bg-white px-2 py-1 text-right",
-                disabled: !canEdit,
-                value: form[key],
-                onInput: (e) => { form[key] = e.target.value; },
-              })
-            )),
-            canEdit && el("button", { class: `${BEVEL} mt-2 px-4 py-2`, disabled: busy, onClick: saveVitals }, "Record Vitals & Run Clinical Evaluation")
-          )
-        ),
-        el("div", { class: "flex flex-1 flex-col overflow-auto border border-gray-400 bg-white" },
-          el("div", { class: "flex justify-between bg-[#008080] px-2 py-1 text-xs font-bold text-white" },
-            el("span", {}, "Vitals Flowsheet & Alert Audit Log"),
-            el("span", {}, `Total Evaluations: ${obsRows.length}`)
-          ),
-          obsRows.length
-            ? el("table", { class: "w-full border-collapse text-center text-xs" },
-                el("thead", {},
-                  el("tr", { class: "border-b border-gray-400 bg-gray-200" },
-                    ["Time", "Source", "HR", "RR", "BP", "SpO2", "Temp", "WBC", "Lactate", "CRP", "Teaching score", "QA", "System Alert"].map((h) =>
-                      el("th", { class: "border-r border-gray-400 p-1.5" }, h)
-                    )
-                  )
-                ),
-                el("tbody", {},
-                  ...obsRows.map((row, index) => {
-                    const review = reviewState(row, row.hr);
-                    const flagged = review.level !== "none";
-                    const hour = obsRows.length - 1 - index;
-                    return el("tr", { class: `border-b border-gray-300 ${review.level === "urgent" ? "bg-red-50 text-red-900" : flagged ? "bg-amber-50 text-amber-900" : ""}` },
-                      el("td", { class: "border-r border-gray-400 p-1.5" }, cmsAssessmentStamp(row.at) || "—"),
-                      el("td", { class: "border-r border-gray-400 p-1.5" }, row.by ? `${row.by} · H+${hour}` : `H+${hour}`),
-                      el("td", { class: "border-r border-gray-400 p-1.5" }, row.hr || "—"),
-                      el("td", { class: "border-r border-gray-400 p-1.5" }, row.rr || "—"),
-                      el("td", { class: "border-r border-gray-400 p-1.5" }, row.sbp || "—"),
-                      el("td", { class: "border-r border-gray-400 p-1.5" }, row.spo2 ? `${row.spo2}%` : "—"),
-                      el("td", { class: "border-r p-1.5" }, row.temp || "—"),
-                      el("td", { class: "border-r p-1.5" }, row.wbc || "—"),
-                      el("td", { class: "border-r p-1.5" }, row.lactate || "—"),
-                      el("td", { class: "border-r p-1.5" }, row.crp || "—"),
-                      el("td", { class: "border-r p-1.5" }, `${teachingScore(row)}%`),
-                      el("td", { class: "border-r p-1.5" }, "Sealed"),
-                      el("td", { class: "p-1.5" }, review.level === "urgent" ? "TRIGGERED" : flagged ? "Review" : "—")
-                    );
-                  })
-                )
+      activePatientBar(selected, { compact: true }),
+      selected
+        ? el("div", { class: "mt-1 grid min-h-0 flex-1 grid-cols-[17rem_minmax(0,1fr)] gap-2 overflow-hidden" },
+            el("div", { class: "flex min-h-0 flex-col overflow-auto border border-gray-400 bg-[#e4e4e4] p-2" },
+              el("h3", { class: "mb-2 flex items-center justify-between border-b border-gray-400 pb-1 text-sm font-bold text-ha-blue" },
+                el("span", {}, "Enter / Update Vitals"),
+                el("span", { class: "rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-normal text-blue-800" }, "New assessment")
+              ),
+              el("div", { class: "grid grid-cols-2 gap-x-2 gap-y-1" },
+                ...vitalFields(true),
+                canEdit && el("button", {
+                  class: `${BEVEL} col-span-2 mt-1 px-2 py-1`,
+                  disabled: busy,
+                  onClick: saveVitals,
+                }, "Record Vitals & Run Clinical Evaluation")
               )
-            : el("p", { class: "p-4 text-sm text-gray-500" }, "No saved observations for this patient.")
-        )
-      )
+            ),
+            el("div", { class: "flex min-h-0 flex-col gap-1 overflow-hidden" },
+              currentReview && currentReview.level !== "none"
+                ? el("p", {
+                    class: `shrink-0 rounded border px-2 py-1 text-xs ${currentReview.level === "urgent" ? "border-red-300 bg-red-50 text-red-900" : "border-amber-300 bg-amber-50 text-amber-950"}`,
+                  },
+                    el("strong", {}, currentReview.title),
+                    cmsAssessmentStamp(latestObs(selected)?.at) ? ` · ${cmsAssessmentStamp(latestObs(selected)?.at)}` : "",
+                    currentReview.reasons.length ? ` · ${currentReview.reasons.join("; ")}` : ""
+                  )
+                : null,
+              currentReview && currentReview.level !== "none"
+                ? trendPanel(
+                    selected.observations,
+                    trendHour,
+                    (hour) => { trendHour = hour; hourNote = ""; paint(); },
+                    selected.patientId,
+                    { compact: true, onEvaluate: loadHour, onReturn: returnToLatest }
+                  )
+                : null,
+              hourNote ? el("p", { class: "shrink-0 text-xs font-bold text-sky-900" }, hourNote) : null,
+              flowsheet
+            )
+          )
+        : el("p", { class: "mt-3 text-sm text-slate-600" }, "Choose a patient.")
     ));
   }
 
   try {
-    if (embedded) {
-      await choose(focusId);
-      return;
-    }
-    patients = await loadPatients();
-    if (state.selectedPatientId) await choose(state.selectedPatientId);
+    try { patients = await loadPatients(); } catch { patients = []; }
+    const id = focusId || state.selectedPatientId;
+    if (id) await choose(id);
     else paint();
   } catch (err) {
     error = err.message;
@@ -907,7 +916,7 @@ export async function renderNotesPage({ target, patientId: focusId = "", embedde
   function paint() {
     const rows = selected?.careNotes || [];
     const wrap = embedded
-      ? (...body) => el("div", { class: "flex flex-col p-2" }, ...body)
+      ? (...body) => el("div", { class: "flex h-full min-h-0 flex-col overflow-auto p-2" }, ...body)
       : (...body) => cmsWindow("Nursing / Care Notes (Multidisciplinary Progress Notes)", ...body);
     mount(target, wrap(
       error ? el("p", { class: "mt-2 bg-red-100 p-2 text-sm" }, error) : null,
