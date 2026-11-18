@@ -6,7 +6,7 @@
 import { el, mount } from "../dom.js";
 import { state, subscribe, toast } from "../state.js";
 import { svgIcon } from "../components/icons.js";
-import { renderMonitorPage, renderNotesPage } from "../components/clinical.js";
+import { renderMonitorPage, renderNotesPage, renderLabsPage } from "../components/clinical.js";
 import { renderPatientPage } from "../components/patients.js";
 import { patientDisplayName } from "./tags.js";
 import { roleOf } from "./roles.js";
@@ -27,6 +27,13 @@ const VIEWS = {
     width: 760,
     pages: ["patients", "patient"],
     render: renderNotesPage,
+  },
+  labs: {
+    title: "Lab Orders & Results",
+    windowName: "radassist-labs",
+    width: 860,
+    pages: ["patients", "patient"],
+    render: renderLabsPage,
   },
   patient: {
     title: "Patient chart",
@@ -109,9 +116,9 @@ function chartMenu(active) {
   const here = [
     { view: "patient", icon: "users", label: "Patient Master" },
     { view: "sepsis", icon: "activity", label: "Sepsis Monitor" },
-    ...(roleOf(state.user) === "doctor"
-      ? [{ hash: "#/labs", icon: "file-text", label: "Lab Orders & Results" }]
-      : []),
+    ...(roleOf(state.user) === "technician" || roleOf(state.user) === "radiologist"
+      ? []
+      : [{ view: "labs", icon: "file-text", label: "Lab Orders & Results" }]),
     { view: "notes", icon: "edit", label: "Nursing / Care Notes" },
   ];
   const item = (entry) => {

@@ -9,6 +9,7 @@ router.use(authenticate);
 router.get('/', c.listCases);
 router.get('/availability', c.availability);
 router.post('/request', authorize('doctor', 'admin'), c.requestExam);
+router.post('/:id/arrive', authorize('technician', 'admin'), c.confirmArrival);
 router.post('/', authorize('technician', 'admin'), upload.single('file'), c.createCase);
 router.post('/bulk-delete', authorize('admin'), c.deleteCases);
 router.get('/:id', c.getCase);

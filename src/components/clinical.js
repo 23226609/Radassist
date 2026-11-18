@@ -821,7 +821,7 @@ export async function renderMonitorPage({ target, patientId: focusId = "", embed
   }
 }
 
-export async function renderLabsPage({ target }) {
+export async function renderLabsPage({ target, patientId: focusId = "", embedded = false, onSaved } = {}) {
   await renderListModule(target, {
     title: "Lab Orders & Results",
     formTitle: "New Lab Order",
@@ -830,6 +830,9 @@ export async function renderLabsPage({ target }) {
     hint: "Orders stay on the chart. The latest result is also shown as the patient lab summary.",
     field: "labOrders",
     empty: "No lab orders for this patient.",
+    embedded,
+    focusId,
+    onSaved,
     columns: [
       ["panel", "Test"],
       ["priority", "Priority"],
@@ -1030,6 +1033,7 @@ async function renderListModule(target, spec) {
       });
       selected = data.patient;
       toast("Saved on the patient chart.");
+      spec.onSaved?.(selected);
     } catch (err) {
       toast(err.message || "Could not save.");
     } finally {
@@ -1040,15 +1044,16 @@ async function renderListModule(target, spec) {
 
   function paint() {
     const rows = selected?.[spec.field] || [];
-    mount(target, cmsWindow(spec.title,
+    const embedded = Boolean(spec.embedded);
+    const body = [
       error ? el("p", { class: "mt-2 bg-red-100 p-2 text-sm" }, error) : null,
-      activePatientBar(selected),
-      el("div", { class: "mb-2 flex flex-wrap items-center gap-2 rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-800" },
+      activePatientBar(selected, { compact: embedded }),
+      embedded ? null : el("div", { class: "mb-2 flex flex-wrap items-center gap-2 rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-800" },
         el("span", {}, "Select inpatient record:"),
         el("div", { class: "min-w-[16rem] flex-1" }, patientPicker(patients, selected?.patientId || "", choose))
       ),
-      el("div", { class: "flex flex-1 flex-col gap-3 overflow-hidden lg:flex-row" },
-        canEdit && el("div", { class: "flex w-full flex-col overflow-auto border border-gray-400 bg-[#e4e4e4] p-3 lg:w-1/3" },
+      el("div", { class: embedded ? "flex flex-col gap-3" : "flex flex-1 flex-col gap-3 overflow-hidden lg:flex-row" },
+        canEdit && el("div", { class: embedded ? "flex flex-col border border-gray-400 bg-[#e4e4e4] p-3" : "flex w-full flex-col overflow-auto border border-gray-400 bg-[#e4e4e4] p-3 lg:w-1/3" },
           el("h3", { class: "mb-3 border-b border-gray-400 pb-1 font-bold text-ha-blue" }, spec.formTitle || "New entry"),
           el("div", { class: "flex flex-col gap-2" },
             ...spec.formFields.map(([key, label, kind, options]) => el("label", { class: "text-xs font-bold" },
@@ -1077,13 +1082,20 @@ async function renderListModule(target, spec) {
               )
             : el("div", { class: "p-8 text-center text-sm text-gray-500" }, spec.empty)
         )
-      )
-    ));
+      ),
+    ];
+    mount(target, embedded
+      ? el("div", { class: "flex h-full min-h-0 flex-col overflow-auto p-2" }, ...body)
+      : cmsWindow(spec.title, ...body));
   }
 
   try {
-    patients = await loadPatients();
-    await choose(state.selectedPatientId || patients[0]?.patientId || "");
+    if (spec.embedded) {
+      await choose(spec.focusId || "");
+    } else {
+      patients = await loadPatients();
+      await choose(state.selectedPatientId || patients[0]?.patientId || "");
+    }
   } catch (err) {
     error = err.message;
     paint();

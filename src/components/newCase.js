@@ -9,6 +9,7 @@ import { nameFieldsFrom } from "../lib/patientName.js";
 import { isTechnician } from "../lib/roles.js";
 import { urgentBadge } from "../lib/tags.js";
 import { startAnalysisWatch } from "../lib/analysisJob.js";
+import { arrivalComplete } from "../../shared/radiologyRequest.js";
 import {
   labeledField,
   sexPills,
@@ -398,7 +399,7 @@ export async function renderNewCasePage({ target }) {
 
   try {
     const data = await api.listCases({ status: "requested" });
-    requests = data.cases || [];
+    requests = (data.cases || []).filter((row) => arrivalComplete(row.arrival));
   } catch { requests = []; }
   const preset = requests.find((row) => (row.caseId || row._id) === f.requestCaseId);
   if (preset) applyPerson(preset);

@@ -67,7 +67,7 @@ test("a large film is stored as a smaller jpeg", () => {
   assert.ok(display.colScale > 1);
 });
 
-function filmWithBlackSide({ collimator = false, black = 12, cols = 40, rows = 20 } = {}) {
+function filmWithBlackSide({ collimator = false, black = 12, cols = 40, rows = 20, extra = {} } = {}) {
   const pixels = new Uint16Array(rows * cols);
   for (let y = 0; y < rows; y += 1) {
     for (let x = black; x < cols; x += 1) pixels[y * cols + x] = 3000;
@@ -92,6 +92,7 @@ function filmWithBlackSide({ collimator = false, black = 12, cols = 40, rows = 2
     RescaleSlope: 1,
     RescaleIntercept: 0,
     PixelData: pixels.buffer,
+    ...extra,
   };
   if (collimator) {
     dataset.CollimatorShape = "RECTANGULAR";
@@ -168,6 +169,67 @@ test("prepareFilm stores a png and leaves a jpeg alone", () => {
   });
   assert.equal(plain.buffer, jpeg);
   assert.equal(plain.filename, "chest.jpg");
+});
+
+function prepared(extra) {
+  const buffer = filmWithBlackSide({ extra });
+  return prepareFilm({ originalname: "c.dcm", mimetype: "application/dicom", buffer, size: buffer.length });
+}
+
+test("both spacing tags are kept and Imager Pixel Spacing is the one used", () => {
+  const film = prepared({ ImagerPixelSpacing: [0.2, 0.25], PixelSpacing: [0.1, 0.125] });
+  assert.deepEqual(film.imagerPixelSpacingMm, [0.2, 0.25]);
+  assert.deepEqual(film.dicomPixelSpacingMm, [0.1, 0.125]);
+  assert.deepEqual(film.pixelSpacingMm, [0.2, 0.25]);
+  assert.equal(film.pixelSpacingSource, "ImagerPixelSpacing");
+});
+
+test("source distance, thickness and the magnification factor are kept and not scaled", () => {
+  const film = prepared({
+    ImagerPixelSpacing: [0.2, 0.2],
+    DistanceSourceToDetector: 1800,
+    DistanceSourceToPatient: 1700,
+    EstimatedRadiographicMagnificationFactor: 1.1,
+    BodyPartThickness: 240,
+  });
+  assert.equal(film.distanceSourceToDetectorMm, 1800);
+  assert.equal(film.distanceSourceToPatientMm, 1700);
+  assert.equal(film.estimatedMagnification, 1.1);
+  assert.equal(film.bodyPartThicknessMm, 240);
+});
+
+test("a file with only Pixel Spacing records that as the source", () => {
+  const film = prepared({ PixelSpacing: [0.3, 0.3] });
+  assert.equal(film.imagerPixelSpacingMm, undefined);
+  assert.deepEqual(film.pixelSpacingMm, [0.3, 0.3]);
+  assert.equal(film.pixelSpacingSource, "PixelSpacing");
+});
+
+test("a file with no spacing invents none", () => {
+  const film = prepared({});
+  assert.equal(film.pixelSpacingMm, undefined);
+  assert.equal(film.pixelSpacingSource, "");
+});
+
+test("portable and supine markers are kept and do not change the selected view", () => {
+  const film = prepared({
+    ViewPosition: "AP",
+    PatientPosition: "HFS",
+    StudyDescription: "PORTABLE CHEST SUPINE",
+  });
+  assert.equal(film.view, "AP");
+  assert.equal(film.dicomViewPosition, "AP");
+  assert.equal(film.patientPosition, "HFS");
+  assert.ok(film.projectionCues.includes("PORTABLE"));
+  assert.ok(film.projectionCues.includes("SUPINE"));
+});
+
+test("the view and examination time come from the header", () => {
+  const film = prepared({ ViewPosition: "PA", StudyDate: "21800508", StudyTime: "213534.109" });
+  assert.equal(film.view, "PA");
+  assert.equal(film.examinedAt.toISOString(), "2180-05-08T21:35:34.000Z");
+  assert.equal(prepared({ ViewPosition: "LL" }).view, "Lateral");
+  assert.equal(prepared({ ViewPosition: "LATERAL" }).view, "Lateral");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

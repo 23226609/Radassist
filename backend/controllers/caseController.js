@@ -12,7 +12,8 @@ const { analyzeXray } = require('../utils/aiService');
 const { prepareFilm } = require('../utils/dicom');
 const { buildEditChanges } = require('../utils/editDiff');
 const azureFindings = require('../utils/azureFindings');
-const { dedupeFindings, mergeFindingsFromReport } = require('../utils/findingsMerge');
+const { dedupeFindings, mergeTagBoxes } = require('../utils/findingsMerge');
+const tagReport = require('../utils/tagReport');
 const { bucket, downloadImage } = require('./_gridfs');
 const { nameFieldsFrom } = require('../utils/patientName');
 const { toPublicCase, statusFilter, publicStatus, clinicianEdited } = require('../utils/caseStatus');
@@ -20,6 +21,12 @@ const { upsertPatientFromCase, removeCaseRecord } = require('../utils/recordSync
 const { queueChartFindings } = require('../utils/chartFindings');
 const xraySlots = require('../utils/xraySlots');
 const { normalizeRole, isReferringDoctor, isTechnician } = require('../utils/roles');
+
+let requestRules;
+function radiologyRequest() {
+  if (!requestRules) requestRules = import('../../shared/radiologyRequest.js');
+  return requestRules;
+}
 const { OWNED } = Case;
 
 function publicCaseOpts(req, doc) {
@@ -49,6 +56,62 @@ function sanitizeFindings(findings) {
   });
 }
 
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n * 1000) / 1000 : null;
+}
+
+function tagKeyOf(value) {
+  const key = String(value || '').trim();
+  return /^[A-Za-z0-9_-]{1,24}$/.test(key) ? key : '';
+}
+
+// One sentence per tag, in the radiologist's order. A key is used once.
+function sanitizeTags(list) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of Array.isArray(list) ? list : []) {
+    const key = tagKeyOf(raw?.key);
+    const text = String(raw?.text || '').replace(/\s+/g, ' ').trim().slice(0, 600);
+    if (!key || !text || seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      key,
+      text,
+      abnormal: raw.abnormal !== false,
+      manual: Boolean(raw.manual),
+      kind: raw.kind === 'ctr' ? 'ctr' : '',
+      boxDeclined: Boolean(raw.boxDeclined),
+    });
+    if (out.length >= 60) break;
+  }
+  return out;
+}
+
+function cleanView(value) {
+  return ['PA', 'AP', 'AP supine', 'Lateral'].includes(value) ? value : '';
+}
+
+// The fields a film adds to its case: both spacing tags, which one was used, view and time.
+function filmFields(film) {
+  const fields = {};
+  for (const key of ['pixelSpacingMm', 'imagerPixelSpacingMm', 'dicomPixelSpacingMm']) {
+    if (Array.isArray(film[key]) && film[key].length === 2) fields[key] = film[key];
+  }
+  if (film.pixelSpacingSource) fields.pixelSpacingSource = film.pixelSpacingSource;
+  for (const key of ['estimatedMagnification', 'distanceSourceToDetectorMm', 'distanceSourceToPatientMm', 'bodyPartThicknessMm']) {
+    const n = Number(film[key]);
+    if (n > 0) fields[key] = n;
+  }
+  if (film.view) fields.view = film.view;
+  if (film.dicomViewPosition) fields.dicomViewPosition = String(film.dicomViewPosition).slice(0, 16);
+  if (film.patientPosition) fields.patientPosition = String(film.patientPosition).slice(0, 16);
+  if (film.projectionCues) fields.projectionCues = String(film.projectionCues).slice(0, 400);
+  if (film.examinedAt) fields.examinedAt = film.examinedAt;
+  return fields;
+}
+
 function sanitizeMeasurements(list) {
   const pct = (n) => Math.min(100, Math.max(0, Math.round((Number(n) || 0) * 100) / 100));
   return (list || [])
@@ -60,8 +123,18 @@ function sanitizeMeasurements(list) {
         y1: pct(m.y1),
         x2: pct(m.x2),
         y2: pct(m.y2),
-        text: String(m.text || '').trim().slice(0, 40),
+        text: String(m.text || '').trim().slice(0, 160),
         label: String(m.label || '').trim().slice(0, 80),
+        kind: ['lesion', 'ctr-heart', 'ctr-thorax'].includes(m.kind) ? m.kind : 'lesion',
+        tagKey: tagKeyOf(m.tagKey),
+        dxPx: numberOrNull(m.dxPx),
+        dyPx: numberOrNull(m.dyPx),
+        lengthPx: numberOrNull(m.lengthPx),
+        lengthMm: numberOrNull(m.lengthMm),
+        bodyLengthMm: numberOrNull(m.bodyLengthMm),
+        magnification: numberOrNull(m.magnification),
+        magnificationSource: ['PixelSpacing', 'EstimatedRadiographicMagnificationFactor', 'MidPlane', 'SupportPlane', 'HkPaStandard'].includes(m.magnificationSource) ? m.magnificationSource : '',
+        spacingTag: ['ImagerPixelSpacing', 'PixelSpacing'].includes(m.spacingTag) ? m.spacingTag : '',
       };
       if (m._id && !String(m._id).startsWith('tmp-')) row._id = m._id;
       return row;
@@ -189,11 +262,15 @@ exports.createCase = catchAsync(async (req, res, next) => {
   if (requestCaseId) {
     const open = await Case.findOne({ caseId: requestCaseId, status: 'requested' });
     if (!open) return next(ApiError.badRequest('That X-ray request is not open.'));
+    const { arrivalComplete } = await radiologyRequest();
+    if (!arrivalComplete(open.arrival)) {
+      return next(ApiError.badRequest('Check the patient in before registering the film.'));
+    }
     let tmpPath = '';
     try {
       open.imageId = imageId;
       open.registeredAt = new Date();
-      if (Array.isArray(film.pixelSpacingMm)) open.pixelSpacingMm = film.pixelSpacingMm;
+      Object.assign(open, filmFields(film));
       open.imageFilename = film.filename;
       open.imageContentType = film.contentType;
       open.imageSize = film.size;
@@ -252,7 +329,7 @@ exports.createCase = catchAsync(async (req, res, next) => {
     createdBy: userId,
     createdByName: userName,
     registeredAt: new Date(),
-    pixelSpacingMm: Array.isArray(film.pixelSpacingMm) ? film.pixelSpacingMm : undefined,
+    ...filmFields(film),
     imageId,
     imageFilename: film.filename,
     imageContentType: film.contentType,
@@ -313,13 +390,21 @@ async function restoreOpenRequest(requestCaseId) {
       diagnosisSource: '',
       reportText: '',
       findings: [],
+      findingTags: [],
+      comment: '',
+      measurements: [],
       imageId: null,
       imageFilename: '',
       imageContentType: '',
       imageSize: 0,
       registeredAt: null,
     },
-    $unset: { pixelSpacingMm: '' },
+    $unset: {
+      pixelSpacingMm: '', imagerPixelSpacingMm: '', dicomPixelSpacingMm: '', pixelSpacingSource: '',
+      estimatedMagnification: '', distanceSourceToDetectorMm: '', distanceSourceToPatientMm: '', bodyPartThicknessMm: '',
+      dicomViewPosition: '', patientPosition: '', projectionCues: '',
+      view: '', examinedAt: '',
+    },
   });
 }
 
@@ -363,9 +448,14 @@ exports.requestExam = catchAsync(async (req, res, next) => {
   }
   if (!day || !time) return next(ApiError.badRequest('Choose a day and a time for the X-ray.'));
   const urgent = req.body?.urgent === true || req.body?.urgent === 'true';
+  const reason = String(req.body?.clinicalReason || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+  if (!reason) return next(ApiError.badRequest('Enter the clinical reason for this X-ray.'));
   const problem = await xraySlots.slotProblem(day, time, new Date(), { urgent });
   if (problem) return next(ApiError.badRequest(problem));
   const scheduledAt = xraySlots.slotInstant(day, time);
+  const { arrangementFor } = await radiologyRequest();
+  const already = await Case.countDocuments({ status: 'requested', scheduledAt });
+  const plan = arrangementFor(already, urgent);
 
   const doc = await Case.create({
     caseId: newCaseId(),
@@ -376,7 +466,14 @@ exports.requestExam = catchAsync(async (req, res, next) => {
     patientName: patient.name || '',
     age: patient.age || '',
     sex: patient.sex || '',
-    history: patient.history || '',
+    history: reason,
+    clinicalReason: reason,
+    examination: plan.examination,
+    bodyPart: plan.bodyPart,
+    equipment: plan.equipment,
+    examRoom: plan.examRoom,
+    assignedStaff: plan.assignedStaff,
+    preparation: plan.preparation,
     diagnosis: 'Chest X-ray requested',
     status: 'requested',
     analysisState: 'none',
@@ -395,11 +492,32 @@ exports.requestExam = catchAsync(async (req, res, next) => {
     await Case.deleteOne({ _id: doc._id });
     return next(new ApiError(409, lost));
   }
-  await addAuditLog(req.user.userId, 'CASE_CREATED', `Requested chest X-ray ${doc.caseId} for ${patientId} on ${day} ${time}`, doc.caseId, null, 'requested');
+  await addAuditLog(req.user.userId, 'CASE_CREATED', `Requested chest X-ray ${doc.caseId} for ${patientId} on ${day} ${time} in ${doc.examRoom}`, doc.caseId, null, 'requested');
   res.status(201).json({
     success: true,
     case: toPublicCase(doc, publicCaseOpts(req, doc)),
   });
+});
+
+// The radiographer confirms identity, number, request, body part and the appointment
+// before the film can be registered. The request itself is not changed.
+exports.confirmArrival = catchAsync(async (req, res, next) => {
+  const c = await findCaseByAnyId(req.params.id);
+  if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
+  if (c.status !== 'requested') return next(ApiError.badRequest('Only an open request can be checked in.'));
+  const { ARRIVAL_CHECKS } = await radiologyRequest();
+  const body = req.body || {};
+  const checks = {};
+  for (const item of ARRIVAL_CHECKS) {
+    if (body[item.key] !== true) {
+      return next(ApiError.badRequest(`Confirm the ${item.label.toLowerCase()} before check-in.`));
+    }
+    checks[item.key] = true;
+  }
+  c.arrival = { ...checks, at: new Date(), byName: req.user.name || '' };
+  await c.save();
+  await addAuditLog(req.user.userId, 'CASE_UPDATED', `Checked in ${c.patientId} for ${c.caseId}`, c.caseId, null, 'requested');
+  res.json({ success: true, case: toPublicCase(c, publicCaseOpts(req, c)) });
 });
 
 exports.analyzeCase = catchAsync(async (req, res, next) => {
@@ -420,6 +538,9 @@ exports.analyzeCase = catchAsync(async (req, res, next) => {
   c.analysisState = 'running';
   c.boxesState = '';
   c.findings = [];
+  c.findingTags = [];
+  c.comment = '';
+  c.measurements = [];
   c.diagnosis = 'Generating report…';
   await c.save();
 
@@ -527,6 +648,23 @@ async function finishAnalysis({ caseId, tmpPath, patientId, age, sex, history, u
   const c = await Case.findOne({ caseId });
   if (!c || c.status === 'finalized') return;
 
+  // One tag per FINDINGS sentence and the COMMENT line. Thinking stays inside the
+  // stored text, out of the list.
+  let tags = [];
+  let comment = '';
+  if (!aiError && reportText.trim()) {
+    try {
+      const derived = await tagReport.derive(reportText);
+      if (derived.findingTags.length || derived.comment) {
+        tags = derived.findingTags;
+        comment = derived.comment;
+        reportText = await tagReport.assemble({ view: c.view, tags, comment, previousReportText: reportText, remarks: '' });
+      }
+    } catch (err) {
+      console.warn('[finishAnalysis] could not split the draft into sentences:', err.message);
+    }
+  }
+
   let findings = dedupeFindings(mapAiFindings(aiFindings, reportText));
   let diagnosis = azureFindings.pickDiagnosis('', [], reportText) || (aiError ? 'Report needs a manual draft' : 'AI report');
 
@@ -535,6 +673,8 @@ async function finishAnalysis({ caseId, tmpPath, patientId, age, sex, history, u
   // work list stay on Generating.
   const wantBoxes = !aiError && Boolean((reportText || '').trim()) && azureFindings.isConfigured();
   c.reportText = reportText;
+  c.findingTags = tags;
+  c.comment = comment;
   c.findings = findings;
   c.diagnosis = diagnosis;
   c.diagnosisSource = 'local';
@@ -556,6 +696,8 @@ async function finishAnalysis({ caseId, tmpPath, patientId, age, sex, history, u
   } catch (err) {
     console.error('[finishAnalysis] could not store the draft:', err.message);
     c.findings = [];
+    c.findingTags = [];
+    c.comment = '';
     c.diagnosis = 'Report needs a manual draft';
     c.reportText = reportText || `The draft could not be stored: ${err.message}`;
     c.status = 'pending_approve';
@@ -568,7 +710,7 @@ async function finishAnalysis({ caseId, tmpPath, patientId, age, sex, history, u
   if (wantBoxes) await placeFilmBoxes(c, userId);
 }
 
-// Azure reads the stored CURV report and the film, and only places boxes.
+// Azure looks at the film and places one box for each abnormal sentence tag.
 // The report text and the diagnosis label stay as CURV produced them.
 async function placeFilmBoxes(c, userId) {
   const { caseId, reportText } = c;
@@ -576,7 +718,7 @@ async function placeFilmBoxes(c, userId) {
   let failed = false;
   try {
     const image = await downloadImage(c.imageId);
-    boxes = dedupeFindings((await azureFindings.summariseFindings(reportText, image)).findings || []);
+    boxes = (await azureFindings.placeTagBoxes(plainTags(c.findingTags), image)).boxes || [];
   } catch (err) {
     failed = true;
     console.warn('[placeFilmBoxes] Azure boxes skipped:', err.message);
@@ -584,12 +726,16 @@ async function placeFilmBoxes(c, userId) {
   c = await Case.findOne({ caseId });
   if (!c) return;
   const stale = c.status === 'finalized' || c.reportText !== reportText;
-  if (boxes.length && !stale) c.findings = mergeFindingsFromReport(c.findings, boxes);
+  if (boxes.length && !stale) c.findings = mergeTagBoxes(c.findings, plainTags(c.findingTags), boxes);
   c.boxesState = failed ? 'failed' : 'done';
   await c.save();
   if (boxes.length && !stale) {
     await addAuditLog(userId, 'CASE_UPDATED', `Azure AI placed ${boxes.length} film boxes for ${caseId}`);
   }
+}
+
+function plainTags(list) {
+  return (Array.isArray(list) ? list : []).map((t) => (t && typeof t.toObject === 'function' ? t.toObject() : { ...t }));
 }
 
 // ---------------------------------------------------------------------------
@@ -628,13 +774,15 @@ exports.updateCase = catchAsync(async (req, res, next) => {
 
   const oldStatus = c.status;
   const prevSnapshot = {
+    findingTags: plainTags(c.findingTags),
     reportText: c.reportText,
     remarks: c.remarks,
     findings: (c.findings || []).map((row) => (row.toObject ? row.toObject() : { ...row })),
     measurements: (c.measurements || []).map((row) => (row.toObject ? row.toObject() : { ...row })),
   };
-  const { diagnosis, reportText, findings, remarks, urgent, measurements } = req.body || {};
-  if (c.analysisState === 'running' && (diagnosis !== undefined || reportText !== undefined || Array.isArray(findings))) {
+  const { diagnosis, reportText, findings, remarks, urgent, measurements, findingTags, comment, view } = req.body || {};
+  const tagged = Array.isArray(findingTags);
+  if (c.analysisState === 'running' && (diagnosis !== undefined || reportText !== undefined || Array.isArray(findings) || tagged)) {
     return next(ApiError.badRequest('The report is still generating.'));
   }
   // A finalized report is locked. Clinicians can still leave remarks and
@@ -648,7 +796,28 @@ exports.updateCase = catchAsync(async (req, res, next) => {
     if (remarks !== undefined) c.remarks = remarks;
     if (Array.isArray(findings)) c.findings = sanitizeFindings(findings);
     if (Array.isArray(measurements)) c.measurements = sanitizeMeasurements(measurements);
+    if (view !== undefined) c.view = cleanView(view);
+    if (tagged) {
+      c.findingTags = sanitizeTags(findingTags);
+      if (comment !== undefined) c.comment = String(comment || '').replace(/\s+/g, ' ').trim().slice(0, 600);
+    } else if (comment !== undefined) {
+      c.comment = String(comment || '').replace(/\s+/g, ' ').trim().slice(0, 600);
+    }
+    if (tagged || comment !== undefined || view !== undefined) {
+      // The stored report is always what the tags say, so the referring doctor,
+      // the share link and both downloads match what the radiologist sees.
+      if (tagged || c.findingTags.length || c.comment) {
+        c.reportText = await tagReport.assemble({
+          view: c.view,
+          tags: c.findingTags,
+          comment: c.comment,
+          previousReportText: c.reportText,
+          remarks: c.remarks,
+        });
+      }
+    }
     const diff = buildEditChanges(prevSnapshot, {
+      findingTags: plainTags(c.findingTags),
       reportText: c.reportText,
       remarks: c.remarks,
       findings: (c.findings || []).map((row) => (row.toObject ? row.toObject() : { ...row })),
@@ -771,10 +940,28 @@ exports.getSharedCase = catchAsync(async (req, res, next) => {
       reportText: pub.reportText,
       remarks: pub.remarks,
       findings: pub.findings,
+      findingTags: pub.findingTags,
+      comment: pub.comment,
+      view: pub.view,
+      examinedAt: pub.examinedAt,
+      requestedByName: pub.requestedByName,
+      measurements: pub.measurements,
+      imagerPixelSpacingMm: pub.imagerPixelSpacingMm,
+      dicomPixelSpacingMm: pub.dicomPixelSpacingMm,
+      pixelSpacingMm: pub.pixelSpacingMm,
+      pixelSpacingSource: pub.pixelSpacingSource,
+      estimatedMagnification: pub.estimatedMagnification,
+      distanceSourceToDetectorMm: pub.distanceSourceToDetectorMm,
+      distanceSourceToPatientMm: pub.distanceSourceToPatientMm,
+      bodyPartThicknessMm: pub.bodyPartThicknessMm,
+      dicomViewPosition: pub.dicomViewPosition,
+      patientPosition: pub.patientPosition,
+      projectionCues: pub.projectionCues,
       status: pub.status,
       imageId: pub.imageId,
       createdByName: pub.createdByName,
       finalizedByName: pub.finalizedByName,
+      finalizedAt: pub.finalizedAt,
     },
   });
 });
@@ -873,24 +1060,33 @@ exports.summariseFindings = catchAsync(async (req, res, next) => {
     return next(ApiError.badRequest('This case is finalized and cannot be changed.'));
   }
 
-  let summarised;
+  // An older case has only report text: split it into tags once.
+  if (!c.findingTags.length && String(c.reportText || '').trim()) {
+    const derived = await tagReport.derive(c.reportText);
+    if (derived.findingTags.length || derived.comment) {
+      c.findingTags = derived.findingTags;
+      if (!c.comment) c.comment = derived.comment;
+    }
+  }
+  const tags = plainTags(c.findingTags);
+  if (!azureFindings.tagsNeedingBoxes(tags).length) {
+    return next(ApiError.badRequest('No abnormal sentence in this report needs a box.'));
+  }
+
+  let placed;
   try {
     const image = await downloadImage(c.imageId);
-    summarised = await azureFindings.summariseFindings(c.reportText, image);
+    placed = await azureFindings.placeTagBoxes(tags, image);
   } catch (err) {
     return next(ApiError.badRequest(err.message));
   }
-  const findings = summarised.findings || [];
+  const findings = placed.boxes || [];
   if (findings.length === 0) {
-    return next(ApiError.badRequest('Azure AI did not return any findings for this report.'));
+    return next(ApiError.badRequest('Azure AI did not return any boxes for this report.'));
   }
 
-  c.findings = mergeFindingsFromReport(c.findings, findings);
+  c.findings = mergeTagBoxes(c.findings, tags, findings);
   c.boxesState = 'done';
-  if (summarised.diagnosis && clinicianEdited(c)) {
-    c.diagnosis = summarised.diagnosis;
-    c.diagnosisSource = 'azure';
-  }
   await c.save();
 
   await addAuditLog(

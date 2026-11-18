@@ -40,8 +40,12 @@ function toPublicCase(doc, extra = {}) {
     o.reportText = '';
     o.findings = [];
     o.measurements = [];
+    o.findingTags = [];
+    o.comment = '';
+    delete o.sourceReport;
   }
   if (extra.stripProvenance) {
+    delete o.sourceReport;
     o.findings = (o.findings || []).map((f) => {
       const row = f && typeof f.toObject === 'function' ? f.toObject() : { ...f };
       delete row.source;

@@ -252,7 +252,10 @@ test("a free-form CURV reply downloads as Findings and Impression", () => {
   const tagged = "Findings:\nThe lungs are clear.\n\nThinking:\nCompared both sides.\n\nImpression:\nNo acute findings.";
   assert.equal(normalizeReportShape(tagged), tagged);
   const sections = buildReportSections({ reportText: raw, patientId: "PT-2026-0072", history: "Fever and productive cough for four days." });
-  assert.ok(sections.body.startsWith("Findings:"));
+  assert.ok(sections.body.startsWith("XRAY CHEST"));
+  assert.ok(sections.body.includes("FINDINGS\nThe lungs appear clear."));
+  assert.ok(sections.body.includes("COMMENT\n– No acute cardiopulmonary process."));
+  assert.ok(!sections.body.includes("comprehensive analysis"));
   assert.equal(sections.history, "Fever and productive cough for four days.");
 });
 
@@ -270,7 +273,9 @@ test("an endorsed report drops Thinking and keeps the signature", () => {
     updatedAt: "2026-10-11T03:16:00.000Z",
   });
   assert.ok(!sections.body.includes("Thinking"));
-  assert.ok(sections.body.includes("Impression"));
+  assert.ok(!sections.body.includes("The model compared both lungs."));
+  assert.ok(sections.body.includes("COMMENT\n– No acute findings."));
+  assert.ok(sections.body.endsWith("Thank you for your referral.\nDr. Priya Nair"));
   assert.equal(sections.signOff.doctor, "Dr. Priya Nair");
   const pdf = new TextDecoder("latin1").decode(buildReportPdfBytes({
     status: "finalized",

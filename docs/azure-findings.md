@@ -1,5 +1,29 @@
 # Summarising findings with Azure AI
 
+> **Current behaviour: one box per abnormal sentence tag.** The review page no
+> longer shows finding cards. The report is a list of sentence tags (see the
+> README), and Azure's only job on the film is to place **one box for each
+> abnormal tag that has none**. This replaces the "6 grouped findings" flow
+> described further down, which is kept for background.
+>
+> - `placeTagBoxes(tags, image)` in `backend/utils/azureFindings.js` sends only
+>   the abnormal tags (`tagsNeedingBoxes`: abnormal, not `boxDeclined`, not the
+>   cardiothoracic-ratio sentence, not empty) together with the film, using
+>   `TAG_PROMPT`. A **normal** tag is never sent, so it can never gain a box.
+> - The reply is `{"boxes":[{"key": ...}]}`. `parseTagBoxes` accepts one box
+>   per key, ignores keys that were not asked for, and writes the tag's own
+>   words into the box. Azure never rewrites a sentence or `reportText`.
+> - `mergeTagBoxes` in `backend/utils/findingsMerge.js` merges the result:
+>   boxes the radiologist drew, moved or accepted are kept; a box the
+>   radiologist removed stays removed (`boxDeclined`); machine boxes are
+>   replaced; boxes of deleted tags are dropped.
+> - It runs after CURV stores the draft and when **Save draft** changes a
+>   sentence or switches a tag to abnormal. Reordering, COMMENT, remarks, boxes
+>   and measurements alone do not call it.
+> - Azure never sees the MIMIC report. It is not used for imported cases until a
+>   radiologist runs the AI and saves a draft.
+
+
 The review page shows findings as a point-form list, with the selected row
 opened as an editable card. By default those cards come from a regex parser
 in `src/components/review.js`, which splits the report on numbered sections.

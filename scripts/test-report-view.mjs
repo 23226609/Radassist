@@ -161,6 +161,56 @@ test("referring doctors see a read-only report", () => {
   assert.ok(![...root.querySelectorAll("button")].some((b) => b.textContent.trim() === "Save report"));
 });
 
+const TAGGED_REPORT = [
+  "XRAY CHEST (PA)", "", "FINDINGS", "Heart size is normal.", "Small right pleural effusion.", "",
+  "COMMENT", "– Small right pleural effusion.", "", "Thank you for your referral.", "", "Thinking:", "Hidden reasoning.",
+].join("\n");
+const taggedCase = {
+  ...testCase,
+  reportText: TAGGED_REPORT,
+  remarks: "",
+  view: "PA",
+  findingTags: [
+    { key: "t1", text: "Heart size is normal.", abnormal: false },
+    { key: "t2", text: "Small right pleural effusion.", abnormal: true },
+  ],
+  comment: "Small right pleural effusion.",
+};
+state.user = { role: "radiologist", userId: "u1", name: "Dr Test" };
+api.getCase = async () => ({ case: structuredClone(taggedCase) });
+saved = null;
+summarised = 0;
+api.updateCase = async (_id, payload) => {
+  saved = { ...(saved || {}), ...payload };
+  return { case: { ...structuredClone(taggedCase), ...saved } };
+};
+await renderReportViewPage({ target: root });
+
+test("a tagged report is shown as its layout and is not edited here", () => {
+  assert.equal(root.querySelector("#report-body"), null, "the sentence tags are edited on the Review page");
+  const shown = root.querySelector("#report-shown").textContent;
+  assert.ok(shown.includes("FINDINGS\nHeart size is normal.\nSmall right pleural effusion.\n\nCOMMENT"));
+  assert.ok(!text().includes("Hidden reasoning."), "Thinking stays hidden");
+  assert.ok(root.querySelector("#report-header").textContent.includes("Modality: XRAY"));
+  const labels = [...root.querySelectorAll("button")].map((b) => b.textContent.trim());
+  assert.ok(labels.includes("Word with finding films") && labels.includes("PDF with finding films"));
+});
+
+root.querySelector("#report-remarks").value = "Compare with old films.";
+root.querySelector("#report-remarks").dispatchEvent(new window.Event("input"));
+[...root.querySelectorAll("button")].find((b) => /^Save/.test(b.textContent.trim()))
+  .dispatchEvent(new window.Event("click"));
+await new Promise((r) => setTimeout(r, 80));
+
+test("saving a tagged report keeps its layout and Thinking and adds the remarks without calling Azure", () => {
+  assert.ok(saved, "updateCase was not called");
+  assert.ok(saved.reportText.includes("FINDINGS\nHeart size is normal.\nSmall right pleural effusion.\n\nCOMMENT\n– Small right pleural effusion."));
+  assert.ok(saved.reportText.includes("Hidden reasoning."));
+  assert.ok(saved.reportText.includes("Compare with old films."));
+  assert.equal(saved.remarks, "Compare with old films.");
+  assert.equal(summarised, 0, "the words did not change, so boxes stay");
+});
+
 test("edited prose reports rebuild short finding cards, not leftover headers", () => {
   const report = [
     "Radiology Report",

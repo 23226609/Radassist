@@ -4,3 +4,13 @@ dist
 uploads
 __pycache__
 .logs
+
+.env.*
+!.env.example
+.netrc
+*.netrc
+
+# MIMIC-CXR downloads and anything built from them. Never commit these.
+data/
+*.dcm
+mimic-cxr*

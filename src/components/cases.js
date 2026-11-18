@@ -15,6 +15,7 @@ import { statusLabel, statusBadgeClass, isGenerating, caseStatus } from "../lib/
 import { canUpload, canEditReport, isAdmin as roleIsAdmin } from "../lib/roles.js";
 import { CASES_CHANGED } from "../lib/analysisJob.js";
 import { forgetCases } from "../lib/records.js";
+import { ARRIVAL_CHECKS, arrivalComplete, identityNumberFor } from "../../shared/radiologyRequest.js";
 
 function statusBadge(s, c) {
   const label = statusLabel(s, c) || "—";
@@ -30,6 +31,8 @@ export async function renderRequestedPage({ target }) {
   let error = "";
   let page = 1;
   let pageSize = PAGE_SIZE;
+  let checkInId = "";
+  let ticks = Object.fromEntries(ARRIVAL_CHECKS.map((item) => [item.key, false]));
 
   if (target._stopRequestWatch) target._stopRequestWatch();
   const watch = new AbortController();
@@ -43,6 +46,97 @@ export async function renderRequestedPage({ target }) {
     const when = (c) => new Date(c.scheduledAt || c.createdAt || 0).getTime() || 0;
     rows = (data.cases || []).slice().sort((a, b) => when(a) - when(b));
   }
+
+  function openCheckIn(row) {
+    checkInId = row.caseId || row._id;
+    ticks = Object.fromEntries(ARRIVAL_CHECKS.map((item) => [item.key, false]));
+    paint();
+  }
+
+  async function submitCheckIn(row) {
+    if (!ARRIVAL_CHECKS.every((item) => ticks[item.key])) return;
+    try {
+      const data = await api.confirmArrival(row.caseId || row._id, { ...ticks });
+      const next = data.case || data;
+      rows = rows.map((item) => ((item.caseId || item._id) === (row.caseId || row._id) ? { ...item, ...next } : item));
+      checkInId = "";
+      toast(`${patientDisplayName(row) || row.patientId} is checked in.`);
+    } catch (err) {
+      toast(err.message || "Could not check the patient in.");
+    }
+    paint();
+  }
+
+  function checkInDialog(row) {
+    if (!row) return null;
+    const ready = ARRIVAL_CHECKS.every((item) => ticks[item.key]);
+    const fact = (label, value) => el("p", {}, el("span", { class: "font-semibold" }, `${label}: `), value || "—");
+    const appointment = [
+      row.scheduledAt ? bookingWhen(row.scheduledAt) : "",
+      row.examRoom,
+      row.equipment,
+      row.assignedStaff,
+    ].filter(Boolean).join(" · ");
+    return el("div", {
+      id: "check-in",
+      class: "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-label": "Check in",
+      onClick: (e) => { if (e.target === e.currentTarget) { checkInId = ""; paint(); } },
+    },
+      el("section", { class: "w-full max-w-md rounded border border-gray-400 bg-white p-3 text-xs shadow-2xl" },
+        el("h2", { class: "text-sm font-bold text-slate-900" }, "Check in"),
+        el("div", { class: "mt-2 space-y-1 text-slate-800" },
+          fact("Patient", patientDisplayName(row) || row.patientName),
+          fact("Patient number", row.patientId),
+          fact("Examination", row.examination || "Chest X-ray"),
+          fact("Clinical reason", row.clinicalReason),
+          fact("Body part", row.bodyPart || "Chest"),
+          fact("Appointment", appointment)
+        ),
+        row.preparation ? el("p", { class: "mt-2 text-slate-600" }, row.preparation) : null,
+        el("div", { class: "mt-3 space-y-1.5" },
+          ...ARRIVAL_CHECKS.map((item) => el("label", { class: "flex items-start gap-2" },
+            el("input", {
+              type: "checkbox",
+              class: "mt-0.5",
+              "data-check": item.key,
+              checked: Boolean(ticks[item.key]),
+              onClick: (e) => {
+                e.preventDefault();
+                ticks = { ...ticks, [item.key]: !ticks[item.key] };
+                paint();
+              },
+            }),
+            el("span", {},
+              `Confirm ${item.label.toLowerCase()}`,
+              item.key === "identity"
+                ? el("span", { class: "mt-0.5 block text-[10px] font-normal leading-tight text-slate-500" }, `Identity no. ${identityNumberFor(row.patientId)}`)
+                : item.key === "patientNumber"
+                  ? el("span", { class: "mt-0.5 block text-[10px] font-normal leading-tight text-slate-500" }, row.patientId || "—")
+                  : null
+            )
+          ))
+        ),
+        el("div", { class: "mt-3 flex justify-end gap-2" },
+          el("button", {
+            type: "button",
+            class: "rounded border border-gray-300 px-3 py-1.5 text-xs font-semibold",
+            onClick: () => { checkInId = ""; paint(); },
+          }, "Cancel"),
+          el("button", {
+            id: "confirm-arrival",
+            type: "button",
+            class: "rounded bg-ha-blue px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50",
+            disabled: !ready,
+            onClick: () => submitCheckIn(row),
+          }, "Confirm arrival")
+        )
+      )
+    );
+  }
+
   function paint() {
     const paged = paginate(rows, page, pageSize);
     page = paged.page;
@@ -86,18 +180,25 @@ export async function renderRequestedPage({ target }) {
               el("td", { class: cell },
                 row.scheduledAt
                   ? el("span", { class: "font-semibold" }, bookingWhen(row.scheduledAt))
-                  : el("span", { class: "text-slate-500" }, row.createdAt ? `Requested ${new Date(row.createdAt).toLocaleString()}` : "—")
+                  : el("span", { class: "text-slate-500" }, row.createdAt ? `Requested ${new Date(row.createdAt).toLocaleString()}` : "—"),
+                el("span", { class: "block truncate text-[11px] text-slate-600" }, [row.examRoom, row.bodyPart || "Chest"].filter(Boolean).join(" · "))
               ),
               el("td", { class: `${cell} text-right` },
-                el("button", {
-                  type: "button",
-                  class: "border border-gray-500 bg-[#ece9d8] px-2 py-0.5 text-[11px] font-semibold hover:bg-white",
-                  onClick: () => {
-                    state.pendingRequestId = row.caseId || row._id;
-                    state.selectedPatientId = row.patientId;
-                    setPage("new");
-                  },
-                }, "Register film")
+                arrivalComplete(row.arrival)
+                  ? el("button", {
+                      type: "button",
+                      class: "border border-gray-500 bg-[#ece9d8] px-2 py-0.5 text-[11px] font-semibold hover:bg-white",
+                      onClick: () => {
+                        state.pendingRequestId = row.caseId || row._id;
+                        state.selectedPatientId = row.patientId;
+                        setPage("new");
+                      },
+                    }, "Register film")
+                  : el("button", {
+                      type: "button",
+                      class: "border border-gray-500 bg-[#ece9d8] px-2 py-0.5 text-[11px] font-semibold hover:bg-white",
+                      onClick: () => openCheckIn(row),
+                    }, "Check in")
               )
             )))
           )
@@ -113,11 +214,12 @@ export async function renderRequestedPage({ target }) {
         el("div", { class: "m-1 flex min-h-0 flex-1 flex-col border border-gray-400 bg-white" },
           el("div", { class: "border-b border-gray-300 bg-[#f4f7fb] px-2 py-1" },
             el("h2", { class: "text-sm font-bold text-slate-900" }, "Requested case"),
-            el("p", { class: "text-[11px] text-slate-600" }, "Chest X-ray requests from the ward. Register the film here. Reports stay with the radiologist.")
+            el("p", { class: "text-[11px] text-slate-600" }, "Chest X-ray requests from the ward. Check the patient in, then register the film. Reports stay with the radiologist.")
           ),
           body
         )
-      )
+      ),
+      checkInDialog(rows.find((row) => (row.caseId || row._id) === checkInId))
     );
     mount(target, root);
     const fit = fitPageSize(root.querySelector("[data-fit-rows]"), pageSize);
@@ -544,6 +646,7 @@ export async function renderCasePage({ target }) {
   function paint() {
     const edit = canRemark();
     const findings = localCase?.findings || [];
+    const tags = Array.isArray(localCase?.findingTags) ? localCase.findingTags : [];
     const id = localCase?.caseId || localCase?._id;
 
     const root = el(
@@ -613,7 +716,22 @@ export async function renderCasePage({ target }) {
 
             el("section", { class: "card mt-5" },
               el("h2", { class: "text-lg font-bold text-slate-900" }, "Findings"),
-              findings.length === 0
+              tags.length > 0
+                ? el("div", {},
+                    el("ul", { id: "case-finding-tags", class: "mt-3 divide-y divide-slate-100" },
+                      ...tags.map((t) =>
+                        el("li", { class: "flex items-start gap-2 py-2 text-sm text-slate-800", dataset: { tag: t.key } },
+                          el("span", { class: `mt-1.5 h-2 w-2 shrink-0 rounded-full ${t.abnormal ? "bg-amber-500" : "bg-slate-300"}`, title: t.abnormal ? "Abnormal" : "Normal" }),
+                          el("span", {}, t.text)
+                        )
+                      )
+                    ),
+                    localCase.comment
+                      ? el("p", { id: "case-comment", class: "mt-3 border-t border-slate-100 pt-3 text-sm text-slate-800" },
+                          el("span", { class: "font-semibold" }, "COMMENT: "), `– ${localCase.comment}`)
+                      : null
+                  )
+                : findings.length === 0
                 ? el("p", { class: "mt-3 text-slate-400" }, "No findings recorded for this case yet.")
                 : el("ul", { class: "mt-3 divide-y divide-slate-100" },
                     ...findings.map((f) =>
@@ -626,6 +744,15 @@ export async function renderCasePage({ target }) {
                     )
                   )
             ),
+
+            localCase.sourceReport?.text
+              ? el("section", { id: "source-report", class: "card mt-5" },
+                  el("h2", { class: "text-lg font-bold text-slate-900" }, localCase.sourceReport.label || "MIMIC report"),
+                  el("p", { class: "mt-1 text-xs text-slate-500" },
+                    "Official report text from the dataset. It is kept as source text and is not this system's draft."),
+                  el("pre", { class: "mt-3 whitespace-pre-wrap font-sans text-sm leading-6 text-slate-700" }, localCase.sourceReport.text)
+                )
+              : null,
 
             el("section", { class: "card mt-5" },
               el("h2", { class: "text-lg font-bold text-slate-900" }, "Remarks"),

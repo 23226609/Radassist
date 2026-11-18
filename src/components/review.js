@@ -15,7 +15,11 @@ import { el, mount } from "../dom.js";
 import { state, setPage, toast } from "../state.js";
 import { api, clearFilmSpacingAdjust, filmSpacingAdjust } from "../api.js";
 import { svgIcon } from "./icons.js";
-import { downloadReportDocx, downloadReportPdf, previewReportPdf, openPreviewWindow, applyRemarksToReport, splitReportAndRemarks, withoutThinking, restoreThinking, normalizeReportShape } from "../lib/reportExport.js";
+import { downloadReportDocx, downloadReportPdf, previewReportPdf, openPreviewWindow, applyRemarksToReport, splitReportAndRemarks, reportHeaderFields, formatDateTime } from "../lib/reportExport.js";
+import { reportTitle, examinationName, THANKS_LINE, VIEWS, cleanView } from "../../shared/reportTags.js";
+import { thinkingBlockOf } from "../../shared/reportText.js";
+import { ensureTags, assembleReport, boxOfTag, boxesForTag, isDrawnBox, addTag, setTagText, deleteTag, flipTag, moveTagTo, removeBox, placeBox, moveBox, drawnFinding, setCtr, refreshCtr, addLesionLine, removeLine } from "../lib/findingTags.js";
+import { spacingOf, buildLine, applyMagnification, showFactor, MAGNIFICATION_NAMES, getMeasurementPolicy, experimentalLabel, EXPERIMENTAL_NOTE } from "../lib/measure.js";
 import { urgentBadge, patientDisplayName, doctorInCharge } from "../lib/tags.js";
 import { isGenerating, isAwaitingApprove, isAwaitingAi, statusLabel } from "../lib/caseStatus.js";
 import { forgetCases } from "../lib/records.js";
@@ -146,34 +150,21 @@ function cursorForHandle(hit) {
   return "";
 }
 
-function isDrawnBox(f) {
-  return String(f?.source || "").toLowerCase() === "manual";
-}
-
 function boxKey(f) {
   return String(f?._id || f?.id || "");
 }
 
-// Boxes the radiologist drew, plus Azure boxes for abnormal findings. Normal
-// statements ("clear lungs") and older locally parsed findings have no real
-// position. A deleted AI box stays stored as rejected so Azure does not put
-// it back, but it is not drawn. Finalized cases arrive without `source`
-// (the signed report carries no AI/manual tags), so a box placed by Azure
-// or by hand is then recognised by its `bboxSource` instead.
-function deniesFinding(f) {
-  const text = `${f?.label || ""} ${f?.sentence || ""}`.replace(/\s+/g, " ").trim();
-  if (!/\b(no|without|negative for|absence of|free of|no evidence of|no sign of)\b/i.test(text)) return false;
-  const rest = text.replace(/\b(no|without|negative for|absence of|free of|no evidence of|no sign of)\b[^.]*/gi, " ");
-  return !/\b(low lung volumes|volume loss|atelecta|consolidat|pneumonia|collapse|fracture|nodule|mass|cardiomegaly|white-?out|infiltrat|fibrosis|effusion|pneumothorax|edema|oedema)\b/i.test(rest);
-}
-
-function filmBoxes(findings) {
-  return (findings || []).filter((f) => {
-    if (!hasBbox(f) || f.status === "rejected") return false;
-    if (isDrawnBox(f)) return true;
-    if (deniesFinding(f)) return false;
-    if (f.source) return f.source === "Azure" && f.severity !== "normal";
-    return Boolean(f.bboxSource) && f.severity !== "normal";
+// One box per abnormal sentence tag. A deleted box stays stored as rejected so
+// Azure does not put it back, but it is not drawn. A normal sentence has no box.
+function filmBoxes(c) {
+  const tags = Array.isArray(c?.findingTags) ? c.findingTags : [];
+  const seen = new Set();
+  return (Array.isArray(c?.findings) ? c.findings : []).filter((f) => {
+    if (!hasBbox(f) || f.status === "rejected" || !f.tagKey) return false;
+    const tag = tags.find((t) => t.key === f.tagKey);
+    if (!tag || !tag.abnormal || seen.has(f.tagKey)) return false;
+    seen.add(f.tagKey);
+    return true;
   });
 }
 
@@ -471,15 +462,21 @@ export async function renderReviewPage({ target }) {
   let filmAspect = 0;
   let showLog = false;
   let filmTool = "view";
-  let selectedBoxKey = "";
+  let selectedTagKey = "";
   let boxesDirty = false;
   let measureLine = null;
   let measuresDirty = false;
+  let tagsDirty = false;
   let remarksDraft = "";
   let remarksDirty = false;
   let reportDirty = false;
-  let bodyDraft = "";
-  let bodyDirty = false;
+  // Counts local edits, so a save that finishes after the radiologist typed
+  // again does not overwrite what they typed.
+  let editSeq = 0;
+  let ctrHeart = null; // the first of the two heart-size lines, waiting for the second
+  let dragKey = "";
+  let dropMark = null; // { key, after } while a tag is dragged over another
+  let newFinding = "";
   let openLogKey = "";
   let genPoll = null;
 
@@ -500,8 +497,19 @@ export async function renderReviewPage({ target }) {
     const split = splitReportAndRemarks(localCase?.reportText || "");
     remarksDraft = (localCase?.remarks || "").trim() || split.remarks;
     remarksDirty = false;
-    bodyDraft = withoutThinking(normalizeReportShape(split.body));
-    bodyDirty = false;
+  }
+
+  // The case as the page works with it: a legacy wrapper unwrapped, and an
+  // older case that has only report text split into sentence tags once. The
+  // split is kept only here until the radiologist saves.
+  function adopt(raw) {
+    const next = ensureTags(unwrapLegacyReport(raw));
+    if (next?.tagsDerived && next.status !== "finalized" && canEditReport(state.user)) {
+      tagsDirty = true;
+      boxesDirty = true;
+      measuresDirty = true;
+    }
+    return next;
   }
 
   function placingBoxes(c) {
@@ -572,7 +580,13 @@ export async function renderReviewPage({ target }) {
           const after = JSON.stringify(next?.pixelSpacingMm || null);
           if (before !== after && Array.isArray(next?.pixelSpacingMm)) {
             clearFilmSpacingAdjust(id);
-            localCase = { ...localCase, pixelSpacingMm: next.pixelSpacingMm };
+            localCase = {
+              ...localCase,
+              pixelSpacingMm: next.pixelSpacingMm,
+              imagerPixelSpacingMm: next.imagerPixelSpacingMm,
+              dicomPixelSpacingMm: next.dicomPixelSpacingMm,
+              pixelSpacingSource: next.pixelSpacingSource,
+            };
           }
         } catch { /* the film is already on screen */ }
       }
@@ -590,7 +604,7 @@ export async function renderReviewPage({ target }) {
       if (signal.aborted || leaving) return;
       localCase = data.case || data;
       // One-shot fixup: unwrap the legacy `{"report":"..."}` string shape.
-      localCase = unwrapLegacyReport(localCase);
+      localCase = adopt(localCase);
       syncRemarksFromCase();
       if (wasGenerating && !isGenerating(localCase)) toast("Draft ready — pending approve.");
       if (isGenerating(localCase) || placingBoxes(localCase)) watchGenerating();
@@ -655,7 +669,7 @@ export async function renderReviewPage({ target }) {
   }
   // One-shot fixup on the initial case too (covers the path where the case
   // came from the local cache rather than a fresh /cases/:id fetch).
-  localCase = unwrapLegacyReport(localCase);
+  localCase = adopt(localCase);
   syncRemarksFromCase();
   if (isReferringDoctor(state.user) && localCase.status !== "finalized") {
     toast("Doctors can only open finalized reports.");
@@ -672,7 +686,7 @@ export async function renderReviewPage({ target }) {
 
   function markUnsaved() {
     reportDirty = true;
-    hintMongo("Unsaved changes. Press Save draft or Save remarks.");
+    hintMongo("Unsaved changes. Press Save draft.");
     document.getElementById("save-draft")?.classList.add("ring-2", "ring-slate-400", "ring-offset-1");
   }
 
@@ -710,32 +724,93 @@ export async function renderReviewPage({ target }) {
     return String(m?._id || m?.id || `m-${i}`);
   }
 
-  function setMeasurements(next) {
-    localCase = { ...localCase, measurements: next };
-    measuresDirty = true;
+  // Every local edit goes through here, so the page knows what to save.
+  function setCase(next, { tags = false, boxes = false, lines = false } = {}) {
+    localCase = next;
+    if (tags) tagsDirty = true;
+    if (boxes) boxesDirty = true;
+    if (lines) measuresDirty = true;
+    editSeq += 1;
     markUnsaved();
   }
 
-  function addMeasurement(line, text) {
-    const id = `tmp-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
-    const r = (n) => Math.round(Math.min(100, Math.max(0, Number(n) || 0)) * 100) / 100;
-    setMeasurements([...measurementList(), {
-      _id: id,
-      x1: r(line.x1), y1: r(line.y1), x2: r(line.x2), y2: r(line.y2),
-      text,
-      label: "",
-    }]);
+  // The film element is rebuilt on every render, so keep the last size it reported.
+  let lastFilmPixels = { width: 0, height: 0 };
+  function filmPixels() {
+    const img = document.getElementById("xray-film");
+    const width = img?.naturalWidth || 0;
+    const height = img?.naturalHeight || 0;
+    if (width && height) lastFilmPixels = { width, height };
+    return lastFilmPixels;
+  }
+
+  // Spacing for the film centimetres: Imager Pixel Spacing when the file has it.
+  function filmSpacing() {
+    return spacingOf(localCase, filmSpacingAdjust(localCase?.imageId));
+  }
+
+  function measurementPolicy() {
+    return getMeasurementPolicy(localCase, filmSpacingAdjust(localCase?.imageId));
+  }
+
+  function shownMeasure(m) {
+    const policy = measurementPolicy();
+    return applyMagnification(m, policy.showBodyMeasurement ? policy.magnification : null);
+  }
+
+  function spacingNote() {
+    const spacing = filmSpacing();
+    const policy = measurementPolicy();
+    if (!spacing.mm) return "This film has no pixel spacing, so lines show pixels only. Body size is unavailable.";
+    if (policy.showBodyMeasurement) {
+      const mag = policy.magnification;
+      return `Film centimetres come from ${spacing.name}. Body size uses ${MAGNIFICATION_NAMES[mag.source] || mag.name}. ×${showFactor(mag.factor)} is film size divided by body size. ${mag.detail}`;
+    }
+    const extra = policy.showExperimentalEstimate ? ` Experimental estimate: ${EXPERIMENTAL_NOTE}` : "";
+    return `Film centimetres come from ${spacing.name}. Body-size estimate unavailable. ${policy.reason}${extra}`;
+  }
+
+  function filmLine(line, kind) {
+    const { width, height } = filmPixels();
+    if (!width || !height) return null;
+    const policy = measurementPolicy();
+    return buildLine(line, {
+      width, height, spacing: filmSpacing(), kind,
+      magnification: policy.showBodyMeasurement ? policy.magnification : null,
+    });
+  }
+
+  function measureKind() {
+    if (filmTool !== "ctr") return "lesion";
+    return ctrHeart ? "ctr-thorax" : "ctr-heart";
   }
 
   function deleteMeasurement(key) {
-    setMeasurements(measurementList().filter((m, i) => measureKey(m, i) !== key));
+    const line = measurementList().find((m, i) => measureKey(m, i) === key);
+    if (!line) return;
+    setCase(removeLine(localCase, line), { tags: true, boxes: true, lines: true });
     render();
   }
 
   function measurementsForSave() {
-    return measurementList().map(({ _id, x1, y1, x2, y2, text, label }) => {
-      const row = { x1, y1, x2, y2, text, label: String(label || "").trim() };
-      if (_id && !String(_id).startsWith("tmp-")) row._id = _id;
+    return measurementList().map((m) => {
+      const sized = shownMeasure(m);
+      const row = {
+        x1: sized.x1, y1: sized.y1, x2: sized.x2, y2: sized.y2,
+        text: sized.text,
+        label: String(sized.label || "").trim(),
+        kind: sized.kind || "lesion",
+        tagKey: sized.tagKey || "",
+        dxPx: sized.dxPx,
+        dyPx: sized.dyPx,
+        lengthPx: sized.lengthPx,
+        lengthMm: sized.lengthMm,
+        bodyLengthMm: sized.bodyLengthMm,
+        magnification: sized.magnification,
+        magnificationSource: sized.magnificationSource || "",
+        spacingTag: sized.spacingTag || "",
+      };
+      if (m._id && !String(m._id).startsWith("tmp-")) row._id = m._id;
       return row;
     });
   }
@@ -752,8 +827,9 @@ export async function renderReviewPage({ target }) {
   }
 
   function measureTagText(m, i) {
-    const name = String(m.label || "").trim();
-    return `${i + 1} · ${name ? `${name} ` : ""}${m.text}`;
+    const shown = shownMeasure(m);
+    const name = String(shown.label || "").trim();
+    return `${i + 1} · ${name ? `${name} ` : ""}${shown.text}`;
   }
 
   // A small tag beside the end of the line, so it does not sit on the box labels.
@@ -769,9 +845,7 @@ export async function renderReviewPage({ target }) {
   }
 
   function measureLength(line) {
-    const text = measureText(line);
-    const match = String(text).match(/([0-9]+(?:\.[0-9]+)?)\s*(cm|px)/i);
-    return match ? `${match[1]} ${match[2].toLowerCase()}` : "";
+    return filmLine(line, measureKind())?.text || "";
   }
 
   function measureLabelEl(line) {
@@ -832,23 +906,11 @@ export async function renderReviewPage({ target }) {
 
   function measureText(line) {
     if (!line) return "";
-    const img = document.getElementById("xray-film");
-    const width = img?.naturalWidth || 0;
-    const height = img?.naturalHeight || 0;
-    const adjust = filmSpacingAdjust(localCase?.imageId);
-    const spacing = Array.isArray(localCase?.pixelSpacingMm) && localCase.pixelSpacingMm.length === 2
-      ? [
-          Number(localCase.pixelSpacingMm[0]) * (adjust?.row || 1),
-          Number(localCase.pixelSpacingMm[1]) * (adjust?.col || 1),
-        ]
-      : null;
-    if (!width || !height) return "Drag across the area you want to measure.";
-    const dx = ((line.x2 - line.x1) / 100) * width;
-    const dy = ((line.y2 - line.y1) / 100) * height;
-    const pixels = Math.sqrt(dx * dx + dy * dy);
-    if (!spacing) return `${pixels.toFixed(0)} px. This film has no DICOM pixel spacing, so centimetres are not available.`;
-    const mm = Math.sqrt((dx * Number(spacing[1])) ** 2 + (dy * Number(spacing[0])) ** 2);
-    return `${(mm / 10).toFixed(2)} cm`;
+    if (!filmPixels().width) return "Drag across the area you want to measure.";
+    const made = filmLine(line, measureKind());
+    if (!made) return "";
+    if (made.lengthMm == null) return `${made.text}. This film has no DICOM pixel spacing, so centimetres are not available.`;
+    return made.text;
   }
 
   function onFilmWheel(e) {
@@ -864,44 +926,24 @@ export async function renderReviewPage({ target }) {
       && !isGenerating(localCase) && !placingBoxes(localCase);
   }
 
-  function setFindings(next) {
-    localCase = { ...localCase, findings: next };
-    boxesDirty = true;
-    markUnsaved();
-  }
+  const tagOf = (key) => (localCase.findingTags || []).find((t) => t.key === key) || null;
 
-  function patchBox(key, patch) {
-    setFindings((localCase.findings || []).map((f) => (boxKey(f) === key ? { ...f, ...patch } : f)));
-  }
-
-  function deleteBox(key) {
-    const target = (localCase.findings || []).find((f) => boxKey(f) === key);
-    if (!target) return;
-    setFindings(isDrawnBox(target)
-      ? (localCase.findings || []).filter((f) => boxKey(f) !== key)
-      : (localCase.findings || []).map((f) => (boxKey(f) === key ? { ...f, status: "rejected" } : f)));
-    if (selectedBoxKey === key) selectedBoxKey = "";
+  function deleteBox(tagKey) {
+    setCase(removeBox(localCase, tagKey), { tags: true, boxes: true });
     render();
   }
 
+  // A box drawn while an abnormal sentence without a box is selected belongs to
+  // that sentence. Otherwise it starts a new finding at the end of the list.
   function addDrawnBox(bbox) {
-    const id = `tmp-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
-    setFindings([...(localCase.findings || []), {
-      _id: id,
-      id,
-      label: "Marked area",
-      bbox,
-      source: "manual",
-      bboxSource: "manual",
-      status: "pending",
-      severity: "",
-      confidence: 1,
-      pattern: "Other",
-      sentence: "",
-      location: "",
-      size: "",
-    }]);
-    selectedBoxKey = id;
+    const tag = tagOf(selectedTagKey);
+    if (tag && tag.abnormal && !boxOfTag(localCase, tag.key)) {
+      setCase(placeBox(localCase, tag.key, bbox), { tags: true, boxes: true });
+      return;
+    }
+    const out = drawnFinding(localCase, bbox);
+    setCase(out.c, { tags: true, boxes: true });
+    selectedTagKey = out.tag.key;
   }
 
   function paintLiveBox(stage, bbox) {
@@ -926,15 +968,17 @@ export async function renderReviewPage({ target }) {
   }
 
   function selectedBox() {
-    return filmBoxes(localCase.findings).find((f) => boxKey(f) === selectedBoxKey) || null;
+    return selectedTagKey ? filmBoxes(localCase).find((f) => f.tagKey === selectedTagKey) || null : null;
   }
+
+  const lineTool = () => filmTool === "measure" || filmTool === "ctr";
 
   function onFilmPointerDown(e) {
     if (e.button != null && e.button !== 0) return;
     const stage = e.currentTarget || document.getElementById("xray-stage");
     if (!stage) return;
     const pct = eventToPct(e, stage);
-    if (filmTool === "measure") {
+    if (lineTool()) {
       measureLine = { x1: pct.x, y1: pct.y, x2: pct.x, y2: pct.y };
       boxDrag = { mode: "measure" };
       try { stage.setPointerCapture?.(e.pointerId); } catch { /* tests */ }
@@ -942,7 +986,15 @@ export async function renderReviewPage({ target }) {
       e.preventDefault();
       return;
     }
-    if (!canEditBoxes()) return;
+    if (!canEditBoxes()) {
+      // A reader can still click a box to see which sentence it belongs to.
+      if (filmTool === "view" && showBoxes) {
+        const under = [...filmBoxes(localCase)].reverse().find((f) => hitBoxHandle(pct, f.bbox) === "move");
+        selectedTagKey = under ? under.tagKey : "";
+        render();
+      }
+      return;
+    }
     if (filmTool === "draw") {
       boxDrag = { mode: "draw", start: pct };
     } else {
@@ -950,12 +1002,12 @@ export async function renderReviewPage({ target }) {
       const sel = selectedBox();
       const hit = sel ? hitBoxHandle(pct, sel.bbox) : null;
       if (hit === "move") {
-        boxDrag = { mode: "move", key: selectedBoxKey, start: pct, origin: sel.bbox.slice() };
+        boxDrag = { mode: "move", key: selectedTagKey, start: pct, origin: sel.bbox.slice() };
       } else if (hit) {
-        boxDrag = { mode: "resize", handle: hit, key: selectedBoxKey, start: pct, origin: sel.bbox.slice() };
+        boxDrag = { mode: "resize", handle: hit, key: selectedTagKey, start: pct, origin: sel.bbox.slice() };
       } else {
-        const under = [...filmBoxes(localCase.findings)].reverse().find((f) => hitBoxHandle(pct, f.bbox) === "move");
-        selectedBoxKey = under ? boxKey(under) : "";
+        const under = [...filmBoxes(localCase)].reverse().find((f) => hitBoxHandle(pct, f.bbox) === "move");
+        selectedTagKey = under ? under.tagKey : "";
         render();
         return;
       }
@@ -984,6 +1036,30 @@ export async function renderReviewPage({ target }) {
     }
   }
 
+  // The end of a dragged line: one lesion line, or one of the two heart diameters.
+  function finishLine(line) {
+    const long = line && Math.hypot(line.x2 - line.x1, line.y2 - line.y1) >= 1;
+    const made = long ? filmLine(line, measureKind()) : null;
+    measureLine = null;
+    if (!made || !canEditBoxes()) return;
+    const edits = { tags: true, boxes: true, lines: true };
+    if (filmTool === "ctr") {
+      if (!ctrHeart) {
+        ctrHeart = made;
+        return;
+      }
+      const out = setCtr(localCase, ctrHeart, made);
+      setCase(out.c, edits);
+      selectedTagKey = out.key;
+      ctrHeart = null;
+      filmTool = "view";
+      return;
+    }
+    const out = addLesionLine(localCase, made, selectedTagKey);
+    setCase(out.c, edits);
+    selectedTagKey = out.key;
+  }
+
   function onFilmPointerUp(e) {
     if (!boxDrag) return;
     const stage = e.currentTarget || document.getElementById("xray-stage");
@@ -993,15 +1069,7 @@ export async function renderReviewPage({ target }) {
         measureLine = { ...measureLine, x2: pct.x, y2: pct.y };
       }
       boxDrag = null;
-      const line = measureLine;
-      const long = line && Math.hypot(line.x2 - line.x1, line.y2 - line.y1) >= 1;
-      const text = long ? measureLength(line) : "";
-      if (!text) {
-        measureLine = null;
-      } else if (canEditBoxes()) {
-        addMeasurement(line, text);
-        measureLine = null;
-      }
+      finishLine(measureLine);
       render();
       return;
     }
@@ -1020,9 +1088,80 @@ export async function renderReviewPage({ target }) {
       filmTool = "view";
       showBoxes = true;
     } else {
-      patchBox(drag.key, { bbox, bboxSource: "manual" });
+      setCase(moveBox(localCase, drag.key, bbox), { boxes: true });
     }
     render();
+  }
+
+  // ---- the sentence tags
+
+  function pickTag(key) {
+    if (selectedTagKey === key) return;
+    selectedTagKey = key;
+    render();
+  }
+
+  function addFinding() {
+    const out = addTag(localCase, newFinding);
+    if (!out.tag) return;
+    newFinding = "";
+    selectedTagKey = out.tag.key;
+    setCase(out.c, { tags: true });
+    render();
+  }
+
+  function editTagText(key, value) {
+    setCase(setTagText(localCase, key, value), { tags: true, boxes: true });
+    for (const chip of document.querySelectorAll(`[data-box-tag="${key}"] [data-bbox-label]`)) chip.textContent = value;
+  }
+
+  function flip(key) {
+    setCase(flipTag(localCase, key), { tags: true, boxes: true });
+    render();
+  }
+
+  function removeTag(key) {
+    if (selectedTagKey === key) selectedTagKey = "";
+    setCase(deleteTag(localCase, key), { tags: true, boxes: true, lines: true });
+    render();
+  }
+
+  function reorder(fromKey, toKey, after) {
+    if (!fromKey || !toKey || fromKey === toKey) return;
+    setCase(moveTagTo(localCase, fromKey, toKey, after), { tags: true });
+    render();
+  }
+
+  function dropAfter(e, row) {
+    const r = row?.getBoundingClientRect?.();
+    return Boolean(r && r.height && typeof e.clientY === "number" && e.clientY > r.top + r.height / 2);
+  }
+
+  function changeView(value) {
+    setCase(refreshCtr({ ...localCase, view: cleanView(value) }), { tags: true, boxes: true });
+    render();
+  }
+
+  function changeComment(value) {
+    setCase({ ...localCase, comment: value }, { tags: true });
+  }
+
+  const tagsForSave = () => (localCase.findingTags || []).map((t) => ({
+    key: t.key,
+    text: String(t.text || "").replace(/\s+/g, " ").trim(),
+    abnormal: t.abnormal !== false,
+    manual: Boolean(t.manual),
+    kind: t.kind === "ctr" ? "ctr" : "",
+    boxDeclined: Boolean(t.boxDeclined),
+  })).filter((t) => t.text);
+
+  const tagSignature = (tags) => (Array.isArray(tags) ? tags : [])
+    .map((t) => `${t.key}|${t.abnormal === false ? 0 : 1}|${String(t.text || "").trim()}`).sort().join("\n");
+
+  // An abnormal sentence that has no box and still wants one from Azure.
+  function wantsBox(c) {
+    return (c.findingTags || []).some((t) => t.abnormal && !t.boxDeclined && t.kind !== "ctr"
+      && !boxesForTag(c.findings, t.key).length);
   }
 
   function findingsForSave(list) {
@@ -1041,21 +1180,20 @@ export async function renderReviewPage({ target }) {
       ...stored,
       remarks: stored.remarks ?? fallback.remarks ?? localCase.remarks,
     };
+    delete localCase.tagsDerived;
     remarksDraft = localCase.remarks || fallback.remarks || "";
     remarksDirty = false;
     reportDirty = false;
-    bodyDraft = withoutThinking(normalizeReportShape(splitReportAndRemarks(localCase.reportText || "").body));
-    bodyDirty = false;
+    tagsDirty = false;
     boxesDirty = false;
     measuresDirty = false;
-    if (selectedBoxKey && !filmBoxes(localCase.findings).some((f) => boxKey(f) === selectedBoxKey)) {
-      selectedBoxKey = "";
-    }
+    if (selectedTagKey && !tagOf(selectedTagKey)) selectedTagKey = "";
   }
 
-  // The report body is sent only when the radiologist typed in it, and boxes
-  // only when they drew, moved or deleted one; otherwise the stored copy is
-  // kept so a stale copy here cannot overwrite the popup or a fresh Azure pass.
+  // The sentence tags, the COMMENT and the view are sent only when the
+  // radiologist changed them, boxes only when they drew, moved or deleted one;
+  // otherwise the stored copy is kept so a stale copy here cannot overwrite a
+  // fresh Azure pass. The server assembles the stored report from the tags.
   function persistClinicianEdits() {
     const run = async () => {
       if (signal.aborted || leaving) return;
@@ -1084,35 +1222,50 @@ export async function renderReviewPage({ target }) {
         hintMongo("");
         return stored;
       }
-      const typedBody = bodyDirty ? bodyDraft : null;
+      const seq = editSeq;
       const storedBody = splitReportAndRemarks(stored.reportText || "").body;
-      const composed = applyRemarksToReport(
-        typedBody == null ? stored.reportText : restoreThinking(storedBody, typedBody),
-        note
-      );
-      const payload = {
-        reportText: composed.reportText,
-        remarks: composed.remarks,
-      };
+      const tags = tagsForSave();
+      const payload = {};
+      let base = stored.reportText;
+      if (tagsDirty) {
+        const view = cleanView(localCase.view);
+        const comment = String(localCase.comment || "").replace(/\s+/g, " ").trim();
+        base = assembleReport({ view, tags, comment, thinking: thinkingBlockOf(storedBody) });
+        payload.findingTags = tags;
+        payload.comment = comment;
+        payload.view = view;
+      }
+      const composed = applyRemarksToReport(base, note);
+      payload.reportText = composed.reportText;
+      payload.remarks = composed.remarks;
       if (boxesDirty) payload.findings = findingsForSave(localCase.findings);
       if (measuresDirty) payload.measurements = measurementsForSave();
-      const reportChanged = withoutThinking(splitReportAndRemarks(composed.reportText).body)
-        !== withoutThinking(storedBody);
       const updated = await api.updateCase(getEffectiveCaseId(), payload);
       let next = unwrapLegacyReport(updated.case || { ...stored, ...payload });
-      const typedSince = bodyDirty && bodyDraft !== typedBody;
-      const neverBoxed = !stored.boxesState && !filmBoxes(payload.findings || stored.findings).length;
-      if (reportChanged || neverBoxed) {
+      const sentencesChanged = tagsDirty && tagSignature(stored.findingTags) !== tagSignature(tags);
+      const neverBoxed = !stored.boxesState && !filmBoxes({
+        findingTags: tags,
+        findings: payload.findings || stored.findings,
+      }).length;
+      if ((sentencesChanged || neverBoxed) && wantsBox(next)) {
         hintMongo("Placing film boxes…");
         next = await resyncMachineFindings(getEffectiveCaseId(), next);
       }
-      if (typedSince) {
-        localCase = { ...localCase, ...next };
+      if (editSeq !== seq) {
+        // The radiologist kept editing while this saved: keep their newer work.
+        localCase = {
+          ...next,
+          findingTags: localCase.findingTags,
+          comment: localCase.comment,
+          view: localCase.view,
+          findings: localCase.findings,
+          measurements: localCase.measurements,
+        };
         hintMongo("Unsaved changes. Press Save draft.");
         return next;
       }
       syncFromPersisted(next, composed);
-      hintMongo(reportChanged ? "Report saved. Film boxes now match this draft." : "Report saved in MongoDB.");
+      hintMongo(sentencesChanged ? "Report saved. Film boxes now match this draft." : "Report saved in MongoDB.");
       return next;
     };
     const pending = persistChain.then(run, run);
@@ -1173,25 +1326,6 @@ export async function renderReviewPage({ target }) {
       showNotice(err.message);
       toast(err.message);
     } finally { busy = false; render(); }
-  }
-
-  async function saveRemarks() {
-    busy = true;
-    render();
-    try {
-      const stored = await persistClinicianEdits();
-      const saved = stored.status === "finalized"
-        ? "Remarks saved. The finalized report was not changed."
-        : "Remarks saved and added to the report.";
-      showNotice(saved);
-      toast(saved);
-    } catch (err) {
-      showNotice(err.message);
-      toast(err.message);
-    } finally {
-      busy = false;
-      render();
-    }
   }
 
   async function shareReport() {
@@ -1262,7 +1396,9 @@ export async function renderReviewPage({ target }) {
         return;
       }
       if (kind === "docx") await downloadReportDocx(stored);
+      else if (kind === "docx-films") await downloadReportDocx(stored, "films");
       else if (kind === "preview") await previewReportPdf(stored, preview);
+      else if (kind === "pdf-films") await downloadReportPdf(stored, "films");
       else await downloadReportPdf(stored);
     } catch (err) {
       preview?.close();
@@ -1280,21 +1416,25 @@ export async function renderReviewPage({ target }) {
     const edit = !generating && canEditReport(state.user) && localCase.status !== "finalized";
     const canRemark = !generating && canEditReport(state.user);
     const canFlag = canEditReport(state.user);
-    const boxes = filmBoxes(localCase.findings);
+    const boxes = filmBoxes(localCase);
+    const tags = Array.isArray(localCase.findingTags) ? localCase.findingTags : [];
     const placing = placingBoxes(localCase);
     const editBoxes = canEditBoxes();
     const patientName = patientDisplayName(localCase);
-    const reportBody = withoutThinking(normalizeReportShape(splitReportAndRemarks(localCase.reportText || "").body));
     const measures = measurementList();
+    const view = cleanView(localCase.view);
 
     function boxStatus() {
       if (generating || awaitingAi) return "";
       if (placing) return "Azure is placing boxes on the film from the report…";
       if (localCase.boxesState === "failed") return "Azure could not place boxes for this report.";
-      if (localCase.boxesState === "done" && !boxes.length) return "Azure found nothing to box on this film.";
+      if (localCase.boxesState === "done" && !boxes.length && wantsBox(localCase)) return "Azure found nothing to box on this film.";
       if (boxes.some((f) => !isDrawnBox(f))) return "AI boxes are placed by Azure from the report wording. They are approximate, not drawn by CURV.";
       if (boxes.length) return "";
-      if (String(localCase.reportText || "").trim() && !localCase.boxesState) {
+      if (wantsBox(localCase) && !localCase.boxesState) {
+        if (localCase.status === "finalized") {
+          return "This report is endorsed. It is not sent through the AI again.";
+        }
         return "This report has no film boxes yet. Press Re-run AI for a fresh CURV report with boxes, or Save draft to box this one.";
       }
       return "";
@@ -1304,8 +1444,118 @@ export async function renderReviewPage({ target }) {
 
     const btn = "inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50";
     const btnLight = `${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`;
-    const unsavedDraft = bodyDirty || remarksDirty || boxesDirty || measuresDirty;
-    const listMax = boxes.length > 0 && measures.length > 0 ? "max-h-28" : "max-h-36";
+    const unsavedDraft = tagsDirty || remarksDirty || boxesDirty || measuresDirty;
+    const listMax = "max-h-36";
+
+    const viewLabel = (v) => (v === "PA" ? "PA (erect)" : v || "not recorded");
+
+    function clearDropMark() {
+      dropMark = null;
+      for (const row of document.querySelectorAll("[data-tag]")) {
+        row.classList.remove("border-t-2", "border-b-2", "border-t-ha-blue", "border-b-ha-blue");
+      }
+    }
+
+    function markDrop(row, after) {
+      clearDropMark();
+      dropMark = { key: row.dataset.tag, after };
+      row.classList.add(after ? "border-b-2" : "border-t-2", after ? "border-b-ha-blue" : "border-t-ha-blue");
+    }
+
+    const rowsFor = (text) => Math.max(1, Math.ceil(String(text || "").length / 58));
+
+    function tagRow(t) {
+      const selected = t.key === selectedTagKey;
+      const index = boxes.findIndex((f) => f.tagKey === t.key);
+      const color = index >= 0 ? filmBoxColor(index, boxes.length) : null;
+      const row = el("li", {
+        class: `flex items-start gap-1.5 rounded-md border px-1.5 py-1 ${selected ? "border-slate-500 bg-slate-100" : "border-transparent hover:bg-slate-50"}`,
+        dataset: { tag: t.key, abnormal: t.abnormal ? "1" : "", selected: selected ? "1" : "" },
+        onClick: () => pickTag(t.key),
+        onDragover: (e) => {
+          if (!dragKey) return;
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+          markDrop(row, dropAfter(e, row));
+        },
+        onDrop: (e) => {
+          if (!dragKey) return;
+          e.preventDefault();
+          const from = dragKey;
+          const after = dropAfter(e, row);
+          dragKey = "";
+          clearDropMark();
+          reorder(from, t.key, after);
+        },
+      },
+        edit && el("button", {
+          type: "button",
+          draggable: "true",
+          class: "mt-0.5 shrink-0 cursor-grab select-none px-0.5 text-slate-400 hover:text-slate-700",
+          title: "Drag to reorder",
+          "aria-label": "Drag to reorder this finding",
+          dataset: { dragTag: t.key },
+          onDragstart: (e) => {
+            dragKey = t.key;
+            if (e.dataTransfer) {
+              e.dataTransfer.effectAllowed = "move";
+              try { e.dataTransfer.setData("text/plain", t.key); } catch { /* some browsers refuse */ }
+              try { e.dataTransfer.setDragImage?.(row, 8, 8); } catch { /* not supported */ }
+            }
+          },
+          onDragend: () => { dragKey = ""; clearDropMark(); },
+        }, "\u22ee\u22ee"),
+        el("button", {
+          type: "button",
+          disabled: !edit,
+          class: `mt-0.5 shrink-0 rounded-full px-2 text-[11px] font-bold leading-5 ${t.abnormal ? "bg-rose-100 text-rose-800" : "bg-emerald-100 text-emerald-800"} disabled:cursor-default`,
+          title: edit ? "Click to switch between normal and abnormal. Only an abnormal finding has a film box." : "",
+          dataset: { flip: t.key },
+          onClick: (e) => { e.stopPropagation(); flip(t.key); },
+        }, t.abnormal ? "Abnormal" : "Normal"),
+        edit
+          ? el("textarea", {
+              id: `tag-text-${t.key}`,
+              class: "min-w-0 flex-1 resize-none rounded border border-transparent bg-transparent px-1 py-0.5 text-sm leading-5 outline-none hover:border-slate-300 focus:border-slate-400 focus:bg-white",
+              rows: rowsFor(t.text),
+              dataset: { tagText: t.key },
+              onInput: (e) => {
+                editTagText(t.key, e.target.value);
+                e.target.rows = rowsFor(e.target.value);
+              },
+              onKeydown: (e) => {
+                if (e.key === "Enter") e.preventDefault();
+                if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+                  e.preventDefault();
+                  const at = tags.findIndex((x) => x.key === t.key);
+                  const to = tags[at + (e.key === "ArrowUp" ? -1 : 1)];
+                  if (to) reorder(t.key, to.key, e.key === "ArrowDown");
+                }
+              },
+            }, t.text)
+          : el("span", { class: "min-w-0 flex-1 px-1 py-0.5 text-sm leading-5" }, t.text),
+        color
+          ? el("span", { class: `mt-1.5 h-3 w-3 shrink-0 rounded-sm ${color.chip}`, title: "This finding's box on the film", dataset: { hasBox: t.key } })
+          : t.abnormal
+          ? el("span", { class: "mt-1 shrink-0 text-[10px] italic text-amber-700", title: "No box on the film yet. Select this finding and use Draw box." }, "no box")
+          : null,
+        edit && color && editBoxes && el("button", {
+          type: "button",
+          class: "mt-0.5 shrink-0 rounded border border-slate-300 px-1.5 text-[11px] font-semibold leading-5 text-slate-600 hover:bg-slate-100",
+          title: "Delete this finding's box. Azure will not put it back.",
+          dataset: { deleteBox: t.key },
+          onClick: (e) => { e.stopPropagation(); deleteBox(t.key); },
+        }, "Remove box"),
+        edit && el("button", {
+          type: "button",
+          class: "mt-0.5 shrink-0 rounded border border-red-200 px-1.5 text-[11px] font-semibold leading-5 text-red-700 hover:bg-red-50",
+          title: "Delete this finding, its box and its measurement",
+          dataset: { deleteTag: t.key },
+          onClick: (e) => { e.stopPropagation(); removeTag(t.key); },
+        }, "Delete")
+      );
+      return row;
+    }
 
     const root = el(
       "main",
@@ -1344,7 +1594,10 @@ export async function renderReviewPage({ target }) {
           ),
           el("p", { class: "mt-0.5 text-xs text-slate-500" },
             "Modality: ", el("b", { class: "text-slate-700" }, "XRAY"),
-            " · Procedure: ", el("b", { class: "text-slate-700" }, "Chest"),
+            " · Examination: ", el("b", { class: "text-slate-700" }, examinationName(view)),
+            localCase.examinedAt
+              ? el("span", { id: "examined-at" }, " · Examined: ", formatDateTime(localCase.examinedAt))
+              : null,
             (localCase.registeredAt || localCase.imageId)
               ? el("span", {}, " · Registered: ", new Date(localCase.registeredAt || localCase.createdAt).toLocaleString())
               : null,
@@ -1369,13 +1622,27 @@ export async function renderReviewPage({ target }) {
           canExport(state.user) && el("button", {
             class: btnLight,
             disabled: busy || generating || awaitingAi,
+            title: "The report with one clean film",
             onClick: () => download("docx"),
           }, svgIcon("download", { size: 14 }), "Word"),
           canExport(state.user) && el("button", {
             class: btnLight,
             disabled: busy || generating || awaitingAi,
+            title: "The report with one clean film",
             onClick: () => download("pdf"),
           }, svgIcon("download", { size: 14 }), "PDF"),
+          canExport(state.user) && el("button", {
+            class: btnLight,
+            disabled: busy || generating || awaitingAi,
+            title: "The report, then the whole film again for each abnormal finding with its box and measurement",
+            onClick: () => download("docx-films"),
+          }, svgIcon("download", { size: 14 }), "Word with finding films"),
+          canExport(state.user) && el("button", {
+            class: btnLight,
+            disabled: busy || generating || awaitingAi,
+            title: "The report, then the whole film again for each abnormal finding with its box and measurement",
+            onClick: () => download("pdf-films"),
+          }, svgIcon("download", { size: 14 }), "PDF with finding films"),
           canFlag && localCase.status === "finalized" && el("button", {
             class: btnLight,
             disabled: busy,
@@ -1432,10 +1699,24 @@ export async function renderReviewPage({ target }) {
                 onClick: () => {
                   filmTool = filmTool === "measure" ? "view" : "measure";
                   measureLine = null;
+                  ctrHeart = null;
                   showMeasures = true;
                   render();
                 },
               }, filmTool === "measure" ? "Measuring" : "Measure"),
+              editBoxes && el("button", {
+                id: "measure-ctr",
+                type: "button",
+                title: "Draw the greatest transverse cardiac diameter, then the greatest inner thoracic diameter",
+                class: `rounded-lg border px-2.5 py-1 text-xs font-semibold ${filmTool === "ctr" ? "border-white bg-white text-black" : "border-white/20 bg-white/10 text-white hover:bg-white/20"}`,
+                onClick: () => {
+                  filmTool = filmTool === "ctr" ? "view" : "ctr";
+                  measureLine = null;
+                  ctrHeart = null;
+                  showMeasures = true;
+                  render();
+                },
+              }, filmTool === "ctr" ? "Heart size…" : "Heart size"),
               editBoxes && el("button", {
                 id: "draw-box",
                 type: "button",
@@ -1462,7 +1743,7 @@ export async function renderReviewPage({ target }) {
           },
             el("div", {
               id: "xray-stage",
-              class: `relative m-auto shrink-0 touch-none ${filmTool === "measure" || filmTool === "draw" ? "cursor-crosshair" : ""}`,
+              class: `relative m-auto shrink-0 touch-none ${filmTool === "measure" || filmTool === "ctr" || filmTool === "draw" ? "cursor-crosshair" : ""}`,
               // At 100% the whole film fits the panel; zoom scales from there.
               style: {
                 width: filmAspect
@@ -1491,28 +1772,29 @@ export async function renderReviewPage({ target }) {
                     },
                   })
                 : el("div", { class: "pointer-events-none flex h-[320px] w-full min-w-[240px] items-center justify-center text-slate-300 text-sm" }, localCase.imageId ? "Loading image…" : "No image"),
-              showMeasures && measures.length > 0 && savedMeasuresLayer(measures),
-              ...(showMeasures ? measures.map((m, i) => savedMeasureLabel(m, i)) : []),
+              showMeasures && (measures.length > 0 || ctrHeart) && savedMeasuresLayer(ctrHeart ? [...measures, ctrHeart] : measures),
+              ...(showMeasures ? (ctrHeart ? [...measures, ctrHeart] : measures).map((m, i) => savedMeasureLabel(m, i)) : []),
               measureLine && measureOverlay(measureLine),
               measureLine && measureLabelEl(measureLine),
               ...(!showBoxes ? [] : boxes.map((finding, index) => {
                 const color = filmBoxColor(index, boxes.length);
-                const selected = boxKey(finding) === selectedBoxKey;
+                const selected = finding.tagKey === selectedTagKey;
+                const tag = tagOf(finding.tagKey);
                 return el("div", {
-                  class: `pointer-events-none absolute ${color.border} ${selected ? `z-10 border-2 ${color.fill}` : "border-[1.5px]"} ${filmTool === "measure" ? "opacity-40" : ""}`,
-                  dataset: { bbox: String(index + 1), bboxKey: boxKey(finding), selected: selected ? "1" : "" },
+                  class: `pointer-events-none absolute ${color.border} ${selected ? `z-10 border-2 ${color.fill}` : "border-[1.5px]"} ${lineTool() ? "opacity-40" : ""}`,
+                  dataset: { bbox: String(index + 1), bboxKey: boxKey(finding), boxTag: finding.tagKey, selected: selected ? "1" : "" },
                   style: {
                     left: finding.bbox[0] + "%",
                     top: finding.bbox[1] + "%",
                     width: finding.bbox[2] + "%",
                     height: finding.bbox[3] + "%",
                   },
-                  title: finding.sentence || finding.label,
+                  title: tag?.text || finding.sentence || finding.label,
                 },
                   el("span", {
                     class: `absolute -top-4 left-0 max-w-[11rem] truncate rounded-sm px-1 text-[10px] font-semibold leading-4 text-black ${color.chip}`,
                     dataset: { bboxLabel: "1" },
-                  }, finding.label),
+                  }, tag?.text || finding.label),
                   ...(selected && editBoxes ? ["nw", "ne", "sw", "se"].map((h) =>
                     el("span", {
                       class: `absolute h-2.5 w-2.5 rounded-sm border ${color.handle}`,
@@ -1529,99 +1811,56 @@ export async function renderReviewPage({ target }) {
               }))
             )
           ),
-          el("p", { class: "mt-1.5 shrink-0 text-center text-xs text-slate-300" },
-            filmTool === "measure"
+          el("p", { id: "film-hint", class: "mt-1.5 shrink-0 text-center text-xs text-slate-300" },
+            filmTool === "ctr"
+              ? (measureLine
+                  ? measureText(measureLine)
+                  : ctrHeart
+                  ? "Now draw the greatest inner thoracic diameter."
+                  : "Draw the greatest transverse cardiac diameter.")
+              : filmTool === "measure"
               ? (measureLine
                   ? measureText(measureLine)
                   : editBoxes
-                  ? "Drag a line across the lesion. Each line is added to the report when you press Save draft."
-                  : "Drag a line across the lesion. Centimetres use the DICOM pixel spacing.")
+                  ? "Drag a line across the lesion. It is written into the selected finding, or starts a new one."
+                  : "Drag a line across the lesion. The label shows the film size. A body size is shown only when this file has a calibration.")
               : filmTool === "draw"
-              ? "Drag on the film to draw a box, then name it in the list below."
+              ? "Drag on the film to draw a box for the selected finding, or for a new one."
               : editBoxes && boxes.length
-              ? "Click a box to select it. Drag it to move, or drag a corner to resize."
+              ? "Click a box to select its finding. Drag it to move, or drag a corner to resize."
               : `Zoom ${Math.round(zoom * 100)}%. Scroll the film to move around.`
           ),
-          boxStatus() && el("p", { id: "box-status", class: "mt-0.5 shrink-0 text-center text-xs text-slate-400" }, boxStatus()),
-          boxes.length > 0 && el("div", { class: "mt-2 shrink-0" },
-            el("div", { class: "flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400" },
-              el("span", {}, "Boxes on the film"),
-              boxesDirty && el("span", { class: "normal-case tracking-normal text-amber-300" }, "Unsaved. Press Save draft.")
-            ),
-            el("ul", { id: "box-list", class: `mt-1 ${listMax} divide-y divide-white/10 overflow-y-auto rounded-lg border border-white/10` },
-              ...boxes.map((f, i) => {
-                const key = boxKey(f);
-                const color = filmBoxColor(i, boxes.length);
-                const selected = key === selectedBoxKey;
-                const select = () => { selectedBoxKey = selected ? "" : key; render(); };
-                return el("li", {
-                  class: `flex items-center gap-2 px-3 py-1 ${selected ? "bg-white/10" : ""}`,
-                  dataset: { boxRow: key },
-                },
-                  el("button", {
-                    type: "button",
-                    class: `h-3.5 w-3.5 shrink-0 rounded-sm ${color.chip}`,
-                    title: "Select this box",
-                    onClick: select,
-                  }),
-                  editBoxes && isDrawnBox(f)
-                    ? el("input", {
-                        class: "min-w-0 flex-1 rounded bg-white/10 px-2 py-1 text-sm text-white outline-none focus:bg-white/20",
-                        value: f.label || "",
-                        placeholder: "Name this box",
-                        dataset: { boxName: key },
-                        onFocus: () => { selectedBoxKey = key; },
-                        onInput: (e) => {
-                          patchBox(key, { label: e.target.value });
-                          const tag = document.querySelector(`[data-bbox-key="${key}"] [data-bbox-label]`);
-                          if (tag) tag.textContent = e.target.value || "Marked area";
-                        },
-                      })
-                    : el("button", {
-                        type: "button",
-                        class: "min-w-0 flex-1 truncate text-left text-sm text-slate-100",
-                        title: f.sentence || f.label,
-                        onClick: select,
-                      }, f.label),
-                  f.source && el("span", { class: "shrink-0 text-[11px] font-semibold uppercase text-slate-400" },
-                    isDrawnBox(f) ? "Manual" : f.bboxSource === "manual" ? "AI · adjusted" : "AI"),
-                  editBoxes && el("button", {
-                    type: "button",
-                    class: "shrink-0 rounded border border-red-300/40 px-2 py-0.5 text-xs font-semibold text-red-200 hover:bg-red-500/20",
-                    dataset: { deleteBox: key },
-                    onClick: () => deleteBox(key),
-                  }, "Delete")
-                );
-              })
-            )
+          measurementPolicy().conflict && el("p", {
+            id: "projection-warning",
+            class: "shrink-0 text-center text-[11px] font-semibold text-amber-200",
+          }, measurementPolicy().reason),
+          (measures.length > 0 || lineTool()) && el("p", { id: "spacing-note", class: "shrink-0 text-center text-[11px] text-slate-400" },
+            spacingNote()
           ),
+          boxStatus() && el("p", { id: "box-status", class: "mt-0.5 shrink-0 text-center text-xs text-slate-400" }, boxStatus()),
           measures.length > 0 && el("div", { class: "mt-2 shrink-0" },
             el("div", { class: "flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400" },
-              el("span", {}, "Measurements (in the report)"),
+              el("span", {}, "Measurements (written into the report)"),
               measuresDirty && el("span", { class: "normal-case tracking-normal text-amber-300" }, "Unsaved. Press Save draft.")
             ),
             el("ul", { id: "measure-list", class: `mt-1 ${listMax} divide-y divide-white/10 overflow-y-auto rounded-lg border border-white/10` },
               ...measures.map((m, i) => {
                 const key = measureKey(m, i);
+                const owner = tagOf(m.tagKey);
+                const shown = shownMeasure(m);
+                const policy = measurementPolicy();
+                const trial = policy.showExperimentalEstimate ? experimentalLabel(shown) : "";
                 return el("li", { class: "flex items-center gap-2 px-3 py-1", dataset: { measureRow: key } },
                   el("span", { class: "shrink-0 rounded bg-white px-1.5 text-xs font-bold text-black" }, String(i + 1)),
-                  editBoxes
-                    ? el("input", {
-                        class: "min-w-0 flex-1 rounded bg-white/10 px-2 py-1 text-sm text-white outline-none focus:bg-white/20",
-                        value: m.label || "",
-                        placeholder: "Name (optional), e.g. Nodule",
-                        dataset: { measureName: key },
-                        onInput: (e) => {
-                          setMeasurements(measurementList().map((row, j) => (measureKey(row, j) === key ? { ...row, label: e.target.value } : row)));
-                          const tag = document.querySelector(`[data-saved-measure-label="${i + 1}"]`);
-                          if (tag) tag.textContent = measureTagText({ ...m, label: e.target.value }, i);
-                        },
-                      })
-                    : el("span", { class: "min-w-0 flex-1 truncate text-sm text-slate-100" }, m.label || "Measurement"),
-                  el("span", { class: "shrink-0 font-mono text-sm text-white" }, m.text),
+                  el("span", { class: "min-w-0 flex-1 text-sm text-slate-100", title: owner?.text || "" },
+                    el("span", { class: "block truncate" }, m.kind === "ctr-heart" ? "Heart" : m.kind === "ctr-thorax" ? "Thorax" : "Line"),
+                    trial && el("span", { class: "block truncate text-[11px] text-amber-200", dataset: { experimentalEstimate: String(i + 1) } }, `${trial}. ${EXPERIMENTAL_NOTE}`)
+                  ),
+                  el("span", { class: "shrink-0 font-mono text-sm text-white" }, shown.text),
                   editBoxes && el("button", {
                     type: "button",
                     class: "shrink-0 rounded border border-red-300/40 px-2 py-0.5 text-xs font-semibold text-red-200 hover:bg-red-500/20",
+                    title: m.kind === "lesion" || !m.kind ? "Delete this line" : "Delete this line and the ratio sentence",
                     dataset: { deleteMeasure: key },
                     onClick: () => deleteMeasurement(key),
                   }, "Delete")
@@ -1642,49 +1881,68 @@ export async function renderReviewPage({ target }) {
               }, svgIcon("save", { size: 16 }), "Save draft")
             ),
             el("div", { class: "card flex min-h-0 flex-1 flex-col !p-3", id: "report-panel" },
-            el("h2", { class: "shrink-0 text-base font-bold text-slate-900" }, "Report"),
-            edit
-              ? el("textarea", {
-                  id: "report-text",
-                  class: "input mt-2 min-h-[16rem] flex-1 resize-none font-sans text-sm leading-6 lg:min-h-[8rem]",
-                  rows: 18,
-                  onInput: (e) => { bodyDraft = e.target.value; bodyDirty = true; markUnsaved(); },
-                }, bodyDraft)
-              : el("pre", { id: "report-text", class: "mt-2 min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap font-sans text-sm leading-6 text-slate-800" },
-                  generating
-                    ? "The report is still generating."
-                    : reportBody || "No report has been saved for this case yet."
-                ),
-            edit && el("p", { class: "mt-1 shrink-0 text-xs text-slate-500" },
-              "Save draft keeps your edits and Azure adds boxes for new findings. Boxes you drew, resized or deleted stay as you left them."
+              el("div", { class: "flex shrink-0 flex-wrap items-center justify-between gap-2" },
+                el("h2", { class: "text-base font-bold text-slate-900" }, "Report"),
+                edit
+                  ? el("label", { class: "flex items-center gap-1.5 text-xs font-semibold text-slate-600" },
+                      "View",
+                      el("select", {
+                        id: "view-select",
+                        class: "input !w-auto py-1 text-xs",
+                        value: view,
+                        onChange: (e) => changeView(e.target.value),
+                      }, ...VIEWS.map((v) => el("option", { value: v, selected: v === view }, viewLabel(v)))))
+                  : el("span", { id: "view-label", class: "text-xs font-semibold text-slate-600" }, `View: ${viewLabel(view)}`)
+              ),
+              el("dl", { id: "report-header", class: "mt-1 grid shrink-0 grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] leading-4 text-slate-600" },
+                ...reportHeaderFields(localCase, state.user?.name || "").map((f) =>
+                  el("div", { class: "truncate", dataset: { field: f.label } },
+                    el("dt", { class: "inline font-semibold text-slate-500" }, `${f.label}: `),
+                    el("dd", { class: "inline text-slate-800" }, f.value))
+                )
+              ),
+              el("div", { id: "report-text", class: "mt-2 min-h-0 flex-1 overflow-y-auto text-sm leading-6 text-slate-800" },
+                generating
+                  ? el("p", {}, "The report is still generating.")
+                  : !tags.length && !edit && !String(localCase.comment || "").trim()
+                  ? el("p", {}, "No report has been saved for this case yet.")
+                  : [
+                      el("p", { id: "report-title", class: "text-sm font-bold tracking-wide text-slate-900" }, reportTitle(view)),
+                      el("h3", { class: "mt-2 text-xs font-bold uppercase tracking-wide text-slate-500" }, "FINDINGS"),
+                      el("ul", { id: "tag-list", class: "mt-1 space-y-0.5" }, ...tags.map(tagRow)),
+                      edit && el("div", { class: "mt-1.5 flex gap-1.5" },
+                        el("input", {
+                          id: "new-finding",
+                          class: "input min-w-0 flex-1 py-1 text-sm",
+                          placeholder: "Add a finding at the end of the list…",
+                          value: newFinding,
+                          onInput: (e) => { newFinding = e.target.value; },
+                          onKeydown: (e) => { if (e.key === "Enter") { e.preventDefault(); addFinding(); } },
+                        }),
+                        el("button", { id: "add-finding", type: "button", class: btnLight, onClick: addFinding }, "Add")
+                      ),
+                      el("h3", { class: "mt-3 text-xs font-bold uppercase tracking-wide text-slate-500" }, "COMMENT"),
+                      edit
+                        ? el("textarea", {
+                            id: "comment-text",
+                            class: "input mt-1 h-16 resize-none py-1.5 text-sm",
+                            rows: 2,
+                            placeholder: "One conclusive line",
+                            onInput: (e) => changeComment(e.target.value),
+                          }, localCase.comment || "")
+                        : el("p", { id: "comment-text", class: "mt-0.5" }, String(localCase.comment || "").trim() ? `– ${String(localCase.comment).trim()}` : ""),
+                      el("p", { class: "mt-3" }, THANKS_LINE),
+                      el("p", { id: "endorser", class: localCase.status === "finalized" ? "font-semibold" : "text-slate-400 italic" },
+                        localCase.status === "finalized"
+                          ? (localCase.finalizedByName || "")
+                          : "The endorsing radiologist's name is added when the report is endorsed.")
+                    ]
+              ),
+              edit && el("p", { class: "mt-1 shrink-0 text-xs text-slate-500" },
+                "Drag \u22ee\u22ee to reorder. Click a finding to see its box, or a box to see its finding. COMMENT is the conclusive line and has no box. Save draft keeps your edits and Azure adds boxes for new abnormal findings."
+              ),
+              canRemark && el("p", { id: "mongo-report-status", class: "mt-0.5 shrink-0 text-xs font-medium text-ha-blue" })
             )
-          )
-          ),
-          el("div", { class: "card shrink-0 !p-3" },
-            el("div", { class: "flex flex-wrap items-center justify-between gap-2" },
-              el("h2", { class: "text-base font-bold text-slate-900" }, "Remarks"),
-              canRemark && el("button", {
-                class: `${btn} bg-slate-900 text-white hover:bg-slate-700`,
-                disabled: busy,
-                onClick: saveRemarks,
-              }, "Save remarks")
-            ),
-            el("textarea", {
-              id: "remarks-box",
-              class: "input mt-2 h-20 resize-y py-1.5 text-sm",
-              rows: 3,
-              readOnly: !canRemark,
-              placeholder: localCase.status === "finalized"
-                ? "Notes stay on this case. They are not added to the finalized report…"
-                : "Notes or extra findings to add to the report…",
-              onInput: (e) => { remarksDraft = e.target.value; remarksDirty = true; markUnsaved(); },
-            }, remarksDraft),
-            el("p", { class: "mt-1 text-xs text-slate-500" },
-              localCase.status === "finalized"
-                ? "This case is finalized. Remarks are saved as notes only and are not written into the report, Word, or PDF."
-                : "Nothing is written until you press Save draft or Save remarks. Both save the report and the remarks."
-            ),
-            canRemark && el("p", { id: "mongo-report-status", class: "mt-0.5 text-xs font-medium text-ha-blue" })
           ),
           showProvenance && (localCase.editLog || []).length > 0 && el("div", { class: "card shrink-0 !p-0" },
             el("button", {

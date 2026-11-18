@@ -66,6 +66,8 @@ const REPORT_TEXT = [
   "   - The lungs are clear bilaterally without focal consolidation.",
   "2. Heart:",
   "   - The heart size is within normal limits.",
+  "3. Pleura:",
+  "   - Mild cardiomegaly.",
 ].join("\n");
 
 function makeCase(overrides = {}) {
@@ -125,11 +127,12 @@ console.log("\n=== findings are ready before pending approve ===");
 
 await testAsync("opening Review shows stored Azure boxes and does not call Azure", async () => {
   const testCase = makeCase({
-    findings: [azureFinding("Clear lung fields"), azureFinding("Normal heart size")],
+    findings: [azureFinding("Cardiomegaly")],
   });
   const { root, azureCalls } = await runScenario({ role: "radiologist", testCase });
   assert.equal(azureCalls, 0, "Azure must already have run during generate");
-  assert.ok(root.textContent.includes("Clear lung fields"), "stored Azure finding not shown");
+  assert.equal(root.querySelectorAll("[data-bbox]").length, 1, "stored Azure box not shown");
+  assert.equal(root.querySelector("[data-bbox-label]").textContent, "Mild cardiomegaly.", "the box carries its sentence");
   assert.ok(!root.textContent.includes("Summarising findings"), "must not start a summarise spinner on open");
 });
 
@@ -148,7 +151,7 @@ await testAsync("normal statements are not boxed on the film", async () => {
   });
   const { root } = await runScenario({ role: "radiologist", testCase });
   const labels = [...root.querySelectorAll("[data-bbox-label]")].map((n) => n.textContent);
-  assert.deepEqual(labels, ["Cardiomegaly"]);
+  assert.deepEqual(labels, ["Mild cardiomegaly."]);
 });
 
 await testAsync("Hide boxes and Show boxes toggle the film overlays", async () => {
@@ -168,10 +171,10 @@ await testAsync("Review says when Azure is still placing boxes", async () => {
 });
 
 await testAsync("technicians do not trigger Azure on Review", async () => {
-  const testCase = makeCase({ findings: [azureFinding("Clear lung fields")] });
+  const testCase = makeCase({ findings: [azureFinding("Cardiomegaly")] });
   const { azureCalls, root } = await runScenario({ role: "technician", testCase });
   assert.equal(azureCalls, 0);
-  assert.ok(root.textContent.includes("Clear lung fields"));
+  assert.ok(root.textContent.includes("The heart size is within normal limits."));
 });
 
 await testAsync("the review page has no manual Summarise button", async () => {

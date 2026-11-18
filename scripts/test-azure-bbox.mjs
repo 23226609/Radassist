@@ -5,7 +5,7 @@ import assert from "node:assert";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { clampBbox, clinicalReportText } = require("../backend/utils/azureFindings.js");
+const { clampBbox, clinicalReportText, applySentenceLabels } = require("../backend/utils/azureFindings.js");
 
 let passed = 0;
 let failed = 0;
@@ -66,6 +66,28 @@ test("Findings and Impression are sent to Azure, Thinking and remarks are not", 
   assert.ok(!/thinking/i.test(clinical));
   assert.ok(!clinical.includes("compared both lungs"));
   assert.ok(!clinical.includes("Compare with old films"));
+});
+
+test("a denial stays normal when Azure marks the opposite", () => {
+  const rows = applySentenceLabels(
+    ["No pleural effusion or pneumothorax is present.", "There are atherosclerotic calcifications."],
+    { labels: [{ n: 1, abnormal: true }, { n: 2, abnormal: true }] },
+    (text) => /no pleural/i.test(text)
+  );
+  assert.equal(rows[0].abnormal, false);
+  assert.equal(rows[0].source, "azure-denial");
+  assert.equal(rows[1].abnormal, true);
+  assert.equal(rows[1].source, "azure");
+});
+
+test("a missing Azure label uses the local check", () => {
+  const rows = applySentenceLabels(
+    ["The lungs are clear."],
+    { labels: [] },
+    () => true
+  );
+  assert.equal(rows[0].abnormal, false);
+  assert.equal(rows[0].source, "local");
 });
 
 test("rejects unusable input", () => {

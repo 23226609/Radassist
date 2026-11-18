@@ -83,4 +83,60 @@ function mergeFindingsFromReport(previous, parsed) {
   return [...manual, ...rebuilt];
 }
 
-module.exports = { isManualFinding, mergeFindingsFromReport, dedupeFindings };
+const hasBox = (f) => Array.isArray(f?.bbox) && f.bbox.length === 4;
+
+// The radiologist drew, moved or accepted this box; a fresh pass leaves it alone.
+function isUserBox(f) {
+  return keepManualBox(f) || f?.status === 'accepted' || isManualFinding(f);
+}
+
+// Boxes by sentence tag: one box per abnormal tag.
+//  - a tag the radiologist took the box from (rejected) stays without one
+//  - a box the radiologist drew, moved or accepted is kept
+//  - a machine box is replaced by the new pass, when the tag is abnormal
+//  - a normal tag never gains a box, and a machine box on it is dropped
+//  - a box whose tag was deleted is dropped
+//  - boxes with no tag (older cases, hand-added cards) are kept as they are
+function mergeTagBoxes(previous, tags, incoming) {
+  const prev = (Array.isArray(previous) ? previous : []).map((f) => (f && typeof f.toObject === 'function' ? f.toObject() : f));
+  const list = Array.isArray(tags) ? tags : [];
+  const known = new Map(list.map((t) => [t.key, t]));
+  const fresh = new Map();
+  for (const f of Array.isArray(incoming) ? incoming : []) {
+    if (f?.tagKey && !fresh.has(f.tagKey)) fresh.set(f.tagKey, f);
+  }
+
+  const out = [];
+  for (const f of prev) {
+    if (!f?.tagKey) {
+      out.push(f);
+      continue;
+    }
+    const tag = known.get(f.tagKey);
+    if (!tag) continue;
+    if (f.status === 'rejected') {
+      out.push(f);
+      continue;
+    }
+    if (isUserBox(f)) {
+      out.push(f);
+      continue;
+    }
+    if (!tag.abnormal) continue;
+    // A machine box stays unless a fresh one replaces it below.
+    if (!fresh.has(f.tagKey)) out.push(f);
+  }
+  for (const tag of list) {
+    if (!tag.abnormal || tag.boxDeclined || tag.kind === 'ctr') continue;
+    const row = fresh.get(tag.key);
+    if (!row || !hasBox(row)) continue;
+    const held = out.some((f) => f.tagKey === tag.key);
+    const machineHeld = prev.some((f) => f.tagKey === tag.key && !isUserBox(f) && f.status !== 'rejected');
+    const rejected = prev.some((f) => f.tagKey === tag.key && f.status === 'rejected');
+    if (rejected || (held && !machineHeld)) continue;
+    out.push(row);
+  }
+  return out;
+}
+
+module.exports = { isManualFinding, mergeFindingsFromReport, dedupeFindings, mergeTagBoxes, isUserBox };

@@ -265,8 +265,10 @@ function isGenericNormal(text) {
 function impressionFromReport(reportText) {
   const text = String(reportText || '');
   const block = text.match(/\b(?:impression|conclusion)\s*[:.\-]\s*([\s\S]+)/i);
-  if (!block) return '';
-  return parseDiagnosis(block[1].split(/\n/)[0]);
+  if (block) return parseDiagnosis(block[1].split(/\n/)[0]);
+  // The stored layout ends with "COMMENT" and one "– conclusive line".
+  const comment = text.match(/(?:^|\n)[ \t]*COMMENT[ \t]*\n+[ \t]*[–—-]?[ \t]*([^\n]+)/);
+  return comment ? parseDiagnosis(comment[1]) : '';
 }
 
 function fallbackDiagnosis(reportText) {
@@ -373,7 +375,7 @@ Rules:
 - Use only what the endorsed report states. Never invent or soften a finding.
 - If the report describes a normal study, return a single finding saying so.`;
 
-const THINKING_BLOCK = /(^|\n)([ \t]*#*\s*Thinking\s*:?[ \t]*\n[\s\S]*?)(?=\n[ \t]*#*\s*(?:Findings|Impression|Conclusion|Radiologist remarks|Clinician-added findings)\s*:?[ \t]*\n|$)/gi;
+const THINKING_BLOCK = /(^|\n)([ \t]*#*\s*Thinking\s*:?[ \t]*\n[\s\S]*?)(?=\n[ \t]*#*\s*(?:Findings|Impression|Conclusion|COMMENT|Radiologist remarks|Clinician-added findings)\s*:?[ \t]*\n|$)/gi;
 const REMARKS_BLOCK = /(^|\n)[ \t]*#*\s*Radiologist remarks\s*:?[ \t]*\n[\s\S]*$/i;
 
 // Same rule as src/lib/reportExport.js: the model's reasoning is never part
@@ -394,7 +396,7 @@ function clinicalReportText(reportText) {
   return text;
 }
 
-async function chatJson(systemPrompt, userContent, maxTokens) {
+async function chatJson(systemPrompt, userContent, maxTokens, temperature = 0.3) {
   if (!isConfigured()) {
     throw new Error(
       'Azure OpenAI is not configured. Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_KEY ' +
@@ -417,7 +419,7 @@ async function chatJson(systemPrompt, userContent, maxTokens) {
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userContent },
       ],
-      temperature: 0.3,
+      temperature,
       max_tokens: maxTokens,
       response_format: { type: 'json_object' },
     }),
@@ -471,6 +473,104 @@ async function summariseFindings(reportText, image = null) {
   return { findings, diagnosis };
 }
 
+const TAG_PROMPT = `You place boxes on a chest X-ray for a radiologist's review screen.
+
+The user message lists sentences of an already-written report. Each has a "key".
+Every listed sentence names an abnormality. Place exactly ONE box for each.
+
+Return ONLY a JSON object of the form:
+{"boxes":[{"key":"...","location":"...","size":"...","pattern":"...","imageSupport":0.0,"severity":"minor|significant","zone":"...","bbox":[left,top,width,height]}]}
+
+Rules:
+- One entry per listed key, using the key exactly as given. Never add a key
+  that was not listed. Never return two boxes for one key.
+- "location" is the anatomy in the sentence's own words, or "" if it does not say.
+- "size" is a measurement only if the sentence states one, otherwise "".
+- "pattern" is exactly one of: ${PATTERNS.join(', ')}.
+- "imageSupport" is 0 to 1 for how clearly the ATTACHED X-ray shows this finding
+  (0.25 poorly seen, 0.45 possible, 0.65 visible, 0.80 clear, 0.90 unmistakable).
+  If no image is attached, omit imageSupport.
+- "severity" is "minor" or "significant".
+- "zone" is exactly one of: ${ZONE_KEYS.join(', ')}. Use the PATIENT's right/left
+  as the sentence states it.
+- "bbox" is [left, top, width, height] as percentages of the radiograph (0-100),
+  origin at the top-left. On a standard PA/AP chest X-ray the patient's RIGHT is
+  on the VIEWER'S LEFT. If an image is attached, LOOK AT IT and draw the box over
+  the anatomy the sentence refers to. Minimum box size 8% in each direction.
+- Never invent a finding and never rewrite a sentence.`;
+
+// Abnormal sentences that still need a box from the vision pass. The
+// cardiothoracic ratio sentence is boxed by the heart-size tool, a tag whose
+// box the radiologist removed stays without one, and a normal sentence never
+// gets one.
+function tagsNeedingBoxes(tags) {
+  return (Array.isArray(tags) ? tags : []).filter((t) => t
+    && t.key
+    && t.abnormal
+    && !t.boxDeclined
+    && t.kind !== 'ctr'
+    && String(t.text || '').trim());
+}
+
+function parseTagBoxes(parsed, tags) {
+  const list = Array.isArray(parsed) ? parsed : parsed?.boxes;
+  if (!Array.isArray(list)) throw new Error('Azure OpenAI response had no boxes array.');
+  const wanted = new Map(tagsNeedingBoxes(tags).map((t) => [t.key, t]));
+  const seen = new Set();
+  const zoneCounts = new Map();
+  const out = [];
+  for (const raw of list) {
+    const key = String(raw?.key || '');
+    const tag = wanted.get(key);
+    if (!tag || seen.has(key)) continue;
+    seen.add(key);
+    const row = normalise({ ...raw, label: tag.text.slice(0, 80), detail: tag.text }, zoneCounts);
+    if (!row) continue;
+    row.tagKey = key;
+    row.label = tag.text.slice(0, 80);
+    row.sentence = tag.text.slice(0, 240);
+    out.push(row);
+  }
+  // A key Azure skipped still gets one anatomical box, so the abnormal
+  // sentence is not left unmarked. The box is labelled as a zone estimate.
+  for (const [key, tag] of wanted) {
+    if (out.some((row) => row.tagKey === key)) continue;
+    const row = normalise({ label: tag.text.slice(0, 80), detail: tag.text }, zoneCounts);
+    if (!row) continue;
+    row.tagKey = key;
+    row.label = tag.text.slice(0, 80);
+    row.sentence = tag.text.slice(0, 240);
+    out.push(row);
+  }
+  return out;
+}
+
+/**
+ * One film box for each abnormal sentence that needs one.
+ * @param {Array<{key: string, text: string, abnormal: boolean}>} tags
+ * @param {{ buffer: Buffer, contentType?: string } | null} [image]
+ * @returns {Promise<{ boxes: Array<object> }>}
+ */
+async function placeTagBoxes(tags, image = null, options = {}) {
+  const wanted = tagsNeedingBoxes(tags);
+  if (!wanted.length) return { boxes: [] };
+  const lines = JSON.stringify(wanted.map((t) => ({ key: t.key, sentence: t.text })), null, 1);
+  const view = String(options.view || '').trim();
+  const projection = view === 'Lateral'
+    ? 'The attached image is a lateral chest X-ray. Draw each box on the anatomy visible on this lateral film. Do not assume a frontal PA layout.'
+    : view
+      ? `The attached image is a ${view} chest X-ray. On a frontal film the patient's right is on the viewer's left.`
+      : "The attached image is this case's chest X-ray.";
+  const instruction = `Place one box for each of these sentences:\n${lines}\n\n${projection}`;
+  const dataUrl = toDataUrl(image);
+  const userContent = dataUrl
+    ? [{ type: 'text', text: instruction }, { type: 'image_url', image_url: { url: dataUrl } }]
+    : instruction;
+  const maxTokens = Math.min(3500, 500 + wanted.length * 250);
+  const parsed = await chatJson(TAG_PROMPT, userContent, maxTokens, 0);
+  return { boxes: parseTagBoxes(parsed, tags) };
+}
+
 /**
  * Short dashboard Diagnosis label from the report text only.
  * @param {string} reportText
@@ -514,10 +614,64 @@ async function summariseChartFindings(reportText) {
   return findings;
 }
 
+// Labels whole sentences. A denial stays a denial even if the model marks it
+// abnormal: "No pleural effusion or pneumothorax is present." is not a disease.
+const SENTENCE_LABEL_PROMPT = `You label chest X-ray report sentences as normal or abnormal.
+Return ONLY JSON: {"labels":[{"n":1,"abnormal":false}]}
+Label every sentence, in the same order. n starts at 1.
+abnormal is true only when the sentence says a finding is present. A hedge still counts (possible, cannot exclude), and so do a device, calcification, and degenerative change.
+abnormal is false when the sentence only says a finding is absent, or says the appearance is normal, clear, unchanged, stable, or within normal limits.
+"No pleural effusion or pneumothorax is present." is abnormal false.
+Do not rewrite, split, or drop a sentence.`;
+
+function applySentenceLabels(sentences, parsed, isNormal = () => false) {
+  const list = (Array.isArray(sentences) ? sentences : [])
+    .map((s) => String(s || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  const labels = Array.isArray(parsed?.labels) ? parsed.labels : [];
+  const byN = new Map();
+  for (const row of labels) {
+    const n = Number(row?.n);
+    if (Number.isFinite(n)) byN.set(n, row?.abnormal === true);
+  }
+  return list.map((text, i) => {
+    const fromAzure = byN.has(i + 1);
+    let abnormal = fromAzure ? byN.get(i + 1) : !isNormal(text);
+    let source = fromAzure ? 'azure' : 'local';
+    if (abnormal && isNormal(text)) {
+      abnormal = false;
+      source = fromAzure ? 'azure-denial' : source;
+    }
+    return { text, abnormal, source };
+  });
+}
+
+/**
+ * Azure labels each complete sentence normal or abnormal.
+ * isNormal is the local denial check. A sentence it calls normal is not
+ * flipped to abnormal. When Azure omits a sentence, that local check is used.
+ * @param {string[]} sentences
+ * @param {(text: string) => boolean} [isNormal]
+ */
+async function classifySentences(sentences, isNormal = () => false) {
+  const list = (Array.isArray(sentences) ? sentences : [])
+    .map((s) => String(s || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  if (!list.length) return [];
+  const numbered = list.map((s, i) => `${i + 1}. ${s}`).join('\n');
+  const parsed = await chatJson(SENTENCE_LABEL_PROMPT, numbered, Math.min(2000, 180 + list.length * 30), 0);
+  return applySentenceLabels(list, parsed, isNormal);
+}
+
 module.exports = {
   summariseFindings,
   summariseDiagnosis,
   summariseChartFindings,
+  classifySentences,
+  applySentenceLabels,
+  placeTagBoxes,
+  parseTagBoxes,
+  tagsNeedingBoxes,
   withoutThinking,
   clinicalReportText,
   isConfigured,

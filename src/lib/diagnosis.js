@@ -8,7 +8,11 @@ export function needsAzureDiagnosis(c = {}) {
   if (!c.clinicianEdited) return false;
   if (!String(c.reportText || "").trim()) return false;
   const d = String(c.diagnosis || "").trim();
-  const impression = String(c.reportText || "").match(/\b(?:impression|conclusion)\s*[:.\-]\s*([^\n]+)/i)?.[1] || "";
+  // The stored layout ends with COMMENT and one conclusive line.
+  const reportText = String(c.reportText || "");
+  const impression = reportText.match(/\b(?:impression|conclusion)\s*[:.\-]\s*([^\n]+)/i)?.[1]
+    || reportText.match(/(?:^|\n)[ \t]*COMMENT[ \t]*\n+[ \t]*[\u2013\u2014-]?[ \t]*([^\n]+)/)?.[1]
+    || String(c.comment || "");
   const canned = /\bno acute cardiopulmonary (findings?|process|abnormalit(?:y|ies))\b/i;
   const prose = d.length > 50
     || /^(the |this |there )/i.test(d)

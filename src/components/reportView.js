@@ -7,7 +7,7 @@ import { el, mount } from "../dom.js";
 import { api } from "../api.js";
 import { state, toast } from "../state.js";
 import { unwrapLegacyReport, resyncMachineFindings } from "./review.js";
-import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, applyRemarksToReport, reportSignOff, withoutThinking, restoreThinking, normalizeReportShape, measurementLines, MEASUREMENTS_HEADING } from "../lib/reportExport.js";
+import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, applyRemarksToReport, reportSignOff, withoutThinking, restoreThinking, normalizeReportShape, measurementLines, MEASUREMENTS_HEADING, reportHeaderFields } from "../lib/reportExport.js";
 import { svgIcon } from "./icons.js";
 import { canEditReport } from "../lib/roles.js";
 import { isGenerating } from "../lib/caseStatus.js";
@@ -29,6 +29,12 @@ export async function renderReportViewPage({ target }) {
     stored.status !== "finalized";
 
   const canRemark = () => stored && canEditReport(state.user);
+
+  // Once a case has sentence tags its words are edited on the Review page, so
+  // the stored report and the tags cannot drift apart. This page only shows
+  // the report and keeps the remarks.
+  const isTagged = () => Boolean(stored?.findingTags?.length);
+  const textEditable = () => canEdit() && !isTagged();
 
   async function load() {
     if (!caseId) {
@@ -94,11 +100,11 @@ export async function renderReportViewPage({ target }) {
       try {
         hintMongo("Saving to MongoDB…");
         const next = canEdit()
-          ? applyRemarksToReport(restoreThinking(storedBody, typedBody), typedRemarks)
+          ? applyRemarksToReport(isTagged() ? storedBody : restoreThinking(storedBody, typedBody), typedRemarks)
           : { remarks: String(typedRemarks || "").trim() };
         const updated = await api.updateCase(caseId, next);
         stored = unwrapLegacyReport(updated.case || { ...stored, ...next });
-        if (!silent && canEdit()) {
+        if (!silent && textEditable()) {
           hintMongo("Placing film boxes…");
           stored = await resyncMachineFindings(caseId, stored);
         }
@@ -107,7 +113,7 @@ export async function renderReportViewPage({ target }) {
         if (remarks === typedRemarks) remarks = stored.remarks || next.remarks || remarks;
         hintMongo(canEdit() ? "Report saved in MongoDB." : "Notes saved in MongoDB.");
         if (!silent) {
-          toast(canEdit()
+          toast(textEditable()
             ? "Report saved. Film boxes now match this draft."
             : "Remarks saved. The finalized report was not changed.");
           notifyOpener();
@@ -145,6 +151,8 @@ export async function renderReportViewPage({ target }) {
         return;
       }
       if (kind === "docx") await downloadReportDocx(stored);
+      else if (kind === "docx-films") await downloadReportDocx(stored, "films");
+      else if (kind === "pdf-films") await downloadReportPdf(stored, "films");
       else await downloadReportPdf(stored);
     } catch (err) {
       toast(err.message || "Download failed.");
@@ -156,9 +164,16 @@ export async function renderReportViewPage({ target }) {
 
   function paint() {
     const generating = Boolean(stored && isGenerating(stored));
-    const edit = canEdit() && !generating;
+    const edit = textEditable() && !generating;
     const shownBody = draftBody;
-    const measured = measurementLines(stored?.measurements);
+    const tagged = isTagged();
+    const measured = tagged ? [] : measurementLines(stored?.measurements);
+    const headerFields = tagged ? reportHeaderFields(stored, state.user?.name || "") : [];
+    const downloadButton = (label, kind) => el("button", {
+      class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
+      disabled: busy,
+      onClick: () => download(kind),
+    }, svgIcon("download", { size: 16 }), label);
     const root = el("main", { class: "mx-auto max-w-3xl px-5 py-7" },
       el("div", { class: "flex flex-wrap items-center justify-between gap-3" },
         el("div", {},
@@ -171,16 +186,10 @@ export async function renderReportViewPage({ target }) {
           )
         ),
         el("div", { class: "flex gap-2 flex-wrap" },
-          stored && el("button", {
-            class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
-            disabled: busy,
-            onClick: () => download("docx"),
-          }, svgIcon("download", { size: 16 }), "Word"),
-          stored && el("button", {
-            class: "inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
-            disabled: busy,
-            onClick: () => download("pdf"),
-          }, svgIcon("download", { size: 16 }), "PDF"),
+          stored && downloadButton("Word", "docx"),
+          stored && downloadButton("PDF", "pdf"),
+          stored && tagged && downloadButton("Word with finding films", "docx-films"),
+          stored && tagged && downloadButton("PDF with finding films", "pdf-films"),
           canRemark() && !generating && el("button", {
             class: "rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50",
             disabled: busy,
@@ -195,6 +204,12 @@ export async function renderReportViewPage({ target }) {
       error
         ? el("p", { class: "mt-6 rounded-xl bg-red-50 p-4 text-red-700" }, error)
         : el("section", { class: "card mt-5" },
+            tagged && el("dl", { id: "report-header", class: "mb-4 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2" },
+              ...headerFields.map((f) => el("div", { class: "flex gap-1.5" },
+                el("dt", { class: "font-semibold text-slate-600" }, `${f.label}: `),
+                el("dd", { class: "text-slate-900" }, f.value)
+              ))
+            ),
             edit
               ? el("textarea", {
                   id: "report-body",
@@ -202,9 +217,12 @@ export async function renderReportViewPage({ target }) {
                   rows: 18,
                   onInput: (e) => { draftBody = e.target.value; hintMongo("Unsaved changes. Press Save report."); },
                 }, draftBody)
-              : el("pre", { class: "whitespace-pre-wrap font-sans text-sm leading-6 text-slate-800" },
+              : el("pre", { id: "report-shown", class: "whitespace-pre-wrap font-sans text-sm leading-6 text-slate-800" },
                   shownBody || "No report has been saved for this case yet."
                 ),
+            tagged && !generating && stored?.status !== "finalized" && canRemark() && el("p", { class: "mt-2 text-xs text-slate-500" },
+              "Each finding is a sentence tag. Edit, delete or reorder them on the Review page."
+            ),
             measured.length > 0 && el("div", { id: "report-measurements", class: "mt-4 text-sm leading-6 text-slate-800" },
               el("p", { class: "font-semibold" }, MEASUREMENTS_HEADING),
               ...measured.map((line) => el("p", {}, line))

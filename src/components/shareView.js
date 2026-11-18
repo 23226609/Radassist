@@ -4,7 +4,7 @@ import { el, mount } from "../dom.js";
 import { api } from "../api.js";
 import { state } from "../state.js";
 import { svgIcon } from "./icons.js";
-import { downloadReportDocx, downloadReportPdf, splitReportAndRemarks, reportSignOff, withoutThinking, normalizeReportShape } from "../lib/reportExport.js";
+import { downloadReportDocx, downloadReportPdf, buildReportSections, reportSignOff } from "../lib/reportExport.js";
 import { patientDisplayName, doctorInCharge } from "../lib/tags.js";
 
 function findingDetail(f) {
@@ -44,8 +44,11 @@ export async function renderSharePage({ target }) {
     busy = true;
     paint();
     try {
-      if (kind === "docx") await downloadReportDocx({ ...stored, shareImageUrl: api.sharedImageUrl(token) });
-      else await downloadReportPdf({ ...stored, shareImageUrl: api.sharedImageUrl(token) });
+      const withFilm = { ...stored, shareImageUrl: api.sharedImageUrl(token) };
+      if (kind === "docx") await downloadReportDocx(withFilm);
+      else if (kind === "docx-films") await downloadReportDocx(withFilm, "films");
+      else if (kind === "pdf-films") await downloadReportPdf(withFilm, "films");
+      else await downloadReportPdf(withFilm);
     } catch (err) {
       error = err.message || "Download failed.";
     } finally {
@@ -90,25 +93,35 @@ export async function renderSharePage({ target }) {
     );
   }
 
-  function reportCard(body) {
+  function headerCard(header) {
+    return el("dl", { id: "report-header", class: "mt-3 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2" },
+      ...header.map((f) => el("div", { class: "flex gap-1.5", dataset: { field: f.label } },
+        el("dt", { class: "font-semibold text-slate-600" }, `${f.label}: `),
+        el("dd", { class: "text-slate-900" }, f.value)
+      ))
+    );
+  }
+
+  function reportCard(sections) {
+    const body = sections.body;
     const sign = reportSignOff(stored || {});
+    const filmButton = (label, kind) => el("button", {
+      class: "rounded-xl border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
+      disabled: busy,
+      onClick: () => download(kind),
+    }, svgIcon("download", { size: 16 }), ` ${label}`);
     return el("section", { class: "card" },
       el("div", { class: "flex flex-wrap items-center justify-between gap-2" },
         el("h2", { class: "font-bold text-slate-900" }, "Report"),
-        el("div", { class: "flex gap-2" },
-          el("button", {
-            class: "rounded-xl border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
-            disabled: busy,
-            onClick: () => download("docx"),
-          }, svgIcon("download", { size: 16 }), " Word"),
-          el("button", {
-            class: "rounded-xl border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50",
-            disabled: busy,
-            onClick: () => download("pdf"),
-          }, svgIcon("download", { size: 16 }), " PDF")
+        el("div", { class: "flex flex-wrap gap-2" },
+          filmButton("Word", "docx"),
+          filmButton("PDF", "pdf"),
+          sections.tagged ? filmButton("Word with finding films", "docx-films") : null,
+          sections.tagged ? filmButton("PDF with finding films", "pdf-films") : null
         )
       ),
-      el("pre", { class: "mt-4 max-w-3xl whitespace-pre-wrap font-sans text-sm leading-7 text-slate-800" },
+      headerCard(sections.header),
+      el("pre", { id: "report-body", class: "mt-4 max-w-3xl whitespace-pre-wrap font-sans text-sm leading-7 text-slate-800" },
         body || "No report text."
       ),
       el("div", { class: "mt-6 border-t border-slate-200 pt-4 text-sm text-slate-800" },
@@ -122,8 +135,9 @@ export async function renderSharePage({ target }) {
   }
 
   function paint() {
-    const body = withoutThinking(normalizeReportShape(splitReportAndRemarks(stored?.reportText || "").body));
-    const findings = (stored?.findings || []).filter((f) => f.status !== "rejected");
+    const sections = stored ? buildReportSections(stored) : null;
+    // Each finding is a sentence in the report now, so the list only helps older reports.
+    const findings = sections && !sections.tagged ? (stored?.findings || []).filter((f) => f.status !== "rejected") : [];
     const root = el("main", { class: "mx-auto max-w-5xl px-5 py-8" },
       el("p", { class: "text-xs font-semibold uppercase tracking-wider text-ha-blue" }, "Shared report"),
       el("h1", { class: "mt-1 text-3xl font-bold text-slate-900" }, "Chest X-ray report"),
@@ -146,7 +160,7 @@ export async function renderSharePage({ target }) {
               filmCard(),
               findingsCard(findings)
             ),
-            reportCard(body)
+            reportCard(sections || { body: "", header: [], tagged: false })
           )
     );
     mount(target, root);

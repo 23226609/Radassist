@@ -101,7 +101,8 @@ function remarkChange(before, after) {
 function measurementBrief(m = {}) {
   const label = String(m.label || '').trim();
   const text = String(m.text || '').trim();
-  return [label, text].filter(Boolean).join(': ') || 'Measurement';
+  const kind = m.kind === 'ctr-heart' ? 'Heart diameter' : m.kind === 'ctr-thorax' ? 'Thoracic diameter' : '';
+  return [kind || label, text].filter(Boolean).join(': ') || 'Measurement';
 }
 
 function measurementKey(m = {}) {
@@ -128,6 +129,31 @@ function measurementChanges(prev = [], next = []) {
   return changes;
 }
 
+// Sentence tags: a flip between normal and abnormal, and a new order. A reworded
+// or removed sentence already shows in the report lines.
+function tagChanges(prev = [], next = []) {
+  const changes = [];
+  const before = new Map(prev.map((t) => [t.key, t]));
+  for (const t of next) {
+    const was = before.get(t.key);
+    if (was && Boolean(was.abnormal) !== Boolean(t.abnormal)) {
+      changes.push({
+        action: 'edited',
+        field: 'tag',
+        label: clip(t.text),
+        before: was.abnormal ? 'abnormal' : 'normal',
+        after: t.abnormal ? 'abnormal' : 'normal',
+      });
+    }
+  }
+  const shared = next.filter((t) => before.has(t.key)).map((t) => t.key);
+  const kept = prev.filter((t) => shared.includes(t.key)).map((t) => t.key);
+  if (shared.join('|') !== kept.join('|')) {
+    changes.push({ action: 'edited', field: 'order', label: 'Findings order', before: '', after: 'Findings were reordered.' });
+  }
+  return changes;
+}
+
 function summarize(changes) {
   const count = (action) => changes.filter((row) => row.action === action).length;
   const parts = [];
@@ -141,6 +167,7 @@ function buildEditChanges(prev = {}, next = {}) {
   const changes = [
     ...textChanges(reportBody(prev.reportText), reportBody(next.reportText), 'Report'),
     ...findingChanges(prev.findings || [], next.findings || []),
+    ...tagChanges(prev.findingTags || [], next.findingTags || []),
     ...remarkChange(prev.remarks, next.remarks),
     ...measurementChanges(prev.measurements || [], next.measurements || []),
   ].slice(0, 30);

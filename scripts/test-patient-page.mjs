@@ -195,6 +195,8 @@ test("findings come from Azure on endorsed reports only", () => {
   assert.ok(section.textContent.includes("The heart is mildly enlarged."));
   assert.ok(section.textContent.includes("Endorsed by Dr. Priya Nair"));
   assert.ok(!section.textContent.includes("CASE-2"), "a draft case must not appear under findings");
+  assert.ok(section.className.includes("overflow-hidden"), "the findings card stays inside the column");
+  assert.ok(section.querySelector(".overflow-y-auto"), "the findings list scrolls inside the card");
 });
 
 test("no care notes section when the patient has none", () => {

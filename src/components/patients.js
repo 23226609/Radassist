@@ -15,6 +15,7 @@ import { forgetPatients } from "../lib/records.js";
 import { canEditPatient, canEditReport, canUpload, canRequestExam, isTechnician, isAdmin as roleIsAdmin } from "../lib/roles.js";
 import { reviewState, cmsAssessmentStamp } from "./clinical.js";
 import { sepsisButton, careNotesButton, PATIENT_UPDATED, isChartWindow } from "../lib/chartWindow.js";
+import { EXAMINATION, BODY_PART, RADIOGRAPHER, preparationFor } from "../../shared/radiologyRequest.js";
 
 const CHART_POLL_MS = 4000;
 const CARE_NOTES_SHOWN = 3;
@@ -334,6 +335,8 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
   let heartRateDraft = "";
   let labResultsDraft = "";
   let booking = false;
+  let reasonDraft = "";
+  let urgencyChoice = false;
   let allCareNotes = false;
   let bookCursor = new Date();
   let bookedDay = "";
@@ -507,13 +510,13 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
   function dayCanTakeBooking(info) {
     if (!info) return false;
     if (["open", "few"].includes(info.status)) return true;
-    return patientNeedsUrgentFilm() && info.status === "full";
+    return urgencyChoice && info.status === "full";
   }
 
   function timeCanTakeBooking(slot) {
     if (!slot) return false;
     if (slot.status === "open") return true;
-    return patientNeedsUrgentFilm() && slot.status === "full";
+    return urgencyChoice && slot.status === "full";
   }
 
   async function loadSlots() {
@@ -544,8 +547,19 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
     booking = true;
     bookedDay = "";
     bookedTime = "";
+    reasonDraft = patient?.history || "";
+    urgencyChoice = patientNeedsUrgentFilm();
     bookCursor = new Date();
     loadSlots();
+  }
+
+  function setUrgency(next) {
+    urgencyChoice = next;
+    if (bookedDay && !dayCanTakeBooking(slotDays[bookedDay])) {
+      bookedDay = "";
+      bookedTime = "";
+    }
+    paint();
   }
 
   function moveMonth(step) {
@@ -571,11 +585,21 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
     busy = true;
     paint();
     try {
+      const clinicalReason = reasonDraft.trim();
+      if (!clinicalReason) {
+        toast("Enter the clinical reason for this X-ray.");
+        busy = false;
+        paint();
+        return;
+      }
       await api.requestExam({
         patientId: patient.patientId,
         day: bookedDay,
         time: bookedTime,
-        urgent: patientNeedsUrgentFilm(),
+        urgent: urgencyChoice,
+        clinicalReason,
+        examination: EXAMINATION,
+        bodyPart: BODY_PART,
       });
       booking = false;
       await load();
@@ -646,7 +670,7 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
       el("p", { class: "mt-2 text-xs text-slate-600" },
         "Drag the exam onto a day, or click the day, then choose a time.",
         slotQuota ? ` Quota: ${slotQuota.daily} X-rays a day, ${slotQuota.perSlot} per ${slotQuota.minutes}-minute slot.` : "",
-        patientNeedsUrgentFilm() ? " This patient is urgent, so a full day can still take the booking." : ""
+        urgencyChoice ? " Marked urgent, so a full day can still take the booking." : ""
       ),
       el("div", { class: "mt-2 flex flex-wrap items-center justify-between gap-2" },
         el("div", {
@@ -726,9 +750,52 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
           })
         )
       ),
+      el("div", { id: "request-fields", class: "mt-3 grid gap-2 rounded border border-gray-200 bg-slate-50 p-2 text-xs" },
+        el("p", { class: "font-semibold text-slate-800" },
+          patientDisplayName(patient) || "Patient",
+          " · ",
+          patient?.patientId || "",
+          patient?.age ? ` · ${patient.age} years` : "",
+          patient?.sex ? ` · ${patient.sex}` : ""
+        ),
+        el("p", {}, el("span", { class: "font-semibold" }, "Examination: "), EXAMINATION, el("span", { class: "font-semibold" }, " · Body part: "), BODY_PART),
+        el("label", { class: "block font-semibold text-slate-800", for: "clinical-reason" }, "Clinical reason"),
+        el("textarea", {
+          id: "clinical-reason",
+          rows: "2",
+          class: "w-full rounded border border-gray-300 bg-white px-2 py-1 text-xs",
+          value: reasonDraft,
+          onInput: (e) => {
+            reasonDraft = e.target.value;
+            const confirm = document.getElementById("confirm-booking");
+            if (confirm) confirm.disabled = busy || !bookedDay || !bookedTime || !reasonDraft.trim();
+          },
+        }),
+        el("div", { class: "flex flex-wrap items-center gap-2" },
+          el("span", { class: "font-semibold" }, "Urgency"),
+          el("button", {
+            type: "button",
+            "data-urgency": "routine",
+            class: `rounded border px-2 py-1 ${urgencyChoice ? "border-gray-300 bg-white" : "border-ha-blue bg-ha-blue text-white"}`,
+            onClick: () => setUrgency(false),
+          }, "Routine"),
+          el("button", {
+            type: "button",
+            "data-urgency": "urgent",
+            class: `rounded border px-2 py-1 ${urgencyChoice ? "border-red-700 bg-red-700 text-white" : "border-gray-300 bg-white"}`,
+            onClick: () => setUrgency(true),
+          }, "Urgent")
+        ),
+        el("p", { class: "text-slate-600" },
+          "RIS assigns XR-1 or XR-2 and the digital unit for this time. Radiographer on duty: ",
+          RADIOGRAPHER,
+          ". ",
+          preparationFor(urgencyChoice)
+        )
+      ),
       el("div", { class: "mt-3 flex items-center justify-between gap-2" },
         el("span", { id: "book-summary", class: "text-xs text-slate-600" },
-          bookedDay && bookedTime ? `Booking: ${longDay(bookedDay)} at ${bookedTime}`
+          bookedDay && bookedTime ? `Booking: ${longDay(bookedDay)} at ${bookedTime} · ${urgencyChoice ? "Urgent" : "Routine"}`
             : bookedDay ? "Now choose a time." : "No day chosen yet."),
         el("div", { class: "flex gap-2" },
           el("button", {
@@ -738,9 +805,10 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
             onClick: () => { booking = false; paint(); },
           }, "Cancel"),
           el("button", {
+            id: "confirm-booking",
             type: "button",
             class: "rounded bg-ha-blue px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50",
-            disabled: busy || !bookedDay || !bookedTime,
+            disabled: busy || !bookedDay || !bookedTime || !reasonDraft.trim(),
             onClick: bookExam,
           }, busy ? "Booking…" : "Confirm booking")
         )
@@ -928,11 +996,11 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
               ),
 
               el("div", { class: "flex min-h-0 flex-col gap-2 overflow-hidden" },
-              !isTechnician(state.user) && el("section", { id: "patient-findings", class: "shrink-0 overflow-auto rounded border border-gray-200 bg-white p-3" },
-                el("h2", { class: "text-sm font-bold text-slate-900" }, "Findings"),
+              !isTechnician(state.user) && el("section", { id: "patient-findings", class: "flex min-h-0 flex-1 flex-col overflow-hidden rounded border border-gray-200 bg-white p-3" },
+                el("h2", { class: "shrink-0 text-sm font-bold text-slate-900" }, "Findings"),
                 endorsed.length === 0
                   ? el("p", { class: "mt-1 text-sm text-slate-400" }, "Findings appear here after a radiologist endorses a report.")
-                  : el("div", { class: "mt-2 space-y-2" }, ...endorsed.map(chartFindingsBlock))
+                  : el("div", { class: "mt-2 min-h-0 flex-1 space-y-2 overflow-y-auto" }, ...endorsed.map(chartFindingsBlock))
               ),
 
               (() => {
@@ -979,18 +1047,25 @@ export async function renderPatientPage({ target, patientId: givenId = "", embed
                 el("ul", { class: "divide-y text-sm" },
                   ...cases.filter((c) => c.status === "requested").map((c) => {
                     const due = c.scheduledAt && new Date(c.scheduledAt).getTime() <= Date.now();
-                    return el("li", { class: "flex items-center justify-between gap-3 px-3 py-1.5" },
-                      el("p", { class: "min-w-0 truncate" },
-                        el("span", { class: "font-semibold" }, "Chest X-ray"),
-                        el("span", { class: "text-slate-600" },
-                          " · ",
-                          c.scheduledAt ? `Booked for ${bookingWhen(c.scheduledAt)}` : (c.createdAt ? `Requested ${new Date(c.createdAt).toLocaleString()}` : "Requested"),
-                          c.requestedByName ? ` · ${c.requestedByName}` : ""
-                        )
+                    const place = [c.examRoom, c.equipment, c.assignedStaff].filter(Boolean).join(" · ");
+                    return el("li", { class: "px-3 py-1.5" },
+                      el("div", { class: "flex items-center justify-between gap-3" },
+                        el("p", { class: "min-w-0 truncate" },
+                          el("span", { class: "font-semibold" }, c.examination || "Chest X-ray"),
+                          c.bodyPart ? el("span", { class: "text-slate-600" }, ` · ${c.bodyPart}`) : null,
+                          el("span", { class: "text-slate-600" },
+                            " · ",
+                            c.scheduledAt ? `Booked for ${bookingWhen(c.scheduledAt)}` : (c.createdAt ? `Requested ${new Date(c.createdAt).toLocaleString()}` : "Requested"),
+                            c.requestedByName ? ` · ${c.requestedByName}` : ""
+                          )
+                        ),
+                        el("span", {
+                          class: `shrink-0 rounded px-2 py-0.5 text-xs font-semibold ${due ? "bg-amber-100 text-amber-900" : "bg-sky-100 text-sky-900"}`,
+                        }, due ? "Due · waiting for film" : "Booked · waiting for film")
                       ),
-                      el("span", {
-                        class: `shrink-0 rounded px-2 py-0.5 text-xs font-semibold ${due ? "bg-amber-100 text-amber-900" : "bg-sky-100 text-sky-900"}`,
-                      }, due ? "Due · waiting for film" : "Booked · waiting for film")
+                      c.clinicalReason ? el("p", { class: "mt-0.5 text-xs text-slate-700" }, c.clinicalReason) : null,
+                      place ? el("p", { class: "text-xs text-slate-600" }, place) : null,
+                      c.preparation ? el("p", { class: "text-xs text-slate-500" }, c.preparation) : null
                     );
                   })
                 )

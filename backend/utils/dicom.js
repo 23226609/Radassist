@@ -258,18 +258,122 @@ function toGray(dataset, frame) {
   return gray;
 }
 
-function pixelSpacingMm(buffer) {
+// "0.143\\0.143" or an array, as [row, column] in millimetres.
+function spacingPair(raw) {
+  if (raw == null || raw === '') return null;
+  const parts = Array.isArray(raw) ? raw : String(raw).split('\\');
+  const row = parseFloat(parts[0]);
+  const col = parseFloat(parts[1] != null ? parts[1] : parts[0]);
+  if (!Number.isFinite(row) || !Number.isFinite(col) || row <= 0 || col <= 0) return null;
+  return [row, col];
+}
+
+// DICOM keeps two spacings. Imager Pixel Spacing (0018,1164) is the distance
+// on the detector and is never corrected for magnification. Pixel Spacing
+// (0028,0030) is sometimes the same and sometimes a vendor calibration. Both
+// are kept; the Imager one is preferred for every centimetre shown.
+function spacingTags(dataset) {
+  const imager = spacingPair(dataset.ImagerPixelSpacing);
+  const pixel = spacingPair(dataset.PixelSpacing);
+  const used = imager || pixel;
+  return {
+    imager,
+    pixel,
+    used,
+    source: imager ? 'ImagerPixelSpacing' : (pixel ? 'PixelSpacing' : ''),
+  };
+}
+
+function dicomText(value) {
+  if (value == null) return '';
+  if (Array.isArray(value)) return value.map(dicomText).filter(Boolean).join(' ');
+  if (typeof value === 'object') return dicomText(value.Alphabetic || value.Value || '');
+  return String(value).trim();
+}
+
+// View Position, Patient Position, and description text. The selected view
+// can disagree with these. Nothing here changes the view the radiologist picked.
+function projectionTags(dataset) {
+  const viewPosition = dicomText(dataset.ViewPosition).toUpperCase().slice(0, 16);
+  const patientPosition = dicomText(dataset.PatientPosition).toUpperCase().slice(0, 16);
+  const cues = [
+    dataset.StudyDescription,
+    dataset.SeriesDescription,
+    dataset.ProtocolName,
+    dataset.ImageComments,
+    dataset.RequestedProcedureDescription,
+    dataset.PerformedProcedureStepDescription,
+  ].map(dicomText).filter(Boolean).join(' | ').slice(0, 400);
+  return { dicomViewPosition: viewPosition, patientPosition, projectionCues: cues };
+}
+
+function dicomView(value) {
+  const v = String(Array.isArray(value) ? value[0] : value || '').trim().toUpperCase();
+  if (v === 'PA' || v === 'AP') return v;
+  if (v === 'LATERAL' || v === 'LAT' || v === 'LL' || v === 'RL' || /\bLATERAL\b/.test(v)) return 'Lateral';
+  return '';
+}
+
+// StudyDate YYYYMMDD and StudyTime HHMMSS.ffffff, kept as the clock reading in
+// the header (no zone is recorded in the file).
+function dicomDateTime(date, time) {
+  const d = String(date || '').replace(/\D/g, '');
+  if (d.length !== 8) return null;
+  const t = String(time || '').replace(/[^0-9.]/g, '').split('.')[0].padEnd(6, '0');
+  const at = new Date(Date.UTC(
+    Number(d.slice(0, 4)), Number(d.slice(4, 6)) - 1, Number(d.slice(6, 8)),
+    Number(t.slice(0, 2)), Number(t.slice(2, 4)), Number(t.slice(4, 6)),
+  ));
+  return Number.isNaN(at.getTime()) ? null : at;
+}
+
+function examinedAt(dataset) {
+  const acquisition = String(dataset.AcquisitionDateTime || '');
+  if (acquisition.length >= 8) {
+    const found = dicomDateTime(acquisition.slice(0, 8), acquisition.slice(8));
+    if (found) return found;
+  }
+  return dicomDateTime(dataset.StudyDate, dataset.StudyTime)
+    || dicomDateTime(dataset.AcquisitionDate, dataset.AcquisitionTime)
+    || dicomDateTime(dataset.ContentDate, dataset.ContentTime);
+}
+
+// A positive DICOM number, or null. Distances are millimetres; the magnification
+// factor is a ratio. Nothing here is guessed.
+function positiveNumber(value) {
+  const n = firstNumber(value, null);
+  return n > 0 ? n : null;
+}
+
+// Room geometry the file actually records. These are not pixel sizes, so they
+// are not scaled when the stored film is shrunk.
+function geometryTags(dataset) {
+  return {
+    estimatedMagnification: positiveNumber(dataset.EstimatedRadiographicMagnificationFactor),
+    distanceSourceToDetectorMm: positiveNumber(dataset.DistanceSourceToDetector),
+    distanceSourceToPatientMm: positiveNumber(dataset.DistanceSourceToPatient),
+    bodyPartThicknessMm: positiveNumber(dataset.BodyPartThickness),
+  };
+}
+
+function dicomHeader(buffer) {
   try {
     const dataset = readDataset(buffer);
-    const raw = dataset.PixelSpacing || dataset.ImagerPixelSpacing;
-    if (raw == null || raw === '') return null;
-    const parts = Array.isArray(raw) ? raw : String(raw).split('\\');
-    const row = parseFloat(parts[0]);
-    const col = parseFloat(parts[1] != null ? parts[1] : parts[0]);
-    if (!Number.isFinite(row) || !Number.isFinite(col) || row <= 0 || col <= 0) return null;
-    return [row, col];
+    return {
+      spacing: spacingTags(dataset),
+      geometry: geometryTags(dataset),
+      view: dicomView(dataset.ViewPosition),
+      projection: projectionTags(dataset),
+      examinedAt: examinedAt(dataset),
+    };
   } catch {
-    return null;
+    return {
+      spacing: spacingTags({}),
+      geometry: geometryTags({}),
+      view: '',
+      projection: projectionTags({}),
+      examinedAt: null,
+    };
   }
 }
 
@@ -349,23 +453,33 @@ function prepareFilm(file) {
   const stored = display.shrunk ? display.buffer : png;
   const asJpeg = display.shrunk;
   const base = (name.replace(/\.dcm$/i, '') || 'xray').replace(/\.(png|jpe?g)$/i, '');
-  let spacing = pixelSpacingMm(buffer);
-  if (spacing && rendered.width && rendered.height) {
-    spacing = [
-      spacing[0] * (rendered.rows / rendered.height),
-      spacing[1] * (rendered.cols / rendered.width),
-    ];
-  }
+  const header = dicomHeader(buffer);
+  // The stored film is the DICOM resampled to fit, so spacing grows with it.
+  const rowScale = (rendered.height ? rendered.rows / rendered.height : 1) * (display.shrunk ? display.rowScale || 1 : 1);
+  const colScale = (rendered.width ? rendered.cols / rendered.width : 1) * (display.shrunk ? display.colScale || 1 : 1);
+  const scale = (pair) => (pair ? [pair[0] * rowScale, pair[1] * colScale] : undefined);
   return {
     buffer: stored,
     filename: `${base}.${asJpeg ? 'jpg' : 'png'}`,
     contentType: asJpeg ? 'image/jpeg' : 'image/png',
     size: stored.length,
-    pixelSpacingMm: spacing,
+    pixelSpacingMm: scale(header.spacing.used),
+    imagerPixelSpacingMm: scale(header.spacing.imager),
+    dicomPixelSpacingMm: scale(header.spacing.pixel),
+    pixelSpacingSource: header.spacing.source,
+    estimatedMagnification: header.geometry.estimatedMagnification || undefined,
+    distanceSourceToDetectorMm: header.geometry.distanceSourceToDetectorMm || undefined,
+    distanceSourceToPatientMm: header.geometry.distanceSourceToPatientMm || undefined,
+    bodyPartThicknessMm: header.geometry.bodyPartThicknessMm || undefined,
+    view: header.view,
+    dicomViewPosition: header.projection.dicomViewPosition || undefined,
+    patientPosition: header.projection.patientPosition || undefined,
+    projectionCues: header.projection.projectionCues || undefined,
+    examinedAt: header.examinedAt || undefined,
   };
 }
 
 module.exports = {
-  isDicomBuffer, dicomToPng, prepareFilm, fittedSize,
+  isDicomBuffer, dicomToPng, prepareFilm, fittedSize, dicomHeader, spacingTags,
   dropInteriorEmptyRows, dropEdgeBlankColumns, exposedField, cropFrame,
 };

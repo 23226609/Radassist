@@ -53,12 +53,14 @@ async function storeDisplayCopy(bucketName, previousId, image) {
   });
   const rows = await Case.find({ imageId: previousId });
   for (const row of rows) {
-    if (Array.isArray(row.pixelSpacingMm) && row.pixelSpacingMm.length === 2 && (image.rowScale !== 1 || image.colScale !== 1)) {
-      row.pixelSpacingMm = [
-        Number(row.pixelSpacingMm[0]) * image.rowScale,
-        Number(row.pixelSpacingMm[1]) * image.colScale,
-      ];
-      row.markModified('pixelSpacingMm');
+    // Every spacing the case keeps describes the stored film, so all follow it.
+    if (image.rowScale !== 1 || image.colScale !== 1) {
+      for (const field of ['pixelSpacingMm', 'imagerPixelSpacingMm', 'dicomPixelSpacingMm']) {
+        const value = row[field];
+        if (!Array.isArray(value) || value.length !== 2) continue;
+        row[field] = [Number(value[0]) * image.rowScale, Number(value[1]) * image.colScale];
+        row.markModified(field);
+      }
     }
     row.imageId = up.id;
     row.imageContentType = 'image/jpeg';
@@ -70,7 +72,7 @@ async function storeDisplayCopy(bucketName, previousId, image) {
   }
 }
 
-async function readGridImage(imageId) {
+async function readGridImage(imageId, { persistShrink = true } = {}) {
   let oid;
   try {
     oid = new mongoose.Types.ObjectId(String(imageId));
@@ -96,7 +98,7 @@ async function readGridImage(imageId) {
       console.warn('[image] could not shrink the film:', err.message);
       display = { buffer, contentType: file.contentType || 'image/jpeg', shrunk: false, rowScale: 1, colScale: 1 };
     }
-    if (display.shrunk) {
+    if (display.shrunk && persistShrink) {
       console.log(`[image] ${buffer.length} bytes -> ${display.buffer.length} bytes for display`);
       // Keep the open request on the small JPEG. Saving the copy and updating
       // the case happens after the response, so a slow Cosmos write cannot
@@ -124,12 +126,13 @@ async function readGridImage(imageId) {
 // The Express API writes new uploads to the `images` bucket. Older / middleware
 // uploads landed in the default `fs` bucket. Try both so localisation can
 // still see the film.
-async function downloadImage(imageId) {
+async function downloadImage(imageId, options = {}) {
   const key = String(imageId || '');
   if (!key) return null;
+  if (options.persistShrink === false) return readGridImage(key, options);
   if (imageCache.has(key)) return imageCache.get(key);
   if (imageFlights.has(key)) return imageFlights.get(key);
-  const job = readGridImage(key).then((image) => {
+  const job = readGridImage(key, options).then((image) => {
     rememberImage(key, image);
     return image;
   }).finally(() => {

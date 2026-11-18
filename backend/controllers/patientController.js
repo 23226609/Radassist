@@ -110,6 +110,22 @@ function summariseCase(c, { hideReport = false } = {}) {
     createdAt: c.createdAt,
     scheduledAt: c.scheduledAt || null,
     requestedByName: c.requestedByName || '',
+    examination: c.examination || '',
+    bodyPart: c.bodyPart || '',
+    clinicalReason: c.clinicalReason || '',
+    equipment: c.equipment || '',
+    examRoom: c.examRoom || '',
+    assignedStaff: c.assignedStaff || '',
+    preparation: c.preparation || '',
+    arrival: {
+      identity: Boolean(c.arrival?.identity),
+      patientNumber: Boolean(c.arrival?.patientNumber),
+      request: Boolean(c.arrival?.request),
+      bodyPart: Boolean(c.arrival?.bodyPart),
+      appointment: Boolean(c.arrival?.appointment),
+      at: c.arrival?.at || null,
+      byName: c.arrival?.byName || '',
+    },
     finalizedByName: endorsed ? (c.finalizedByName || '') : '',
     finalizedAt: endorsed ? c.finalizedAt || null : null,
     imageId: c.imageId || null,
@@ -136,12 +152,14 @@ function nameSearch(re) {
 
 exports.upsertPatientFromCase = upsertPatientFromCase;
 
+const LIST_FIELDS = 'patientId firstName middleName lastName name age sex';
+
 exports.listPatients = catchAsync(async (req, res) => {
   const q = String(req.query.q || '').trim();
   const re = q ? new RegExp(escapeRegex(q), 'i') : null;
 
   const patientQuery = re ? { $or: nameSearch(re) } : {};
-  let records = await Patient.find(patientQuery);
+  let records = await Patient.find(patientQuery).select(LIST_FIELDS).lean();
 
   if (re) {
     const caseHits = await Case.find({
@@ -157,7 +175,7 @@ exports.listPatients = catchAsync(async (req, res) => {
     }).select('patientId');
     const extraIds = [...new Set(caseHits.map((c) => c.patientId).filter(Boolean))];
     if (extraIds.length) {
-      const extra = await Patient.find({ patientId: { $in: extraIds } });
+      const extra = await Patient.find({ patientId: { $in: extraIds } }).select(LIST_FIELDS).lean();
       const seen = new Set(records.map((p) => String(p.patientId).toLowerCase()));
       for (const p of extra) {
         const key = String(p.patientId).toLowerCase();
@@ -172,6 +190,21 @@ exports.listPatients = catchAsync(async (req, res) => {
   const grouped = ids.length
     ? await Case.aggregate([
       { $match: { ...OWNED, patientId: { $in: ids } } },
+      {
+        $project: {
+          patientId: 1,
+          patientName: 1,
+          firstName: 1,
+          middleName: 1,
+          lastName: 1,
+          age: 1,
+          sex: 1,
+          diagnosis: 1,
+          status: 1,
+          createdAt: 1,
+          urgent: 1,
+        },
+      },
       { $sort: { createdAt: -1 } },
       {
         $group: {
@@ -183,7 +216,6 @@ exports.listPatients = catchAsync(async (req, res) => {
           lastName: { $first: '$lastName' },
           age: { $first: '$age' },
           sex: { $first: '$sex' },
-          history: { $first: '$history' },
           lastDiagnosis: { $first: '$diagnosis' },
           lastStatus: { $first: '$status' },
           lastCaseAt: { $first: '$createdAt' },
@@ -195,27 +227,13 @@ exports.listPatients = catchAsync(async (req, res) => {
     : [];
   const byStudy = new Map(grouped.map((g) => [String(g.patientId).toLowerCase(), g]));
 
-  const patients = [];
-  for (const record of records) {
+  const patients = records.map((record) => {
     const g = byStudy.get(String(record.patientId).toLowerCase());
-    let p = record;
-    if (g) {
-      p = await upsertPatientFromCase({
-        patientId: record.patientId,
-        firstName: g.firstName,
-        middleName: g.middleName,
-        lastName: g.lastName,
-        patientName: g.patientName,
-        age: g.age,
-        sex: g.sex,
-        history: g.history,
-      }) || record;
-    }
-    patients.push(summarisePatient(p, g ? {
+    return summarisePatient(record, g ? {
       ...g,
       urgent: (g.urgents || []).some(Boolean),
-    } : {}));
-  }
+    } : {});
+  });
 
   patients.sort((a, b) => new Date(b.lastCaseAt || 0) - new Date(a.lastCaseAt || 0));
 

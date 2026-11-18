@@ -55,7 +55,7 @@ The UI is **not React**. Pages are plain modules that build DOM with `src/dom.js
 
 **After the draft is stored**, Azure reads the CURV report and places boxes on the film (`boxesState: running` → `done` / `failed`). Azure does not rewrite the report or the work-list label at this step; the report text is CURV’s alone.
 
-**On review**, the page shows the report and the film side by side, the way a hospital viewer does. There are no finding cards. The report box is directly editable. The radiologist can draw, move, resize, and delete boxes, and **Measure** lines are saved with the report. **Save draft** stores everything; if the report wording changed, Azure re-places boxes for the new wording and keeps the boxes the radiologist drew, adjusted, or deleted. **Thinking** (the model’s reasoning) is kept in the stored draft but never shown to anyone and never exported. **Endorse** locks the report. The date, reporting doctor, and signature stay on the report and in both downloads.
+**On review**, the page shows the film and the report side by side, the way a hospital viewer does. The report is a **list of sentence tags**, one per finding sentence, under a header of the Radiology Examination fields this demo can fill (modality, examination name, examination date/time, report title, report date, reported by, referring doctor). The radiologist edits a tag's words, deletes it, switches it between normal and abnormal, and drags tags to reorder them. A new finding is added at the end. COMMENT stays under the list and is the one conclusive line. Each abnormal tag has one box on the film; a normal sentence has none. **Save draft** stores the tags and the assembled report, and Azure places a box only for an abnormal tag that has none. **Thinking** (the model’s reasoning) is kept in the stored draft but never shown to anyone and never exported. **Endorse** locks the report. The date, reporting doctor, and signature stay on the report and in both downloads.
 
 **After endorse**, Azure reads the clean endorsed report (text only, no Thinking) in the background and writes the **Findings** shown on the patient chart (`chartFindingsState: running` → `done` / `failed`). The chart updates on its own when they land.
 
@@ -108,11 +108,12 @@ Stored in `cases`. One study / one film.
 
 - Identity: `caseId`, `patientId`, name parts + `patientName`
 - Clinical: `age`, `sex`, `history`, `diagnosis`, `diagnosisSource` (`azure` or `local`)
-- Report: `reportText`, `remarks`, `findings[]` (the film boxes), `measurements[]`
+- Report: `reportText` (assembled from the tags, always what readers see), `remarks`, `findingTags[]` (one per FINDINGS sentence, in order), `comment` (the COMMENT line), `view` (`''` \| `PA` \| `AP` \| `AP supine`), `examinedAt`, `findings[]` (the film boxes, each with the `tagKey` of its sentence), `measurements[]`
+- Imported MIMIC cases only: `sourceReport` (`label: "MIMIC report"`, `source`, `text`, `subjectId`, `studyId`, `dicomId`). The official report, kept as source text and never used as this system's draft
 - AI: `analysisState` (`none` \| `running` \| `done`), `boxesState` (`''` not requested \| `running` \| `done` \| `failed`)
 - Draft provenance: `editLog[]` (`kind`: `ai` \| `manual`). Shown on Review while drafting; **not** included in endorsed / shared / exported report text. API responses add `clinicianEdited` (true once a `manual` row exists)
 - Workflow: `status` (`requested` no film yet \| `pending` outstanding or generating \| `pending_approve` draft ready \| `finalized` endorsed) and `urgent`. Old documents may still say `completed` — the UI treats that as pending approve
-- Image: `imageId` (GridFS), filename / type / size. Hidden from technician responses. `registeredAt` is the day the technician saved the film; the work list **Reg. Date** uses that, not the request day. `pixelSpacingMm` is `[row, column]` in millimetres when the DICOM file had it
+- Image: `imageId` (GridFS), filename / type / size. Hidden from technician responses. `registeredAt` is the day the technician saved the film; the work list **Reg. Date** uses that, not the request day. `pixelSpacingMm` is `[row, column]` in millimetres on the film when the DICOM file had it. Both DICOM tags are kept when present (`imagerPixelSpacingMm` from Imager Pixel Spacing (0018,1164), `dicomPixelSpacingMm` from Pixel Spacing (0028,0030)) with `pixelSpacingSource` saying which one `pixelSpacingMm` came from
 - Booking: `scheduledAt`
 - People: `requestedBy`, `requestedByName`, `createdBy`, `createdByName` (uploader), `finalizedBy`, `finalizedByName`, `finalizedAt`
 - Share: `shareToken` (set when someone shares an endorsed report)
@@ -126,7 +127,9 @@ A **finding** is one box on the film: `label`, `bbox` `[left, top, width, height
 - `manual` — a box the radiologist drew (`source: manual`), or an Azure box they moved or resized
 - `status: rejected` — an Azure box the radiologist deleted. It stays stored, hidden, so the next Azure pass does not bring it back. A deleted drawn box is removed outright
 
-A **measurement** is `x1`, `y1`, `x2`, `y2` (percent of the film), `text` (e.g. `14.29 cm`, or pixels when the film has no spacing), and an optional `label`.
+A **tag** is `key` (`t1`, `t2`, …), `text` (one sentence), `abnormal`, `manual` (typed or drawn by the radiologist), `kind` (`''` or `ctr` for the cardiothoracic-ratio sentence) and `boxDeclined` (the radiologist removed its box, so Azure must not add it again). A sentence is **normal** when it only states a negative or a normal appearance (“No pleural effusion.”, “Heart size is normal.”). A sentence naming an abnormality, hedged ones included (“Pneumonia cannot be excluded.”), is abnormal. The rules are one shared file, `shared/reportTags.js`, used by the browser and the API. A sentence that says nothing either way counts as abnormal, so it gets a box that can be switched off rather than no box.
+
+A **measurement** is a line on the film: `x1`, `y1`, `x2`, `y2` (percent of the film), `kind` (`lesion`, `ctr-heart`, `ctr-thorax`), `tagKey`, `dxPx`, `dyPx`, `lengthPx`, `lengthMm` (null with no spacing), `spacingTag` (`ImagerPixelSpacing` or `PixelSpacing`, the tag that supplied the number), `text` and an optional `label`.
 
 **Locking:** after endorse, diagnosis, report text, boxes, and measurements cannot change. Remarks and the urgent flag still can. Referring doctors never receive `editLog` or source tags. Technicians never receive the film, report, findings, or chart findings.
 
@@ -224,32 +227,61 @@ Admins tick rows and use **Delete (n)** beside the search box. It stays greyed o
 
 ### 6. Report review
 
-Left: the film. Right: the report box (editable while drafting), remarks, and the draft log.
+Left: the film. Right: the report (editable while drafting), remarks, and the draft log.
+
+**The report as sentence tags**
+
+```
+XRAY CHEST (PA)
+FINDINGS
+one sentence per line
+COMMENT
+– one conclusive line
+Thank you for your referral.
+the endorsing radiologist's name
+```
+
+- Each finding is a **tag**: edit its words, **Delete** it, switch it **normal / abnormal**, or drag it by its handle to a new place. Type a new finding in the box under the list and it is appended at the end.
+- **COMMENT** stays under the list. It is not part of the drag order, it is the conclusive line (eHR Content Standards Guidebook 8.17.5), and it never has a film box.
+- A CURV draft is split into sentences, one tag per sentence in order, and its Impression becomes COMMENT. An older case that has only `reportText` is split once when it is opened and saved on the next **Save draft**.
+- `reportText` is assembled from the tags and COMMENT every time they change, so the referring doctor, the share link and both downloads match the screen.
+- Click a tag to select its box, and click a box to select its tag. A normal sentence is still in the report and both downloads, but has no box. **Remove box** takes a box away from an abnormal tag and Azure will not put it back.
+- **View** (blank, PA, AP, AP supine) sets the report title and what a cardiothoracic ratio means.
+- The header shows modality **XRAY**, examination name (Chest plus the view when known), examination date/time, report title, report date (the endorse date), reported by and the referring doctor. This is only the Appendix A-XVI (Radiology Examination) fields this demo can fill; no eHR submission is built, and a chest X-ray is not filed under Appendix A-XVII.
 
 **Film toolbar**
 
 - **Zoom in** / **Zoom out** (or the mouse wheel)
-- **Measure** — drag a line. Centimetres need `pixelSpacingMm` from the DICOM file; otherwise the length is in pixels. For a radiologist on a draft, each line is kept on the film in white, numbered, and listed under **Measurements (in the report)** with an optional name and **Delete**. A click without a drag adds nothing. Boxes fade while measuring
-- **Draw box** — drag on the film. The new box is called “Marked area” and can be renamed in **Boxes on the film**
+- **Measure** — drag a line across a lesion. The film centimetres come from Imager Pixel Spacing (0018,1164), else from Pixel Spacing (0028,0030). The label also shows the **magnification** and the **size in the body** when the file itself records one of these, in this order: Pixel Spacing smaller than Imager Pixel Spacing (the vendor's patient-plane calibration, DICOM CP-586), Estimated Radiographic Magnification Factor (0018,1114), Distance Source to Detector with Body Part Thickness (a mid-chest estimate), or Distance Source to Detector with Distance Source to Patient (the plane against the detector). A tube distance is never guessed from a missing tag. Without a calibration the label stays film size and says body size is unavailable, with the reason: AP and AP supine do not use the 180 cm erect-PA geometry, and an unrecorded view has no projection to correct. An erect PA film may also show a separate experimental estimate (180 cm and an unmeasured 11 cm depth), labelled as not DICOM-calibrated. If the selected view is PA erect but the DICOM view, patient position, or description says portable or supine, body-size estimation is disabled and the page asks for the projection to be checked. The dropdown is not changed automatically. With no spacing the length is in pixels. The measurement is written into the selected abnormal sentence, or starts a new finding when nothing is selected
+- **Heart size** — draw the greatest transverse cardiac diameter, then the greatest inner thoracic diameter. The ratio comes from the two lengths with the same row and column spacing, and the sentence reads like “Cardiothoracic ratio is normal, 10.5 : 27.5.” (each diameter rounded to one decimal). On an erect **PA** view a ratio of 0.50 or less is normal and has no box; above 0.50 the sentence says the ratio is increased and gets one box on the heart line. On AP, supine or unknown the ratio is written with “this is not a formal PA measurement”, is not called normal, and has no box. Removing one diameter removes the ratio sentence
+- **Draw box** — drag on the film. With an abnormal tag without a box selected, the box belongs to that tag; otherwise it starts a new finding at the end
 - **Hide boxes** / **Hide lines** — show the boxes and the measurements separately
 
-**Editing boxes.** Click a box to select it (it fills and shows four corner handles). Drag inside to move it, or drag a corner to resize it. Unselected boxes are outlines only. Each box has its own colour; measurements are always white so they never match a box. The list tags each box **AI**, **AI · adjusted**, or **Manual**. Box editing is closed while Azure is placing boxes and after endorse.
+**Editing boxes.** Click a box to select it (it fills and shows four corner handles). Drag inside to move it, or drag a corner to resize it. Unselected boxes are outlines only. Each box has its own colour; measurements are always white so they never match a box. Box editing is closed while Azure is placing boxes and after endorse.
 
-**Report text.** The report box shows Findings and Impression. Thinking is hidden; saving an edit puts the stored Thinking back, so it is not lost and does not show up in the draft log. Edits stay on the page until **Save draft** or **Save remarks**. A Save draft that changes the report wording asks Azure to re-place boxes (`POST /summarise-findings`); the merge in `backend/utils/findingsMerge.js` keeps drawn boxes, adjusted boxes, and deleted boxes as the radiologist left them. Saving only boxes, measurements, or remarks does not call Azure. An older report with no boxes says so and gets boxes on the next Save draft.
+**Saving.** Edits stay on the page until **Save draft** or **Save remarks**. A Save draft that changes a sentence, or switches a tag to abnormal, asks Azure (`POST /summarise-findings`) for a box for each abnormal tag that has none: one box per tag, and none for a normal tag. The merge in `backend/utils/findingsMerge.js` (`mergeTagBoxes`) keeps the boxes the radiologist drew, moved or removed. Reordering, COMMENT, remarks, boxes and measurements alone do not call Azure. Thinking is hidden; saving puts the stored Thinking back, so it is not lost and does not show up in the draft log.
 
-While drafting, the page shows an **attribution log** (AI vs manual). Open a row to see the added, removed, and edited lines, boxes, and measurements. **Endorse report** issues a clean report: no Thinking section and no source tags for the referring doctor. Word and PDF include the date, reporting doctor, and signature.
+While drafting, the page shows an **attribution log** (AI vs manual). Open a row to see the added, removed, and edited lines, boxes, and measurements. **Endorse report** issues a clean report: no Thinking section and no source tags for the referring doctor.
 
 Radiologist / admin can:
 
-- Edit the report text, boxes, and measurements on non-endorsed cases
-- **Re-run AI** — after a draft exists (clears the old boxes; Azure places new ones)
+- Edit tags, boxes, and measurements on non-endorsed cases
+- **Re-run AI** — after a draft exists (clears the old tags, boxes and measurements; the new draft is split into tags and Azure places new boxes)
 - **Save draft** / **Endorse report**
 - **Share** / **Copy share link** — after endorse
 - **Mark urgent** / **Remove urgent** (allowed after endorse)
 - Save remarks (allowed after endorse; does **not** rewrite an endorsed report)
-- **Report** / **Word** / **PDF**
+- **Word** / **PDF**, and **Word with finding films** / **PDF with finding films**
 
-Export composition (`src/lib/reportExport.js`): the report without Thinking, any **Measurements** section (`1. length: 14.29 cm`), remarks, and the sign-off. The film image in Word and PDF has the measurement lines and their numbered tags drawn on it. Downloads save unsaved edits first.
+**Two downloads, Word and PDF** (`src/lib/reportExport.js`; both are built from the same list of blocks):
+
+- **Plain report** — the header, the report in the layout above, the endorsing name and date, and one clean film with no boxes and no measurement lines.
+- **Report with finding films** — the same text, then for each **abnormal** tag only, the whole film again with only that tag's box. When that tag has a measurement, the whole film is repeated once more with only the measurement line, followed by a short description. The line is not drawn on the box film. A normal sentence is in the text and gets no extra picture.
+  - Heart size description: the two film-size diameters, the ratio, the PA threshold of 0.50, and the sentence that these centimetres are the size on the film, not inside the body.
+  - Lesion description: the film-size length (or that centimetres are unavailable) and the same limitation.
+  - Each description names the spacing tag that supplied the number.
+
+Downloads save unsaved edits first. The finding films are drawn in the browser; the PDF writer embeds JPEG, so a PNG film is re-encoded first.
 
 ### 7. Endorse
 
@@ -300,9 +332,13 @@ Shared pieces:
 - `src/lib/roles.js` — technician / radiologist / doctor / admin
 - `src/lib/patientName.js` — first / middle / last
 - `src/lib/tags.js` — urgent chip, patient name
-- `src/lib/reportExport.js` — Word / PDF, hide and restore Thinking, measurements section
+- `shared/reportText.js`, `shared/reportTags.js` — plain ES modules used by **both** the browser and the API (`backend/utils/tagReport.js` loads them with `import()`): remarks and Thinking handling, sentence splitting, normal/abnormal, tags, and the assembled report
+- `src/lib/findingTags.js` — add, edit, delete, flip, reorder; box and measurement edits as pure functions on a case
+- `src/lib/measure.js` — spacing tags, film-size wording, cardiothoracic ratio, the measurement descriptions
+- `src/lib/reportExport.js` — header fields, the report layout, and the plain and finding-films Word / PDF
 - `src/lib/diagnosis.js` — when the work-list label may be refreshed by Azure
-- `backend/utils/findingsMerge.js` — merge a fresh Azure pass with the radiologist’s box edits
+- `backend/utils/findingsMerge.js` — merge a fresh Azure pass with the radiologist’s box edits (`mergeTagBoxes`: one box per abnormal tag, never one for a normal tag)
+- `backend/utils/mimic.js`, `backend/scripts/import-mimic.js` — the MIMIC-CXR cohort import (below)
 - `backend/utils/editDiff.js` — draft-log lines for report, box, remark, and measurement changes
 - `src/lib/ui.js` — search, chips, empty states, urgent sort
 - `src/lib/caseStatus.js` — requested / outstanding / generating / pending approve / endorsed
@@ -331,7 +367,7 @@ Shared pieces:
 | `POST` | `/api/cases/request` | doctor, admin | book a chest X-ray for `{ patientId, day, time }` within the slot and daily quota; no film |
 | `POST` | `/api/cases` | technician, admin | multipart PNG, JPG, WebP, or uncompressed DICOM; **starts CURV** |
 | `GET` | `/api/cases/:id` | any | Doctors: requested or endorsed. Technicians: requested only |
-| `PUT` | `/api/cases/:id` | radiologist, admin | report / remarks / urgent; `findings` (boxes) and `measurements` only when sent |
+| `PUT` | `/api/cases/:id` | radiologist, admin | `findingTags`, `comment`, `view` (the server re-assembles `reportText` from them) / remarks / urgent; `findings` (boxes) and `measurements` only when sent |
 | `POST` | `/api/cases/:id/analyze` | radiologist, admin | re-run AI after a draft exists |
 | `POST` | `/api/cases/:id/finalize` | radiologist, admin | endorse; stores `status: finalized` |
 | `POST` | `/api/cases/:id/share` | radiologist, admin | public token for an endorsed report |
@@ -384,7 +420,7 @@ Set in `backend/.env`:
 
 Used for (`backend/utils/azureFindings.js`):
 
-- **Film boxes** after CURV stores the draft, and again when a Save draft changes the report wording. Azure gets the report text and the film, and returns boxes with a severity; `normal` findings are not drawn. If vision boxes are missing, anatomical **zones** are used and the page says the boxes are approximate.
+- **Film boxes** after CURV stores the draft, and again when a Save draft changes a sentence or switches a tag to abnormal. Azure gets only the **abnormal** sentence tags (with their keys) and the film, and returns **one box per tag** (`placeTagBoxes`). A normal tag is never sent, so it never gains a box; a tag whose box the radiologist removed is not sent either; the cardiothoracic-ratio sentence is boxed by the heart-size tool. Boxes the radiologist drew, moved or removed are kept (`mergeTagBoxes`). If Azure gives no usable box for a tag, it falls back to an anatomical-zone box (`bboxSource: zone`) that the radiologist can move, resize or remove.
 - A short **diagnosis** on the work list, but only after the radiologist has edited the draft. Until then the label is picked locally from CURV’s report text, with no Azure call (`diagnosisSource: local`).
 - **Patient-chart findings** after endorse (`summariseChartFindings`). Text only, Thinking removed, at most 6 grouped findings with a severity. Stored in `chartFindings[]` on the case.
 
@@ -450,11 +486,11 @@ Frontend (jsdom via linkedom, no browser):
 npm test
 ```
 
-That runs the suite in `scripts/test-*.mjs`: report unwrap/parse, the review page, automatic box placement, Azure bbox, confidence, export, report popup, diagnosis, patients, new patient, cases, pagination, new-case drop zone, DICOM, audit bulk-delete, users page, share page, analysis job, shell menu.
+That runs the suite in `scripts/test-*` (`.mjs` and `.cjs`): sentence tags and the normal/abnormal rules, measurement and the cardiothoracic ratio, the tag edit functions, the report layout and the two downloads, the API side of tags (`test-tag-backend.cjs`), the MIMIC import (`test-mimic-import.cjs`), report unwrap/parse, the review page, automatic box placement, Azure bbox, confidence, export, report popup, diagnosis, patients, new patient, cases, pagination, new-case drop zone, DICOM, audit bulk-delete, users page, share page, analysis job, shell menu.
 
 `scripts/test-patient-page.mjs` covers the chart: Azure findings only for endorsed reports, the running / failed / Retry states, hiding findings from technicians, the Care notes section, the Sepsis and Care notes windows (URL, separate windows, window reuse, saves posted back to the chart), and the blocked-pop-up panel.
 
-`scripts/test-review-page.mjs` clicks every control on the review page against a mocked API. That covers inline report edits, hidden Thinking, drawing, moving, resizing, and deleting boxes, the Azure merge after a report edit, measurements (saved, named, deleted, in the PDF), Endorse, Share, Word, PDF, and read-only roles.
+`scripts/test-review-page.mjs` clicks every control on the review page against a mocked API. That covers one tag per sentence, drag to reorder, add at the end, edit and delete a tag, normal/abnormal, tag and box selection, a normal sentence having no box, Azure being asked for one box per abnormal tag only, the heart-size flow on PA and AP views, a lesion line written into its sentence, hidden Thinking, drawing, moving, resizing and deleting boxes, Endorse, Share, Word, PDF and the finding-films downloads, an older case split once, and read-only roles.
 
 Against a **running** backend:
 
@@ -474,6 +510,59 @@ Dry-run by default; pass `--apply` to write.
 - `node scripts/migrate-workflow.js` — roles + `analysisState` + patient chart
 - `node scripts/reset-demo-passwords.js` — demo account hashes
 - `node scripts/inspect-roles.js` — print stored user roles
+
+---
+
+## MIMIC-CXR cohort (about 2,000 histories)
+
+For realistic histories, the repo can load about 2,000 distinct MIMIC-CXR subjects as cases that are **waiting for AI**. Images come from **MIMIC-CXR-JPG 2.1.0** and the history from the official **MIMIC-CXR** report text files. You need PhysioNet credentialed access.
+
+**Never commit MIMIC files, PhysioNet credentials, or `.env`.** Downloads go in `data/mimic/`, which `.gitignore` covers (as it does `.env`, `.netrc`, `*.dcm`). The scripts refuse a data folder that git does not ignore.
+
+1. Put the credential in `~/.netrc` (and `chmod 600 ~/.netrc`):
+
+   ```
+   machine physionet.org login YOUR_USER password YOUR_PASSWORD
+   ```
+
+2. Download the metadata, straight from its file URL with wget (or `aria2` as the second argument):
+
+   ```sh
+   backend/scripts/mimic-download.sh metadata
+   ```
+
+3. Choose the subjects. No image is downloaded and no database is opened here:
+
+   ```sh
+   npm run mimic:plan -- --count 2000 --dicom 20
+   ```
+
+   It picks distinct subjects who have a frontal view, **PA before AP**, one film each, by a seeded shuffle (repeatable), with about 15% spare in case a report has no indication. It writes `data/mimic/plan/` with `urls-jpg.txt`, `urls-reports.txt` and, for `--dicom N`, `urls-dicom.txt` (a small set of PA films only).
+
+4. Download the JPEGs and the report text files. Do **not** download 2,000 DICOM files:
+
+   ```sh
+   backend/scripts/mimic-download.sh jpg
+   backend/scripts/mimic-download.sh reports
+   backend/scripts/mimic-download.sh dicom      # only the small set, for the measurement demo
+   ```
+
+5. Import. **Dry run by default**: it reads the files, counts what it would load and writes nothing.
+
+   ```sh
+   npm run mimic:import                 # dry run
+   npm run mimic:import -- --apply      # writes the cases
+   ```
+
+What each case is:
+
+- Patient id `PT-MIMIC-{subject_id}` and case id `CASE-MIMIC-{study_id}`, which cannot collide with demo ids. One frontal JPEG each, stored as downloaded.
+- **History** is the report's INDICATION (or else CLINICAL HISTORY) section, verbatim. A report with neither, or only de-identification blanks, is skipped rather than filled in.
+- No medicines, heart rate, lab results, age or sex are invented. The JPEG has no pixel spacing, so measurements show pixels only.
+- `sourceReport` keeps the official report as source text labelled **MIMIC report**, separate from this system's draft (`reportText` stays empty). The case page shows it as its own card.
+- Status is `pending` with `analysisState: none` (the work list says **Awaiting AI**). The import never calls CURV or Azure and never endorses; a radiologist runs the AI later from the review page.
+
+The DICOM films are for the measurement demo: upload one as a new case (the existing DICOM path) to get Imager Pixel Spacing and Pixel Spacing from its header.
 
 ---
 
@@ -519,7 +608,7 @@ Dry-run by default; pass `--apply` to write.
 
 ### What this project is *not*
 
-It is not a PACS, not a CE/FDA device, and not a substitute for a radiologist. Azure’s boxes are approximate and come from the report wording, not from CURV. Measurements are only as accurate as the DICOM pixel spacing.
+It is not a PACS, not a CE/FDA device, and not a substitute for a radiologist. Azure’s boxes are approximate and come from the report wording, not from CURV. Every centimetre is the size of the shadow on the film, not inside the body, and is only as good as the DICOM pixel spacing. The normal/abnormal split is a rule-based reading of one sentence, and the radiologist can switch it.
 
 ---
 
@@ -540,6 +629,8 @@ It is not a PACS, not a CE/FDA device, and not a substitute for a radiologist. A
 src/                  UI (Vite) — CMS shell + X-ray + clinical modules
 backend/              Express API, models, seed, Azure/CURV helpers
 middleware.py         FastAPI wrapper around mlx_vlm (started by start_server.sh)
-scripts/              Frontend tests + e2e
+shared/               ES modules used by both the browser and the API (report text and sentence-tag rules)
+scripts/              Tests (frontend, API helpers, MIMIC import) + e2e
+data/                 (git-ignored) MIMIC downloads; never committed
 docs/                 FYP plan, initial analysis, Azure findings setup
 ```

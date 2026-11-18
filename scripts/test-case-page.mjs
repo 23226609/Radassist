@@ -228,5 +228,35 @@ test("saving case remarks writes them into the report when not finalized", () =>
   });
 }
 
+{
+  const tagged = {
+    ...structuredClone(stored),
+    findingTags: [
+      { key: "t1", text: "Heart size is normal.", abnormal: false },
+      { key: "t2", text: "Small right pleural effusion.", abnormal: true },
+    ],
+    comment: "Small right pleural effusion.",
+    sourceReport: { label: "MIMIC report", source: "mimic-cxr", text: "INDICATION: cough.\nFINDINGS: Small right effusion." },
+  };
+  api.getCase = async () => ({ case: structuredClone(tagged) });
+  state.user = { role: "radiologist", userId: "u1", name: "Dr Test" };
+  state.selectedCaseId = "CASE-1";
+  await renderCasePage({ target: root });
+
+  test("case record lists one sentence per finding and the COMMENT line", () => {
+    const rows = [...root.querySelectorAll("#case-finding-tags li")].map((li) => li.textContent);
+    assert.deepEqual(rows, ["Heart size is normal.", "Small right pleural effusion."]);
+    assert.ok(root.querySelector("#case-comment").textContent.includes("– Small right pleural effusion."));
+  });
+
+  test("the MIMIC report is shown as source text, apart from the findings", () => {
+    const card = root.querySelector("#source-report");
+    assert.ok(card, "source report missing");
+    assert.ok(card.querySelector("h2").textContent.includes("MIMIC report"));
+    assert.ok(card.textContent.includes("INDICATION: cough."));
+    assert.ok(!root.querySelector("#case-finding-tags").textContent.includes("INDICATION"));
+  });
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

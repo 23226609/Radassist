@@ -16,6 +16,7 @@ export function el(tag, props = {}, ...children) {
       // Textareas ignore the value *attribute*. defaultValue + text content
       // is the HTML initial value; .value is the live one the user edits.
       node.defaultValue = String(v);
+      node.textContent = String(v);
     } else if (k === "checked" || k === "disabled" || k === "selected" || k === "readOnly") {
       node[k] = v;
     } else if (k === "value" && (tag === "input" || tag === "select" || tag === "option" || tag === "button")) {

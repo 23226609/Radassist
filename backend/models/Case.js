@@ -36,8 +36,39 @@ const findingSchema = new mongoose.Schema(
     languageScore: { type: Number, default: null },
     imageSupport: { type: Number, default: null },
     confidenceSource: { type: String, default: '' },
+    // The sentence tag this box belongs to. One box per tag.
+    tagKey: { type: String, default: '' },
   },
   { _id: true }
+);
+
+// One sentence of the report's FINDINGS list.
+const tagSchema = new mongoose.Schema(
+  {
+    key: { type: String, required: true },
+    text: { type: String, default: '' },
+    // Abnormal sentences get one film box; normal ones none.
+    abnormal: { type: Boolean, default: true },
+    manual: { type: Boolean, default: false },
+    // '' = ordinary sentence, 'ctr' = the cardiothoracic ratio sentence.
+    kind: { type: String, enum: ['', 'ctr'], default: '' },
+    // The radiologist took this tag's box away; a later Azure pass must not re-add it.
+    boxDeclined: { type: Boolean, default: false },
+  },
+  { _id: false }
+);
+
+// Text of an official report kept next to this system's draft.
+const sourceReportSchema = new mongoose.Schema(
+  {
+    label: { type: String, default: '' },
+    source: { type: String, default: '' },
+    text: { type: String, default: '' },
+    subjectId: { type: String, default: '' },
+    studyId: { type: String, default: '' },
+    dicomId: { type: String, default: '' },
+  },
+  { _id: false }
 );
 
 // A line the radiologist drew with the Measure tool. Ends are % of the film.
@@ -49,6 +80,24 @@ const measurementSchema = new mongoose.Schema(
     y2: { type: Number, required: true, min: 0, max: 100 },
     text: { type: String, default: '' },
     label: { type: String, default: '' },
+    // 'lesion' = one freehand line; 'ctr-heart' / 'ctr-thorax' = the two heart-size diameters.
+    kind: { type: String, enum: ['lesion', 'ctr-heart', 'ctr-thorax'], default: 'lesion' },
+    tagKey: { type: String, default: '' },
+    // Pixels on the film shown, and millimetres on the film (null: no spacing).
+    dxPx: { type: Number, default: null },
+    dyPx: { type: Number, default: null },
+    lengthPx: { type: Number, default: null },
+    lengthMm: { type: Number, default: null },
+    // Size inside the body, when the file's own geometry gives a magnification.
+    bodyLengthMm: { type: Number, default: null },
+    magnification: { type: Number, default: null },
+    magnificationSource: {
+      type: String,
+      enum: ['', 'PixelSpacing', 'EstimatedRadiographicMagnificationFactor', 'MidPlane', 'SupportPlane', 'HkPaStandard'],
+      default: '',
+    },
+    // Which DICOM tag the millimetres came from.
+    spacingTag: { type: String, enum: ['ImagerPixelSpacing', 'PixelSpacing', ''], default: '' },
   },
   { _id: true }
 );
@@ -71,6 +120,15 @@ const caseSchema = new mongoose.Schema(
     // Clinician notes. Also copied into a "Radiologist remarks" block at
     // the end of reportText when they save, so downloads include them.
     remarks: { type: String, default: '' },
+    // FINDINGS as one tag per sentence, in report order, and the COMMENT line.
+    // reportText is assembled from these whenever they change.
+    findingTags: { type: [tagSchema], default: [] },
+    comment: { type: String, default: '' },
+    // '' = unknown, else PA, AP, AP supine or Lateral. Only PA is an erect PA.
+    view: { type: String, enum: ['', 'PA', 'AP', 'AP supine', 'Lateral'], default: '' },
+    examinedAt: { type: Date, default: null },
+    // The official report for imported cases (MIMIC-CXR), never edited here.
+    sourceReport: { type: sourceReportSchema, default: undefined },
     findings: { type: [findingSchema], default: [] },
     measurements: { type: [measurementSchema], default: [] },
     // none = film stored, AI not started; running = CURV in progress; done = draft ready.
@@ -113,6 +171,26 @@ const caseSchema = new mongoose.Schema(
     },
     status: { type: String, enum: STATUS, default: 'pending' },
     urgent: { type: Boolean, default: false },
+    // The radiology request and the room, unit and radiographer assigned with the booking.
+    examination: { type: String, default: '' },
+    bodyPart: { type: String, default: '' },
+    clinicalReason: { type: String, default: '' },
+    equipment: { type: String, default: '' },
+    examRoom: { type: String, default: '' },
+    assignedStaff: { type: String, default: '' },
+    preparation: { type: String, default: '' },
+    arrival: {
+      type: new mongoose.Schema({
+        identity: { type: Boolean, default: false },
+        patientNumber: { type: Boolean, default: false },
+        request: { type: Boolean, default: false },
+        bodyPart: { type: Boolean, default: false },
+        appointment: { type: Boolean, default: false },
+        at: { type: Date, default: null },
+        byName: { type: String, default: '' },
+      }, { _id: false }),
+      default: () => ({}),
+    },
     // Ownership / audit
     createdBy: { type: String, default: '' }, // userId of the uploader once the film is registered
     createdByName: { type: String, default: '' },
@@ -126,8 +204,24 @@ const caseSchema = new mongoose.Schema(
     registeredAt: { type: Date, default: null },
     // Day the referring doctor booked the examination.
     scheduledAt: { type: Date, default: null },
-    // DICOM PixelSpacing in millimetres: [row, column]. Empty when the film has none.
+    // Millimetres on the film per pixel, [row, column]. This is the spacing every
+    // centimetre uses: Imager Pixel Spacing when the file has it, else Pixel Spacing.
     pixelSpacingMm: { type: [Number], default: undefined },
+    // Both DICOM tags as read, for the record. Imager Pixel Spacing (0018,1164) is the
+    // distance on the detector; Pixel Spacing (0028,0030) may be a vendor calibration.
+    imagerPixelSpacingMm: { type: [Number], default: undefined },
+    dicomPixelSpacingMm: { type: [Number], default: undefined },
+    pixelSpacingSource: { type: String, enum: ['ImagerPixelSpacing', 'PixelSpacing', ''], default: '' },
+    // Projection geometry from the DICOM header, used to turn film size into
+    // body size. Absent unless the file recorded them. Never a guessed 180 cm.
+    estimatedMagnification: { type: Number, default: undefined },
+    distanceSourceToDetectorMm: { type: Number, default: undefined },
+    distanceSourceToPatientMm: { type: Number, default: undefined },
+    bodyPartThicknessMm: { type: Number, default: undefined },
+    // What the DICOM header said about projection. The View dropdown can disagree.
+    dicomViewPosition: { type: String, default: '' },
+    patientPosition: { type: String, default: '' },
+    projectionCues: { type: String, default: '' },
     imageId: { type: mongoose.Schema.Types.ObjectId, default: null },
     imageFilename: { type: String, default: '' },
     imageContentType: { type: String, default: 'image/jpeg' },

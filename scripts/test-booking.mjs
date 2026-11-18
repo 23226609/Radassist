@@ -27,6 +27,7 @@ Object.defineProperty(window, "location", {
   value: { href: "http://localhost:5173/#/review/CASE-1", origin: "http://localhost:5173", search: "" },
 });
 
+const { identityNumberFor } = await import("../shared/radiologyRequest.js");
 const { state } = await import("../src/state.js");
 const { api } = await import("../src/api.js");
 const { renderPatientPage } = await import("../src/components/patients.js");
@@ -104,7 +105,20 @@ api.xrayAvailability = async (from, to) => {
 };
 api.requestExam = async (payload) => {
   requested = payload;
-  chart.cases.push({ caseId: "CASE-REQ", status: "requested", scheduledAt: new Date(`${payload.day}T${payload.time}:00`).toISOString(), requestedByName: "Dr. Alex Wong" });
+  chart.cases.push({
+    caseId: "CASE-REQ",
+    status: "requested",
+    scheduledAt: new Date(`${payload.day}T${payload.time}:00`).toISOString(),
+    requestedByName: "Dr. Alex Wong",
+    examination: payload.examination,
+    bodyPart: payload.bodyPart,
+    clinicalReason: payload.clinicalReason,
+    urgent: payload.urgent,
+    examRoom: "XR-1",
+    equipment: "Digital radiography unit A",
+    assignedStaff: "Jamie Lee",
+    preparation: "Remove metal from the chest. PA film if the patient can stand.",
+  });
   return { case: {} };
 };
 
@@ -166,11 +180,38 @@ test("choosing a time enables Confirm and shows the booking", () => {
   assert.ok(cell(OPEN_DAY).textContent.includes("09:30"));
 });
 
+test("the request states the patient, examination, body part, reason and who is on duty", () => {
+  const fields = root.querySelector("#request-fields");
+  assert.ok(fields.textContent.includes("Mei Chen"));
+  assert.ok(fields.textContent.includes("PT-2026-0018"));
+  assert.ok(fields.textContent.includes("Chest X-ray"));
+  assert.ok(fields.textContent.includes("Body part"));
+  assert.ok(fields.textContent.includes("Jamie Lee"));
+  assert.equal(root.querySelector("#clinical-reason").value, "Cough.");
+});
+
+const reasonBox = root.querySelector("#clinical-reason");
+reasonBox.value = " ";
+reasonBox.dispatchEvent(new window.Event("input"));
+test("Confirm stays off without a clinical reason", () => {
+  assert.ok(buttonNamed(root, "Confirm booking").disabled);
+});
+reasonBox.value = "Cough.";
+reasonBox.dispatchEvent(new window.Event("input"));
+
 click(buttonNamed(root, "Confirm booking"));
 await tick();
 await tick();
 test("Confirm books that day and time", () => {
-  assert.deepEqual(requested, { patientId: "PT-2026-0018", day: OPEN_DAY, time: "09:30", urgent: false });
+  assert.deepEqual(requested, {
+    patientId: "PT-2026-0018",
+    day: OPEN_DAY,
+    time: "09:30",
+    urgent: false,
+    clinicalReason: "Cough.",
+    examination: "Chest X-ray",
+    bodyPart: "Chest",
+  });
   assert.equal(root.querySelector("#book-xray"), null, "dialog closes after booking");
 });
 
@@ -181,6 +222,9 @@ test("the chart shows the booked day, time and status", () => {
   assert.ok(header.textContent.includes("09:30"));
   assert.ok(root.textContent.includes("Booked for"));
   assert.ok(/waiting for film/.test(root.textContent));
+  assert.ok(root.textContent.includes("Cough."));
+  assert.ok(root.textContent.includes("XR-1"));
+  assert.ok(root.textContent.includes("Jamie Lee"));
 });
 
 {
@@ -202,6 +246,54 @@ test("the chart shows the booked day, time and status", () => {
     assert.ok(!rows[1].includes("Urgent"));
     assert.ok(rows[1].includes("Later Patient"));
     assert.ok(q.textContent.includes("1–2 of 2"));
+    assert.equal(buttonNamed(q, "Register film"), undefined, "the film stays closed until check-in");
+  });
+  click(buttonNamed(q, "Check in"));
+  test("check-in shows the five confirmations and the appointment", () => {
+    const panel = q.querySelector("#check-in");
+    assert.ok(panel);
+    assert.ok(panel.textContent.includes("Sooner Patient"));
+    assert.ok(panel.textContent.includes("PT-1"));
+    assert.ok(panel.textContent.includes("Confirm patient identity"));
+    assert.ok(panel.textContent.includes(`Identity no. ${identityNumberFor("PT-1")}`));
+    assert.ok(panel.textContent.includes("Confirm appointment"));
+    assert.ok(buttonNamed(panel, "Confirm arrival").disabled);
+  });
+  test("the identity number stays with the patient", () => {
+    const number = identityNumberFor("PT-1");
+    assert.match(number, /^[A-Z]\d{6}\([0-9A]\)$/);
+    assert.equal(identityNumberFor("PT-1"), number);
+    assert.notEqual(identityNumberFor("PT-2"), number);
+  });
+  for (const key of ["identity", "patientNumber", "request", "bodyPart", "appointment"]) {
+    click(q.querySelector(`#check-in input[data-check="${key}"]`));
+  }
+  let arrived = null;
+  api.confirmArrival = async (id, payload) => {
+    arrived = { id, payload };
+    return {
+      case: {
+        caseId: id,
+        arrival: { ...payload, at: "2030-01-01T01:00:00.000Z", byName: "Jamie Lee" },
+      },
+    };
+  };
+  click(buttonNamed(q, "Confirm arrival"));
+  await tick();
+  await tick();
+  test("confirming arrival opens film registration for that patient", () => {
+    assert.equal(arrived.id, "R1");
+    assert.deepEqual(arrived.payload, {
+      identity: true,
+      patientNumber: true,
+      request: true,
+      bodyPart: true,
+      appointment: true,
+    });
+    assert.equal(q.querySelector("#check-in"), null);
+    const first = q.querySelector("tbody tr");
+    assert.ok(first.textContent.includes("Register film"));
+    assert.ok(!first.textContent.includes("Check in"));
   });
   q.remove();
 }
@@ -260,7 +352,15 @@ test("the chart shows the booked day, time and status", () => {
   await tick();
   await tick();
   test("Confirm sends the booking as urgent", () => {
-    assert.deepEqual(requested, { patientId: "PT-2026-0018", day: FULL_DAY, time: "09:00", urgent: true });
+    assert.deepEqual(requested, {
+      patientId: "PT-2026-0018",
+      day: FULL_DAY,
+      time: "09:00",
+      urgent: true,
+      clinicalReason: "Cough.",
+      examination: "Chest X-ray",
+      bodyPart: "Chest",
+    });
   });
   chart.patient.urgent = false;
 }
@@ -342,6 +442,31 @@ console.log("\n=== patient chart window ===");
     assert.equal(popped.length, 0);
     assert.ok(win.textContent.includes("New Progress Note"));
     assert.ok(!win.textContent.includes("Enter / Update Vitals"));
+  });
+  let savedLabs = null;
+  api.updatePatient = async (id, patch) => {
+    savedLabs = { id, patch };
+    return { patient: { ...chart.patient, ...patch } };
+  };
+  click(buttonNamed(win, "Lab Orders & Results"));
+  await tick();
+  await tick();
+  test("Lab Orders stay inside the chart window for this patient", () => {
+    assert.equal(popped.length, 0);
+    assert.equal(opener.location.hash, "#/cases/CASE-1");
+    assert.ok(win.textContent.includes("Lab Orders & Results · Mei Chen (PT-2026-0018)"));
+    assert.ok(win.textContent.includes("Place Lab Order"));
+    assert.ok(win.textContent.includes("No lab orders for this patient."));
+    assert.ok(!win.textContent.includes("Select inpatient record"));
+  });
+  click(buttonNamed(win, "Place Lab Order"));
+  await tick();
+  await tick();
+  test("a lab order placed in the window is saved for that patient", () => {
+    assert.equal(savedLabs.id, "PT-2026-0018");
+    assert.equal(savedLabs.patch.labOrders.length, 1);
+    assert.equal(savedLabs.patch.labOrders[0].panel, "CBC");
+    assert.ok(win.textContent.includes("CBC"));
   });
   win.remove();
   delete window.opener;
