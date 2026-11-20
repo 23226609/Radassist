@@ -1,19 +1,16 @@
-// Reset seeded demo passwords to the values shown on the login screen.
+// Reset the seeded demo accounts' passwords to the SEED_*_PASSWORD values in
+// backend/.env (see backend/.env.example). Stops, changing nothing, if one is missing.
 //
 //   cd backend && node scripts/reset-demo-passwords.js
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 const connectDB = require('../config/db');
 const User = require('../models/User');
+const { requireDemoPasswords } = require('../utils/demoPasswords');
 
-const DEMO_PASSWORDS = {
-  admin: 'admin123',
-  tech: 'tech123',
-  nurse: 'tech123',
-  priya: 'priya123',
-  marcus: 'marcus123',
-  doctor: 'doctor123',
-};
+const seeded = requireDemoPasswords();
+// A leftover "nurse" account is the technician under its old name.
+const DEMO_PASSWORDS = { ...seeded, nurse: seeded.tech };
 
 (async () => {
   await connectDB();

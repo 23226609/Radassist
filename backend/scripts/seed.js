@@ -17,12 +17,17 @@ const AuditLog = require('../models/AuditLog');
 const { nameFieldsFrom, composePatientName } = require('../utils/patientName');
 const { upsertPatientFromCase } = require('../utils/recordSync');
 const { CHARTS, fallbackChart, applyBuilt } = require('./demoCharts');
+const { requireDemoPasswords } = require('../utils/demoPasswords');
+
+// Passwords come from backend/.env (SEED_*_PASSWORD). Checked before anything
+// connects to a database, so a missing one stops the seed with nothing changed.
+const demoPasswords = requireDemoPasswords();
 
 const DEMO_USERS = [
   {
     userId: 'USR-ADMIN-0001',
     username: 'admin',
-    password: 'admin123',
+    password: demoPasswords.admin,
     name: 'System Admin',
     email: 'admin@radassist.demo',
     role: 'admin',
@@ -31,7 +36,7 @@ const DEMO_USERS = [
   {
     userId: 'USR-NURSE-0001',
     username: 'tech',
-    password: 'tech123',
+    password: demoPasswords.tech,
     name: 'Jamie Lee',
     email: 'jamie.lee@radassist.demo',
     role: 'technician',
@@ -40,7 +45,7 @@ const DEMO_USERS = [
   {
     userId: 'USR-DOCTOR-0002',
     username: 'priya',
-    password: 'priya123',
+    password: demoPasswords.priya,
     name: 'Dr. Priya Nair',
     email: 'priya.nair@radassist.demo',
     role: 'radiologist',
@@ -49,7 +54,7 @@ const DEMO_USERS = [
   {
     userId: 'USR-DOCTOR-0003',
     username: 'marcus',
-    password: 'marcus123',
+    password: demoPasswords.marcus,
     name: 'Dr. Marcus Chen',
     email: 'marcus.chen@radassist.demo',
     role: 'radiologist',
@@ -58,7 +63,7 @@ const DEMO_USERS = [
   {
     userId: 'USR-DOCTOR-0001',
     username: 'doctor',
-    password: 'doctor123',
+    password: demoPasswords.doctor,
     name: 'Dr. Alex Wong',
     email: 'alex.wong@radassist.demo',
     role: 'doctor',

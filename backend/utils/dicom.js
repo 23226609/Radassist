@@ -6,6 +6,8 @@ const dcmjs = require('dcmjs');
 const { shrinkForDisplay } = require('./displayFilm');
 
 const COMPRESSED = /^1\.2\.840\.10008\.1\.2\.[45]/;
+// Shown to the technician when a film is refused, so it says what to do next.
+const COMPRESSED_MESSAGE = 'This DICOM uses a compressed transfer syntax. Please export it as uncompressed film or PNG.';
 const MAX_EDGE = 1600;
 
 function isDicomBuffer(buffer, filename = '', mimetype = '') {
@@ -33,7 +35,7 @@ function pixelBytes(pixelData) {
     }).filter(Boolean);
     if (parts.length === 1) return parts[0];
     if (parts.length > 1) {
-      throw new Error('This DICOM uses compressed pixels. Export an uncompressed chest film, or upload a PNG.');
+      throw new Error(COMPRESSED_MESSAGE);
     }
   }
   throw new Error('This DICOM has no pixel data.');
@@ -43,9 +45,11 @@ function readDataset(buffer) {
   const copy = Buffer.from(buffer);
   const dicom = dcmjs.data.DicomMessage.readFile(copy.buffer.slice(copy.byteOffset, copy.byteOffset + copy.byteLength));
   const dataset = dcmjs.data.DicomMetaDictionary.naturalizeDataset(dicom.dict);
-  const syntax = dicom.meta?.TransferSyntaxUID || dataset.TransferSyntaxUID || '';
+  // dcmjs keeps the file meta by tag number; (0002,0010) is the transfer syntax.
+  // Reading it by name never matched, so this refusal never ran.
+  const syntax = dicom.meta?.['00020010']?.Value?.[0] || dicom.meta?.TransferSyntaxUID || dataset.TransferSyntaxUID || '';
   if (COMPRESSED.test(String(syntax))) {
-    throw new Error('This DICOM uses compressed pixels. Export an uncompressed chest film, or upload a PNG.');
+    throw new Error(COMPRESSED_MESSAGE);
   }
   return dataset;
 }
@@ -481,5 +485,5 @@ function prepareFilm(file) {
 
 module.exports = {
   isDicomBuffer, dicomToPng, prepareFilm, fittedSize, dicomHeader, spacingTags,
-  dropInteriorEmptyRows, dropEdgeBlankColumns, exposedField, cropFrame,
+  dropInteriorEmptyRows, dropEdgeBlankColumns, exposedField, cropFrame, COMPRESSED_MESSAGE,
 };

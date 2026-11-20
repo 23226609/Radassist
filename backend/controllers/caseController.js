@@ -903,7 +903,7 @@ exports.createShareLink = catchAsync(async (req, res, next) => {
 exports.revokeShareLink = catchAsync(async (req, res, next) => {
   const c = await findCaseByAnyId(req.params.id);
   if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
-  c.shareToken = null;
+  c.shareToken = undefined; // unset, not null: see the shareToken note in models/Case.js
   await c.save();
   await addAuditLog(
     req.user.userId,

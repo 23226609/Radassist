@@ -11,6 +11,7 @@
 // Prerequisites:
 //   1. Backend running at http://localhost:PORT  (PORT from backend/.env)
 //   2. MongoDB has been migrated (run scripts/fix-legacy-reports.js once)
+//   3. SEED_ADMIN_PASSWORD set in backend/.env (the admin account's password)
 
 const fs = await import("node:fs");
 const path = await import("node:path");
@@ -35,6 +36,11 @@ for (const line of envText.split(/\r?\n/)) {
 
 const BACKEND = `http://localhost:${process.env.PORT || 5002}`;
 
+if (!process.env.SEED_ADMIN_PASSWORD) {
+  console.error("SEED_ADMIN_PASSWORD is not set. Add it to backend/.env (see backend/.env.example).");
+  process.exit(1);
+}
+
 // Login first to get a token (the /api/cases endpoints require auth).
 async function login() {
   const res = await fetch(`${BACKEND}/api/auth/login`, {
@@ -42,7 +48,7 @@ async function login() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       username: "admin",
-      password: "admin123",
+      password: process.env.SEED_ADMIN_PASSWORD,
     }),
   });
   if (!res.ok) {

@@ -154,6 +154,18 @@ function boxKey(f) {
   return String(f?._id || f?.id || "");
 }
 
+// A box's stored confidence as a whole percent. A box with no score is never hidden.
+function confidencePct(f) {
+  const n = Number(f?.confidence);
+  if (f?.confidence == null || !Number.isFinite(n)) return 100;
+  return Math.round(Math.min(1, Math.max(0, n)) * 100);
+}
+
+// Hover look for a film box and for its sentence tag. Written out in full so
+// the style sheet keeps them.
+const HOVER_BOX_CLASSES = ["z-20", "ring-2", "ring-white", "bg-white/20"];
+const HOVER_ROW_CLASSES = ["ring-2", "ring-sky-400", "bg-sky-50"];
+
 // One box per abnormal sentence tag. A deleted box stays stored as rejected so
 // Azure does not put it back, but it is not drawn. A normal sentence has no box.
 function filmBoxes(c) {
@@ -463,6 +475,11 @@ export async function renderReviewPage({ target }) {
   let showLog = false;
   let filmTool = "view";
   let selectedTagKey = "";
+  // View only, never saved. 0 shows every finding; a higher value hides the film
+  // boxes whose stored confidence (percent) is below it.
+  let minConfidence = 0;
+  // The sentence tag and its film box light up together while the pointer is on either.
+  let hoverTagKey = "";
   let boxesDirty = false;
   let measureLine = null;
   let measuresDirty = false;
@@ -967,8 +984,63 @@ export async function renderReviewPage({ target }) {
     return boxFromCorners(boxDrag.start, pct);
   }
 
+  // The boxes the radiologist can see: the confidence slider hides the rest, so
+  // a hidden box cannot be clicked, moved or resized by accident.
+  const belowThreshold = (f) => confidencePct(f) < minConfidence;
+  const shownBoxes = () => filmBoxes(localCase).filter((f) => !belowThreshold(f));
+
   function selectedBox() {
-    return selectedTagKey ? filmBoxes(localCase).find((f) => f.tagKey === selectedTagKey) || null : null;
+    return selectedTagKey ? shownBoxes().find((f) => f.tagKey === selectedTagKey) || null : null;
+  }
+
+  // Hover highlight, painted straight onto the DOM. A repaint here would throw
+  // away a half-typed sentence and the slider the radiologist is dragging.
+  function applyHover() {
+    for (const node of document.querySelectorAll("[data-box-tag]")) {
+      const on = Boolean(hoverTagKey) && node.dataset.boxTag === hoverTagKey;
+      for (const c of HOVER_BOX_CLASSES) node.classList[on ? "add" : "remove"](c);
+      if (on) node.setAttribute("data-hover", "1"); else node.removeAttribute("data-hover");
+    }
+    for (const row of document.querySelectorAll("[data-tag]")) {
+      const on = Boolean(hoverTagKey) && row.dataset.tag === hoverTagKey;
+      for (const c of HOVER_ROW_CLASSES) row.classList[on ? "add" : "remove"](c);
+      if (on) row.setAttribute("data-hover", "1"); else row.removeAttribute("data-hover");
+    }
+  }
+
+  function setHover(key) {
+    const next = key || "";
+    if (next === hoverTagKey) return;
+    hoverTagKey = next;
+    applyHover();
+  }
+
+  // The slider moved: show or hide the boxes and dim their sentence tags in place.
+  function applyConfidenceFilter() {
+    const all = filmBoxes(localCase);
+    const hidden = new Set(all.filter(belowThreshold).map((f) => f.tagKey));
+    for (const node of document.querySelectorAll("[data-box-tag]")) {
+      node.style.display = hidden.has(node.dataset.boxTag) ? "none" : "";
+    }
+    for (const row of document.querySelectorAll("[data-tag]")) {
+      const off = hidden.has(row.dataset.tag);
+      row.classList[off ? "add" : "remove"]("opacity-50");
+      if (off) row.setAttribute("data-below-threshold", "1"); else row.removeAttribute("data-below-threshold");
+    }
+    const value = document.getElementById("confidence-value");
+    if (value) value.textContent = `${minConfidence}%`;
+    const count = document.getElementById("confidence-count");
+    if (count) count.textContent = `${all.length - hidden.size} of ${all.length} shown`;
+    const slider = document.getElementById("confidence-slider");
+    if (slider) slider.setAttribute("aria-valuetext", `${minConfidence}% minimum confidence`);
+    // A box that just went away cannot stay the hovered one.
+    if (hoverTagKey && hidden.has(hoverTagKey)) setHover("");
+  }
+
+  function setMinConfidence(value) {
+    const n = Math.round(Number(value));
+    minConfidence = Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0;
+    applyConfidenceFilter();
   }
 
   const lineTool = () => filmTool === "measure" || filmTool === "ctr";
@@ -989,7 +1061,7 @@ export async function renderReviewPage({ target }) {
     if (!canEditBoxes()) {
       // A reader can still click a box to see which sentence it belongs to.
       if (filmTool === "view" && showBoxes) {
-        const under = [...filmBoxes(localCase)].reverse().find((f) => hitBoxHandle(pct, f.bbox) === "move");
+        const under = [...shownBoxes()].reverse().find((f) => hitBoxHandle(pct, f.bbox) === "move");
         selectedTagKey = under ? under.tagKey : "";
         render();
       }
@@ -1006,7 +1078,7 @@ export async function renderReviewPage({ target }) {
       } else if (hit) {
         boxDrag = { mode: "resize", handle: hit, key: selectedTagKey, start: pct, origin: sel.bbox.slice() };
       } else {
-        const under = [...filmBoxes(localCase)].reverse().find((f) => hitBoxHandle(pct, f.bbox) === "move");
+        const under = [...shownBoxes()].reverse().find((f) => hitBoxHandle(pct, f.bbox) === "move");
         selectedTagKey = under ? under.tagKey : "";
         render();
         return;
@@ -1029,6 +1101,10 @@ export async function renderReviewPage({ target }) {
     if (boxDrag) {
       paintLiveBox(stage, liveBox(pct));
       return;
+    }
+    if (filmTool === "view" && showBoxes) {
+      const over = [...shownBoxes()].reverse().find((f) => hitBoxHandle(pct, f.bbox) === "move");
+      setHover(over ? over.tagKey : "");
     }
     if (filmTool === "view" && canEditBoxes()) {
       const sel = selectedBox();
@@ -1468,10 +1544,13 @@ export async function renderReviewPage({ target }) {
       const selected = t.key === selectedTagKey;
       const index = boxes.findIndex((f) => f.tagKey === t.key);
       const color = index >= 0 ? filmBoxColor(index, boxes.length) : null;
+      const off = index >= 0 && belowThreshold(boxes[index]);
       const row = el("li", {
-        class: `flex items-start gap-1.5 rounded-md border px-1.5 py-1 ${selected ? "border-slate-500 bg-slate-100" : "border-transparent hover:bg-slate-50"}`,
-        dataset: { tag: t.key, abnormal: t.abnormal ? "1" : "", selected: selected ? "1" : "" },
+        class: `flex items-start gap-1.5 rounded-md border px-1.5 py-1 ${selected ? "border-slate-500 bg-slate-100" : "border-transparent hover:bg-slate-50"}${off ? " opacity-50" : ""}`,
+        dataset: { tag: t.key, abnormal: t.abnormal ? "1" : "", selected: selected ? "1" : "", ...(off ? { belowThreshold: "1" } : {}) },
         onClick: () => pickTag(t.key),
+        onMouseenter: () => setHover(t.key),
+        onMouseleave: () => setHover(""),
         onDragover: (e) => {
           if (!dragKey) return;
           e.preventDefault();
@@ -1737,6 +1816,25 @@ export async function renderReviewPage({ target }) {
               }, showMeasures ? "Hide lines" : "Show lines")
             )
           ),
+          boxes.length > 0 && el("div", { id: "confidence-filter", class: "mt-2 flex items-center gap-2 text-xs text-slate-300" },
+            el("label", { for: "confidence-slider", class: "shrink-0 font-semibold" }, "Min confidence"),
+            el("input", {
+              id: "confidence-slider",
+              type: "range",
+              min: "0",
+              max: "100",
+              step: "5",
+              value: String(minConfidence),
+              class: "min-w-0 flex-1 accent-white",
+              title: "Hide film boxes the AI is less sure about. 0% shows every box. This only changes the view, not the report.",
+              "aria-valuetext": `${minConfidence}% minimum confidence`,
+              onInput: (e) => setMinConfidence(e.target.value),
+              onChange: (e) => setMinConfidence(e.target.value),
+            }),
+            el("span", { id: "confidence-value", class: "w-10 shrink-0 text-right font-mono text-white" }, `${minConfidence}%`),
+            el("span", { id: "confidence-count", class: "shrink-0 text-slate-400" },
+              `${boxes.filter((f) => !belowThreshold(f)).length} of ${boxes.length} shown`)
+          ),
           el("div", {
             class: "mt-2 flex h-[60vh] overflow-auto rounded-lg bg-gradient-to-b from-slate-500 to-slate-900 lg:h-auto lg:min-h-0 lg:flex-1",
             style: { containerType: "size" },
@@ -1754,6 +1852,7 @@ export async function renderReviewPage({ target }) {
               onPointermove: onFilmPointerMove,
               onPointerup: onFilmPointerUp,
               onPointercancel: onFilmPointerUp,
+              onPointerleave: () => { if (!boxDrag) setHover(""); },
               onWheel: onFilmWheel,
             },
               _imageSrc
@@ -1784,6 +1883,7 @@ export async function renderReviewPage({ target }) {
                   class: `pointer-events-none absolute ${color.border} ${selected ? `z-10 border-2 ${color.fill}` : "border-[1.5px]"} ${lineTool() ? "opacity-40" : ""}`,
                   dataset: { bbox: String(index + 1), bboxKey: boxKey(finding), boxTag: finding.tagKey, selected: selected ? "1" : "" },
                   style: {
+                    display: belowThreshold(finding) ? "none" : "",
                     left: finding.bbox[0] + "%",
                     top: finding.bbox[1] + "%",
                     width: finding.bbox[2] + "%",
@@ -2015,6 +2115,7 @@ export async function renderReviewPage({ target }) {
     );
 
     mount(target, root);
+    applyHover();
   }
 
   mount(target, el("p", { class: "p-8 text-slate-500" }, "Loading examination…"));

@@ -7,6 +7,7 @@ const ApiError = require('../utils/ApiError');
 const catchAsync = require('../utils/catchAsync');
 const addAuditLog = require('../utils/auditLogger');
 const { nameFieldsFrom } = require('../utils/patientName');
+const { nextPatientId } = require('../utils/patientId');
 const { normalizeRole, isTechnician } = require('../utils/roles');
 const { queueChartFindings, needsChartFindings, isStale } = require('../utils/chartFindings');
 const {
@@ -29,20 +30,17 @@ async function patientIdTaken(patientId) {
   return Boolean(await Case.findOne(caseFilter(patientId)).select('_id'));
 }
 
-async function nextPatientId() {
-  const year = new Date().getFullYear();
-  const prefix = `PT-${year}-`;
-  const re = new RegExp(`^${escapeRegex(prefix)}\\d+$`, 'i');
-  const [fromPatients, fromCases] = await Promise.all([
-    Patient.find({ patientId: re }).select('patientId'),
-    Case.find({ patientId: re }).select('patientId'),
-  ]);
-  const nums = [...fromPatients.map((p) => p.patientId), ...fromCases.map((c) => c.patientId)]
-    .map((id) => parseInt(String(id).slice(prefix.length), 10))
-    .filter((n) => Number.isFinite(n));
-  const next = (nums.length ? Math.max(...nums) : 0) + 1;
-  return `${prefix}${String(next).padStart(4, '0')}`;
+// A number from the atomic counter that no patient or study already uses. A
+// number someone typed by hand can sit in the way; the counter just moves on.
+async function freshPatientId() {
+  for (let tries = 0; tries < 50; tries += 1) {
+    const id = await nextPatientId();
+    if (!(await patientIdTaken(id))) return id;
+  }
+  throw ApiError.badRequest('Could not find a free patient number. Please try again.');
 }
+
+const isDuplicateKey = (err) => err?.code === 11000;
 
 function lastDiagnosisOf(grouped, cases = []) {
   const raw = grouped.lastDiagnosis || cases[0]?.diagnosis || '';
@@ -258,16 +256,10 @@ exports.createPatient = catchAsync(async (req, res, next) => {
       return next(ApiError.badRequest(`Patient ${id} already exists.`));
     }
   } else {
-    id = await nextPatientId();
-    while (await patientIdTaken(id)) {
-      const year = new Date().getFullYear();
-      const n = parseInt(id.slice(`PT-${year}-`.length), 10) + 1;
-      id = `PT-${year}-${String(n).padStart(4, '0')}`;
-    }
+    id = await freshPatientId();
   }
 
-  const record = await Patient.create({
-    patientId: id,
+  const fields = {
     firstName: names.firstName,
     middleName: names.middleName,
     lastName: names.lastName,
@@ -279,7 +271,19 @@ exports.createPatient = catchAsync(async (req, res, next) => {
     heartRate: heartRate != null ? String(heartRate) : '',
     labResults: labResults != null ? String(labResults) : '',
     remarks: '',
-  });
+  };
+  let record;
+  try {
+    record = await Patient.create({ patientId: id, ...fields });
+  } catch (err) {
+    // The unique index on patientId is the last guard. A number typed by hand
+    // can still be taken between the check above and this write.
+    if (!isDuplicateKey(err)) throw err;
+    if (patientId && String(patientId).trim()) {
+      return next(ApiError.badRequest(`Patient ${id} already exists.`));
+    }
+    record = await Patient.create({ patientId: await freshPatientId(), ...fields });
+  }
 
   await addAuditLog(
     req.user.userId,

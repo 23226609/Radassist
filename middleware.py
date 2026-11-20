@@ -267,7 +267,7 @@ def _render_dicom(image_path: str) -> str:
         arr = np.asarray(dataset.pixel_array)
     except Exception as exc:  # noqa: BLE001
         raise ValueError(
-            "This DICOM uses compressed pixels. Export an uncompressed chest film, or upload a PNG."
+            "This DICOM uses a compressed transfer syntax. Please export it as uncompressed film or PNG."
         ) from exc
     if arr.ndim == 3 and arr.shape[-1] not in (3, 4):
         arr = arr[0]

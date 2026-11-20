@@ -147,17 +147,19 @@ A **measurement** is a line on the film: `x1`, `y1`, `x2`, `y2` (percent of the 
 
 Open http://localhost:5173. JWT is stored in `localStorage` as `radassist.auth`. Vite proxies `/api` to port 5002.
 
-Demo users (seeded):
+Demo users (seeded). Each password is whatever you set in `backend/.env`; none is stored in the code:
 
-| Role | Username | Password | Name |
+| Role | Username | Password variable in `backend/.env` | Name |
 | --- | --- | --- | --- |
-| Technician | `tech` | `tech123` | Jamie Lee |
-| Radiologist | `priya` | `priya123` | Dr. Priya Nair |
-| Radiologist | `marcus` | `marcus123` | Dr. Marcus Chen |
-| Referring doctor | `doctor` | `doctor123` | Dr. Alex Wong |
-| Admin | `admin` | `admin123` | System Admin |
+| Technician | `tech` | `SEED_TECH_PASSWORD` | Jamie Lee |
+| Radiologist | `priya` | `SEED_PRIYA_PASSWORD` | Dr. Priya Nair |
+| Radiologist | `marcus` | `SEED_MARCUS_PASSWORD` | Dr. Marcus Chen |
+| Referring doctor | `doctor` | `SEED_DOCTOR_PASSWORD` | Dr. Alex Wong |
+| Admin | `admin` | `SEED_ADMIN_PASSWORD` | System Admin |
 
-If a live Cosmos account still has old hashes, run `npm run reset-demo-passwords` in `backend/`.
+`npm run seed` and `npm run reset-demo-passwords` (in `backend/`) read those five variables and stop, changing nothing, if one is missing or still says `CHANGE_ME`. Copy `backend/.env.example` to `backend/.env` and fill them in. The login page's one-click demo buttons still carry their own fixed demo passwords, so they only work while the accounts use those values (see "Engineering" below).
+
+Only an administrator can create an account (`POST /api/auth/register` needs an admin token; the **Users** page does the same job).
 
 Press `/` on list pages to focus search.
 
@@ -448,12 +450,12 @@ npm run dev            # nodemon on :5002 (or: node server.js)
 
 If the `com.radassist.*` LaunchAgents are installed, they already run the backend, frontend, middleware, and model server. Restart one with `launchctl kickstart -k gui/$(id -u)/com.radassist.nodebackend` instead of starting a second copy.
 
-`backend/.env` needs at least `PORT`, `MONGODB_URI`, `MONGODB_DB`, `JWT_SECRET`, `FRONTEND_URL`, `AI_BASE_URL` (usually `http://localhost:8001`). Never commit it.
+`backend/.env` needs at least `PORT`, `MONGODB_URI`, `MONGODB_DB`, `JWT_SECRET`, `AI_BASE_URL` (usually `http://localhost:8001`) and the five `SEED_*_PASSWORD` values. `ALLOWED_ORIGINS` (comma-separated) lists the browser origins allowed to call the API from another origin; it defaults to the local dev servers. `backend/.env.example` shows every setting with placeholders. Never commit `backend/.env`.
 
 Useful scripts:
 
 - `npm run migrate-workflow` — backfill roles (`nurse` → technician), `analysisState`, chart fields
-- `npm run reset-demo-passwords` — re-hash `tech123` / `priya123` / `doctor123` / `admin123` on a live Cosmos DB
+- `npm run reset-demo-passwords` — set the demo accounts' passwords to the `SEED_*_PASSWORD` values on a live Cosmos DB
 
 ### 2. Frontend
 
@@ -590,11 +592,8 @@ The DICOM films are for the measurement demo: upload one as a new case (the exis
 | Item | Why |
 | --- | --- |
 | Use `npm run dev` (nodemon) in `backend/` | Avoids “route not found” after adding APIs |
-| Tighten CORS | `server.js` currently allows every origin “for FYP demo” |
-| Disable or lock down `/api/auth/register` | Anyone can mint an account |
-| Rotate seed passwords for any shared Cosmos account | `admin123` is public in this repo |
-| Backend tests | UI tests do not cover Express or Mongo |
-| Patient ID allocation | `PT-2026-0007` is max+1; two concurrent creates can collide |
+| Login page demo buttons | `src/components/login.js` still holds the demo passwords for its one-click buttons. Moving them out changes how the demo login works, so it waits for a decision |
+| Rotate the passwords of any shared Cosmos account | The accounts that were seeded earlier still have the old demo passwords until you run `npm run reset-demo-passwords` with new ones |
 | Do not store JWT in `localStorage` for a real hospital deploy | XSS can steal it; httpOnly cookies are safer |
 | Full DICOM viewer | Uncompressed `.dcm` is rendered to PNG. Compressed transfer syntaxes and a PACS viewer are still out of scope |
 | Structured logs / request IDs | Helps debug CURV timeouts (180s) |

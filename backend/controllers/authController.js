@@ -1,6 +1,5 @@
 // controllers/authController.js
-// Login / register / me. Register is open to the public (defaults to 'doctor')
-// but you can disable it by removing the route.
+// Login / register / me. Register needs an administrator's token (see routes/auth.js).
 
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');

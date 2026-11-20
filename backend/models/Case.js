@@ -229,7 +229,9 @@ const caseSchema = new mongoose.Schema(
     // Metadata about the AI generation, if any
     aiProvider: { type: String, default: '' },
     aiModel: { type: String, default: '' },
-    shareToken: { type: String, default: null, trim: true, sparse: true, unique: true },
+    // No default: a sparse unique index skips a missing field but not a stored
+    // null, so a null here made the second case ever created a duplicate.
+    shareToken: { type: String, trim: true, sparse: true, unique: true },
   },
   { timestamps: true }
 );

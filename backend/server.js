@@ -1,6 +1,6 @@
 // server.js
 const express = require('express');
-const cors = require('cors');
+const { corsMiddleware } = require('./config/cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const path = require('path');
@@ -34,23 +34,8 @@ app.use((req, res, next) => {
 
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
-// CORS: allow local Vite dev server and any other dev origin
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:5174',
-  'http://localhost:3000',
-  'http://127.0.0.1:5173',
-];
-if (process.env.FRONTEND_URL) allowedOrigins.push(process.env.FRONTEND_URL);
-
-app.use(cors({
-  origin(origin, cb) {
-    if (!origin) return cb(null, true);
-    if (allowedOrigins.includes(origin)) return cb(null, true);
-    return cb(null, true); // permissive for FYP demo
-  },
-  credentials: true,
-}));
+// CORS: only the origins in ALLOWED_ORIGINS (local dev servers by default).
+app.use(corsMiddleware());
 
 // Body parsers
 app.use(express.json({ limit: '15mb' }));

@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 const require = createRequire(new URL("../backend/package.json", import.meta.url));
 const { PNG } = require("pngjs");
 const dcmjs = require("dcmjs");
-const { prepareFilm, dicomToPng, fittedSize, dropInteriorEmptyRows, dropEdgeBlankColumns, exposedField } = require("./utils/dicom.js");
+const { prepareFilm, dicomToPng, fittedSize, dropInteriorEmptyRows, dropEdgeBlankColumns, exposedField, COMPRESSED_MESSAGE } = require("./utils/dicom.js");
 const { shrinkForDisplay } = require("./utils/displayFilm.js");
 
 const DICOM = Buffer.from(
@@ -230,6 +230,36 @@ test("the view and examination time come from the header", () => {
   assert.equal(film.examinedAt.toISOString(), "2180-05-08T21:35:34.000Z");
   assert.equal(prepared({ ViewPosition: "LL" }).view, "Lateral");
   assert.equal(prepared({ ViewPosition: "LATERAL" }).view, "Lateral");
+});
+
+console.log("\n=== a compressed DICOM is refused with a clear message ===");
+
+const WANTED = "This DICOM uses a compressed transfer syntax. Please export it as uncompressed film or PNG.";
+
+// The sample film with its transfer syntax relabelled as RLE Lossless (same length).
+function relabelled(syntax) {
+  const text = filmWithBlackSide().toString("latin1");
+  return Buffer.from(text.replace("1.2.840.10008.1.2.1", syntax), "latin1");
+}
+
+test("the message says what is wrong and what to do", () => {
+  assert.equal(COMPRESSED_MESSAGE, WANTED);
+  assert.ok(/compressed transfer syntax/i.test(WANTED) && /uncompressed film or PNG/.test(WANTED));
+});
+
+test("a film in a compressed transfer syntax is refused with that message", () => {
+  const buffer = relabelled("1.2.840.10008.1.2.5");
+  assert.throws(() => dicomToPng(buffer), (err) => err.message === WANTED);
+  assert.throws(
+    () => prepareFilm({ originalname: "chest.dcm", mimetype: "application/dicom", buffer, size: buffer.length }),
+    (err) => err.message === WANTED
+  );
+});
+
+test("an uncompressed film is still accepted, so the refusal is only for compressed ones", () => {
+  const buffer = filmWithBlackSide();
+  const film = prepareFilm({ originalname: "chest.dcm", mimetype: "application/dicom", buffer, size: buffer.length });
+  assert.equal(film.contentType, "image/png");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

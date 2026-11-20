@@ -926,6 +926,184 @@ await test("a referring doctor sees the endorsed report read-only", async () => 
   assert.equal(root.querySelector("[data-delete-tag]"), null);
 });
 
+console.log("\n=== confidence slider and two-way hover ===");
+
+const A1 = "There is a right upper zone opacity.";
+const A2 = "There is a small left pleural effusion.";
+const A3 = "Possible nodule at the left base.";
+const three = {
+  reportText: ["XRAY CHEST (PA)", "", "FINDINGS", A1, A2, A3, S2, "", "COMMENT", "– Several findings.", ""].join("\n"),
+  findingTags: [tag("a1", A1, true), tag("a2", A2, true), tag("a3", A3, true), tag("n1", S2, false)],
+  findings: [
+    box("a1", A1, { bbox: [0, 0, 30, 30], confidence: 0.9 }),
+    box("a2", A2, { bbox: [40, 0, 30, 30], confidence: 0.6 }),
+    box("a3", A3, { bbox: [0, 50, 30, 30], confidence: 0.3 }),
+  ],
+};
+const slider = () => root.querySelector("#confidence-slider");
+const filmBox = (key) => root.querySelector(`#xray-stage [data-box-tag="${key}"]`);
+const boxHidden = (key) => filmBox(key).style.display === "none";
+function setSlider(value) {
+  const s = slider();
+  s.value = String(value);
+  s.dispatchEvent(new window.Event("input"));
+}
+
+await open("radiologist", three);
+
+await test("the slider shows its value, and the default shows every finding", () => {
+  assert.ok(slider(), "slider missing");
+  assert.equal(slider().getAttribute("type"), "range");
+  assert.equal(String(slider().value), "0");
+  assert.equal(root.querySelector("#confidence-value").textContent, "0%");
+  assert.equal(root.querySelector("#confidence-count").textContent, "3 of 3 shown");
+  for (const key of ["a1", "a2", "a3"]) assert.ok(!boxHidden(key), `${key} should be visible`);
+  assert.equal(root.querySelectorAll("[data-below-threshold]").length, 0);
+});
+
+await test("moving the slider hides the boxes below it without a repaint or any request", async () => {
+  const typed = root.querySelector("#tag-text-a1");
+  type(typed, `${A1} Edited but not saved.`);
+  const before = slider();
+  const callsBefore = calls.length;
+  setSlider(50);
+  assert.strictEqual(slider(), before, "the slider itself must not be rebuilt while it moves");
+  assert.strictEqual(root.querySelector("#tag-text-a1"), typed, "the page was repainted");
+  assert.equal(typed.value, `${A1} Edited but not saved.`, "a half-typed sentence must survive");
+  assert.equal(calls.length, callsBefore, "moving the slider must not call the server");
+  assert.equal(root.querySelector("#confidence-value").textContent, "50%");
+  assert.equal(root.querySelector("#confidence-count").textContent, "2 of 3 shown");
+  assert.ok(!boxHidden("a1"));
+  assert.ok(!boxHidden("a2"));
+  assert.ok(boxHidden("a3"), "30% is below 50%");
+});
+
+await test("a hidden finding's sentence stays in the list, dimmed and still editable", () => {
+  assert.equal(tagRow("a3").getAttribute("data-below-threshold"), "1");
+  assert.ok(tagRow("a3").className.includes("opacity-50"));
+  assert.ok(tagRow("a3").querySelector("textarea"), "the sentence stays editable");
+  assert.equal(tagRow("a1").getAttribute("data-below-threshold"), null);
+  assert.equal(tagRow("n1").getAttribute("data-below-threshold"), null, "a sentence with no box is never dimmed");
+});
+
+await test("a box exactly at the threshold stays, and moving back shows the rest again", () => {
+  setSlider(60);
+  assert.ok(!boxHidden("a2"), "60% is not below 60%");
+  assert.ok(boxHidden("a3"));
+  setSlider(95);
+  assert.ok(["a1", "a2", "a3"].every(boxHidden));
+  assert.equal(root.querySelector("#confidence-count").textContent, "0 of 3 shown");
+  setSlider(0);
+  assert.ok(["a1", "a2", "a3"].every((k) => !boxHidden(k)));
+  assert.equal(root.querySelectorAll("[data-below-threshold]").length, 0);
+  assert.ok(!tagRow("a3").className.includes("opacity-50"));
+});
+
+await test("the slider value survives a repaint and the page keeps the boxes hidden", async () => {
+  setSlider(50);
+  await click(tagRow("a2"));
+  assert.equal(String(slider().value), "50");
+  assert.equal(root.querySelector("#confidence-value").textContent, "50%");
+  assert.ok(boxHidden("a3"));
+  assert.ok(!boxHidden("a2"));
+  assert.equal(tagRow("a2").dataset.selected, "1", "clicking a tag still selects it");
+});
+
+await test("a hidden box cannot be clicked on the film, a shown one still can", async () => {
+  setSlider(50);
+  pointer(stage(), "pointerdown", 10, 60);
+  await tick();
+  assert.notEqual(tagRow("a3").dataset.selected, "1", "a hidden box must not be selected");
+  pointer(stage(), "pointerdown", 10, 10);
+  await tick();
+  assert.equal(tagRow("a1").dataset.selected, "1");
+});
+
+await test("the slider only changes the view: nothing becomes unsaved or is sent", async () => {
+  await open("radiologist", three);
+  setSlider(70);
+  await click(button("Save draft"));
+  const sent = calls.filter((c) => c[0] === "update");
+  assert.ok(sent.every((c) => c[1].findings === undefined), "boxes must not be re-sent because of the slider");
+  assert.ok(sent.every((c) => c[1].findingTags === undefined));
+  assert.ok(server.findings.length === 3, "no box was dropped");
+});
+
+await test("hovering a sentence tag highlights its film box, and leaving clears it", async () => {
+  await open("radiologist", three);
+  tagRow("a2").dispatchEvent(new window.Event("mouseenter"));
+  assert.equal(filmBox("a2").getAttribute("data-hover"), "1");
+  assert.ok(filmBox("a2").className.includes("ring-2"));
+  assert.equal(filmBox("a1").getAttribute("data-hover"), null);
+  assert.equal(filmBox("a3").getAttribute("data-hover"), null);
+  tagRow("a2").dispatchEvent(new window.Event("mouseleave"));
+  for (const key of ["a1", "a2", "a3"]) {
+    assert.equal(filmBox(key).getAttribute("data-hover"), null);
+    assert.ok(!filmBox(key).className.includes("ring-2"));
+  }
+});
+
+await test("hovering a film box highlights its sentence tag, and leaving clears it", async () => {
+  pointer(stage(), "pointermove", 50, 10);
+  assert.equal(tagRow("a2").getAttribute("data-hover"), "1");
+  assert.ok(tagRow("a2").className.includes("ring-sky-400"));
+  assert.equal(tagRow("a1").getAttribute("data-hover"), null);
+  pointer(stage(), "pointermove", 10, 10);
+  assert.equal(tagRow("a1").getAttribute("data-hover"), "1");
+  assert.equal(tagRow("a2").getAttribute("data-hover"), null, "only one tag lights up");
+  pointer(stage(), "pointermove", 90, 90);
+  for (const key of ["a1", "a2", "a3", "n1"]) assert.equal(tagRow(key).getAttribute("data-hover"), null);
+  pointer(stage(), "pointermove", 10, 10);
+  stage().dispatchEvent(new window.Event("pointerleave"));
+  assert.equal(tagRow("a1").getAttribute("data-hover"), null, "leaving the film clears the tag");
+});
+
+await test("hovering does not select, edit or save anything", async () => {
+  const callsBefore = calls.length;
+  tagRow("a1").dispatchEvent(new window.Event("mouseenter"));
+  pointer(stage(), "pointermove", 50, 10);
+  assert.notEqual(tagRow("a1").dataset.selected, "1");
+  assert.notEqual(tagRow("a2").dataset.selected, "1");
+  assert.equal(root.querySelector("[data-bbox][data-selected='1']"), null);
+  assert.equal(calls.length, callsBefore);
+  await click(root.querySelector("#save-draft"));
+  assert.ok(calls.filter((c) => c[0] === "update").every((c) => c[1].findings === undefined));
+});
+
+await test("a hidden box is not hovered from the film, and not highlighted from its tag", async () => {
+  await open("radiologist", three);
+  setSlider(50);
+  pointer(stage(), "pointermove", 10, 60);
+  assert.equal(tagRow("a3").getAttribute("data-hover"), null);
+  tagRow("a3").dispatchEvent(new window.Event("mouseenter"));
+  assert.ok(boxHidden("a3"), "its box stays hidden");
+  tagRow("a3").dispatchEvent(new window.Event("mouseleave"));
+});
+
+await test("the hover stays on the right tag after the page repaints", async () => {
+  await open("radiologist", three);
+  tagRow("a1").dispatchEvent(new window.Event("mouseenter"));
+  await click(root.querySelector("#toggle-bboxes"));
+  await click(root.querySelector("#toggle-bboxes"));
+  assert.equal(tagRow("a1").getAttribute("data-hover"), "1");
+  assert.equal(filmBox("a1").getAttribute("data-hover"), "1");
+  tagRow("a1").dispatchEvent(new window.Event("mouseleave"));
+});
+
+await test("a reader sees the slider and the hover on an endorsed report", async () => {
+  await open("doctor", { ...three, status: "finalized", finalizedByName: "Dr Test" });
+  assert.ok(slider());
+  setSlider(50);
+  assert.ok(boxHidden("a3"));
+  pointer(stage(), "pointermove", 10, 10);
+  assert.equal(tagRow("a1").getAttribute("data-hover"), "1");
+});
+
+await test("the slider is not offered when the report has no film boxes", async () => {
+  await open("radiologist", { findings: [] });
+  assert.equal(slider(), null);
+});
+
 stopReviewWatch();
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

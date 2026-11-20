@@ -175,7 +175,10 @@ export function renderRegisterPage() {
       toast(`Account created — welcome, ${data.user.name}!`);
       window.dispatchEvent(new CustomEvent("state-render"));
     } catch (err) {
-      error = err.message || "Registration failed";
+      // The server now lets only an administrator create accounts.
+      error = err.status === 401 || err.status === 403
+        ? "Self-registration is closed. Ask an administrator to create your account."
+        : err.message || "Registration failed";
     } finally { busy = false; render(); }
   }
 
