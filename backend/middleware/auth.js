@@ -4,7 +4,7 @@
 const jwt = require('jsonwebtoken');
 const ApiError = require('../utils/ApiError');
 const User = require('../models/User');
-const { normalizeRole } = require('../utils/roles');
+const { normalizeRole, isPatient } = require('../utils/roles');
 
 const authenticate = async (req, res, next) => {
   try {
@@ -46,4 +46,20 @@ const authorize = (...roles) => (req, res, next) => {
   next();
 };
 
-module.exports = { authenticate, authorize };
+// A patient account can read. It cannot do anything else, anywhere. Routes a patient may never use call
+// denyPatient; the case routes call patientReadsOwnOnly, which lets a patient through only to the case list
+// and to one case (the controller then limits both to that patient's own endorsed cases).
+const denyPatient = (req, res, next) => {
+  if (isPatient(req.user)) return next(ApiError.forbidden('Patient accounts can only read their own reports.'));
+  next();
+};
+
+const patientReadsOwnOnly = (req, res, next) => {
+  if (!isPatient(req.user)) return next();
+  const readsList = req.method === 'GET' && req.path === '/';
+  const readsOne = req.method === 'GET' && /^\/[^/]+$/.test(req.path) && req.path !== '/availability';
+  if (readsList || readsOne) return next();
+  return next(ApiError.forbidden('Patient accounts can only read their own reports.'));
+};
+
+module.exports = { authenticate, authorize, denyPatient, patientReadsOwnOnly };

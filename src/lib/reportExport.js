@@ -3,7 +3,7 @@
 
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun } from "docx";
 import { api } from "../api.js";
-import { ensureTags, reportTitle, examinationName, commentLines, THANKS_LINE } from "../../shared/reportTags.js";
+import { ensureTags, reportTitle, examinationName, commentLines } from "../../shared/reportTags.js";
 import { boxesForTag } from "./findingTags.js";
 import { linesOfTag, spacingOf, describeMeasurement } from "./measure.js";
 
@@ -336,7 +336,6 @@ function layoutBlocks(base, sign) {
     { type: "section", text: "COMMENT" },
     ...commentLines(base.comment).map((text) => ({ type: "line", text: `– ${text}` })),
     { type: "blank" },
-    { type: "line", text: THANKS_LINE },
     { type: "line", text: sign.doctor },
   ];
   const remarks = splitReportAndRemarks(base.reportText).remarks;
@@ -611,7 +610,7 @@ export async function buildReportDocxBlob(c, { variant = "plain", images = [], s
   return Packer.toBlob(new Document({ sections: [{ properties: {}, children }] }));
 }
 
-function triggerDownload(blob, filename) {
+export function triggerDownload(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -700,7 +699,7 @@ function jpegImageObject(film) {
   return concatBytes([enc.encode(header), jpeg, enc.encode("\nendstream")]);
 }
 
-const PAGE = { width: 595, height: 842, margin: 50 };
+export const PAGE = { width: 595, height: 842, margin: 50 };
 const leadingOf = (size) => (size > 13 ? 22 : 14);
 const MAX_FILM_H = 360;
 
@@ -716,6 +715,10 @@ function layoutPdf(blocks, images) {
     else if (b.type === "field") for (const t of wrapPlain(`${b.label}: ${b.value}`, 90)) items.push({ kind: "text", text: t, font: "F1", size: 11 });
     else if (b.type === "blank") items.push({ kind: "text", text: "", font: "F1", size: 11 });
     else if (b.type === "pagebreak") items.push({ kind: "break" });
+    else if (b.type === "rasterlines") {
+      // Text the PDF's built-in font cannot draw (Chinese), already drawn as one small image per line.
+      for (const line of b.lines) items.push({ kind: "image", film: line.film, w: line.w, h: line.h, gap: b.gap ?? 0 });
+    }
     else if (b.type === "film") {
       const film = images[k++];
       if (!usable(film, ["jpg"])) continue;
@@ -733,7 +736,7 @@ function layoutPdf(blocks, images) {
     page = { ops: [] };
     y = PAGE.height - PAGE.margin;
   };
-  const heightOf = (it) => (it.kind === "image" ? it.h + 8 : leadingOf(it.size));
+  const heightOf = (it) => (it.kind === "image" ? it.h + (it.gap ?? 8) : leadingOf(it.size));
   items.forEach((it, i) => {
     if (it.kind === "break") {
       if (page.ops.length) newPage();
@@ -750,7 +753,7 @@ function layoutPdf(blocks, images) {
     if (it.kind === "image") {
       y -= it.h;
       page.ops.push({ kind: "image", film: it.film, x: PAGE.margin, y, w: it.w, h: it.h });
-      y -= 8;
+      y -= it.gap ?? 8;
     } else {
       page.ops.push({ kind: "text", text: it.text, font: it.font, size: it.size, x: PAGE.margin, y: y - it.size });
       y -= leadingOf(it.size);
@@ -765,7 +768,8 @@ function layoutPdf(blocks, images) {
 // `options.images`, one JPEG per finding film, as prepareFilms returns it.
 export function buildReportPdfBytes(c, film = null, options = {}) {
   const variant = options.variant || "plain";
-  const blocks = buildReportBlocks(c, variant, options.signerName || "");
+  // `options.blocks` lets another report (the patient's) reuse this PDF writer with its own content.
+  const blocks = options.blocks || buildReportBlocks(c, variant, options.signerName || "");
   const images = options.images || filmBlocks(blocks).map((b) => (b.overlay ? null : film));
   const pages = layoutPdf(blocks, images);
 

@@ -7,8 +7,7 @@
 
 import assert from "node:assert";
 import {
-  THANKS_LINE,
-  cleanView,
+    cleanView,
   reportTitle,
   examinationName,
   splitSentences,
@@ -178,7 +177,7 @@ test("Thinking is kept apart and never becomes a sentence", () => {
 
 console.log("\n=== the assembled report ===");
 
-test("the layout is title, FINDINGS, one sentence per line, COMMENT, thanks", () => {
+test("the layout is title, FINDINGS, one sentence per line, COMMENT", () => {
   const text = assembleReport({
     view: "PA",
     tags: [{ text: "Heart size is normal." }, { text: "Small right pleural effusion." }],
@@ -186,8 +185,9 @@ test("the layout is title, FINDINGS, one sentence per line, COMMENT, thanks", ()
   });
   assert.equal(text, [
     "XRAY CHEST (PA)", "", "FINDINGS", "Heart size is normal.", "Small right pleural effusion.", "",
-    "COMMENT", "– Small right pleural effusion.", "", THANKS_LINE,
+    "COMMENT", "– Small right pleural effusion.",
   ].join("\n"));
+  assert.ok(!text.includes("Thank you for your referral."));
 });
 
 test("Thinking is carried at the end and stripped from what readers see", () => {
@@ -195,7 +195,8 @@ test("Thinking is carried at the end and stripped from what readers see", () => 
   const text = assembleReport({ view: "PA", tags: d.findingTags, comment: d.comment, thinking: d.thinking });
   assert.ok(thinkingBlockOf(text).includes("Low volumes favour"));
   assert.ok(!withoutThinking(text).includes("Low volumes favour"));
-  assert.ok(withoutThinking(text).trimEnd().endsWith(THANKS_LINE));
+  assert.ok(withoutThinking(text).trimEnd().endsWith("– Bibasilar atelectasis."));
+  assert.ok(!text.includes("Thank you for your referral."));
 });
 
 test("the assembled report reads back into the same tags and COMMENT", () => {
@@ -210,7 +211,7 @@ test("the assembled report reads back into the same tags and COMMENT", () => {
 test("COMMENT with several lines gets a dash on each and an empty COMMENT stays empty", () => {
   const text = assembleReport({ tags: [{ text: "Clear." }], comment: "First.\nSecond." });
   assert.ok(text.includes("COMMENT\n– First.\n– Second."));
-  assert.ok(assembleReport({ tags: [], comment: "" }).includes("COMMENT\n\n"));
+  assert.equal(assembleReport({ tags: [], comment: "" }).trimEnd().endsWith("COMMENT"), true);
 });
 
 console.log("\n=== older cases ===");

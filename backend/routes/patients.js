@@ -1,8 +1,9 @@
 const router = require('express').Router();
 const c = require('../controllers/patientController');
-const { authenticate, authorize } = require('../middleware/auth');
+const { authenticate, authorize, denyPatient } = require('../middleware/auth');
 
 router.use(authenticate);
+router.use(denyPatient);
 
 router.get('/', c.listPatients);
 router.post('/', authorize('technician', 'radiologist', 'admin'), c.createPatient);

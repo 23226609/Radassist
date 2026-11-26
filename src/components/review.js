@@ -16,7 +16,7 @@ import { state, setPage, toast } from "../state.js";
 import { api, clearFilmSpacingAdjust, filmSpacingAdjust } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { downloadReportDocx, downloadReportPdf, previewReportPdf, openPreviewWindow, applyRemarksToReport, splitReportAndRemarks, reportHeaderFields, formatDateTime } from "../lib/reportExport.js";
-import { reportTitle, examinationName, THANKS_LINE, VIEWS, cleanView } from "../../shared/reportTags.js";
+import { reportTitle, examinationName, VIEWS, cleanView } from "../../shared/reportTags.js";
 import { thinkingBlockOf } from "../../shared/reportText.js";
 import { ensureTags, assembleReport, boxOfTag, boxesForTag, isDrawnBox, addTag, setTagText, deleteTag, flipTag, moveTagTo, removeBox, placeBox, moveBox, drawnFinding, setCtr, refreshCtr, addLesionLine, removeLine } from "../lib/findingTags.js";
 import { spacingOf, buildLine, applyMagnification, showFactor, MAGNIFICATION_NAMES, getMeasurementPolicy, experimentalLabel, EXPERIMENTAL_NOTE } from "../lib/measure.js";
@@ -26,6 +26,8 @@ import { forgetCases } from "../lib/records.js";
 import { CASES_CHANGED, startAnalysisWatch } from "../lib/analysisJob.js";
 import { canEditReport, canRunAi, canExport, isReferringDoctor } from "../lib/roles.js";
 import { patientChartButton } from "../lib/chartWindow.js";
+import { laySummaryCard } from "./laySummary.js";
+import { reviewState, monitorAlert, teachingScore } from "./clinical.js";
 
 let reviewLive = null;
 let reviewWatchId = "";
@@ -496,6 +498,15 @@ export async function renderReviewPage({ target }) {
   let newFinding = "";
   let openLogKey = "";
   let genPoll = null;
+  // Second Reader panel (the second-opinion AI): reference text only, nothing in it is edited or saved.
+  let soRunning = false;
+  let soStage = ""; // "second" while the Second Reader reads, "agent" while its evidence is looked up
+  let agentError = ""; // why the supporting evidence could not be fetched on the last run
+  // The patient's plain-language summary is not shown here unless asked for: a clinician previews it with Patient view.
+  let showPatientView = false;
+  let patientLang = "english";
+  let layBusy = false;
+  let showSecondOpinion = false; // collapsed until opened, so it never crowds the report
 
   // Effective case ID that works with both caseId (new) and _id (legacy)
   const getEffectiveCaseId = () => localCase?.caseId || localCase?._id || state.selectedCaseId;
@@ -1382,6 +1393,72 @@ export async function renderReviewPage({ target }) {
     }
   }
 
+  // The sepsis screen is worked out here from the patient's saved observations (the same
+  // rules as the Sepsis Monitor) and sent along, because the server does not calculate it.
+  // It is a screening score, not a diagnosis. If the chart cannot be read, none is sent.
+  async function sepsisScreenForCase() {
+    try {
+      const data = await api.getPatient(localCase.patientId);
+      const patient = data.patient || data;
+      const rows = Array.isArray(patient?.observations) ? patient.observations : [];
+      const obs = rows[rows.length - 1];
+      if (!obs) return null;
+      return {
+        level: reviewState(obs, patient.heartRate).level,
+        score: teachingScore(obs, patient.heartRate),
+        reasons: monitorAlert(obs, patient.heartRate),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  // The independent second opinion. It runs only when the radiologist presses the button, on the
+  // saved draft: unsaved edits must be saved first. The server gives the AI the film and the
+  // patient's chart, never the report. The answer is shown as plain text and changes nothing.
+  async function runSecondOpinion() {
+    if (soRunning || isGenerating(localCase) || !canEditReport(state.user)) return;
+    if (tagsDirty || remarksDirty || boxesDirty || measuresDirty || reportDirty) {
+      showNotice("Press Save draft first. The Second Reader runs on the saved draft.");
+      return;
+    }
+    soRunning = true;
+    soStage = "second";
+    agentError = "";
+    busy = true;
+    render();
+    try {
+      const data = await api.secondOpinion(getEffectiveCaseId(), await sepsisScreenForCase());
+      localCase = {
+        ...localCase,
+        fusionResult: data.case?.fusionResult ?? data.secondOpinion ?? null,
+      };
+      showSecondOpinion = true;
+      // Second, the agent looks up evidence for the diagnosis the Second Reader just gave. The agent is a
+      // separate route and never sees CURV's report being changed; if it fails the Second Reader stays.
+      soStage = "agent";
+      render();
+      try {
+        const ag = await api.runAgent(getEffectiveCaseId());
+        localCase = { ...localCase, agentResult: ag.case?.agentResult ?? ag.agent ?? null };
+        showNotice("Second Reader and supporting evidence ready. They are reference only; the report is unchanged.");
+        toast("Second Reader ready.");
+      } catch (err) {
+        agentError = err.message;
+        showNotice(`Second Reader ready. The supporting evidence could not be fetched: ${err.message}`);
+        toast("Second Reader ready, without supporting evidence.");
+      }
+    } catch (err) {
+      showNotice(err.message);
+      toast(err.message);
+    } finally {
+      soRunning = false;
+      soStage = "";
+      busy = false;
+      render();
+    }
+  }
+
   async function finalize() {
     if (isGenerating(localCase)) {
       toast("The report is still generating.");
@@ -1522,6 +1599,133 @@ export async function renderReviewPage({ target }) {
     const btnLight = `${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`;
     const unsavedDraft = tagsDirty || remarksDirty || boxesDirty || measuresDirty;
     const listMax = "max-h-36";
+
+    // An old Fusion result (agreed / conflicts) has no diagnosis; it is not shown.
+    const second = localCase.fusionResult && typeof localCase.fusionResult.diagnosis === "string"
+      ? localCase.fusionResult
+      : null;
+
+    // The open panel shares the column with the report. The report keeps a readable height and the
+    // column scrolls; with the panel closed the layout is exactly what it was before.
+    const soOpen = showSecondOpinion && Boolean(second) && !generating && !awaitingAi && canEditReport(state.user);
+
+    // The agent's evidence counts only if it was searched for the diagnosis shown now. The server
+    // keeps the diagnosis a search was made for in the saved search.
+    const diagnosisNow = second ? String(second.diagnosis || "").replace(/\s+/g, " ").trim().slice(0, 200) : "";
+    const searched = (name) => {
+      const rec = localCase.agentResult?.tools?.[name];
+      // v 2 is the search that returns "why similar" and the checklist lines; an older saved search is not shown.
+      return rec && rec.input && rec.input.diagnosis === diagnosisNow && rec.input.v === 2 ? rec : null;
+    };
+    const safeUrl = (u) => (/^https?:\/\//i.test(String(u || "")) ? String(u) : "");
+
+    // Agent — Supporting evidence: what a search returned, as plain text and links. Nothing is shown that a
+    // search did not return, and an empty or failed search says so.
+    function agentEvidence() {
+      const working = soRunning && soStage === "agent";
+      const note = (id, text) => el("p", { id, class: "mt-0.5 text-xs text-slate-500" }, text);
+      const similar = searched("search_similar_cases");
+      const guide = searched("search_guideline");
+      const simRows = Array.isArray(similar?.output?.results) ? similar.output.results.slice(0, 3) : [];
+      const bulletLines = (b) => [["lookFor", "Look for"], ["ruleOut", "Rule out"], ["next", "Next"]]
+        .map(([key, label]) => [label, String(b?.[key] || "").trim()]).filter(([, text]) => text);
+      const guideRows = (Array.isArray(guide?.output?.results) ? guide.output.results : []).filter((r) => bulletLines(r?.bullets).length).slice(0, 2);
+      const state_ = (rec, rows, emptyText, id) => {
+        if (working) return note(id, "Searching…");
+        if (rec?.error) return note(id, `The search did not run: ${rec.error}`);
+        if (rec?.output && !rows.length) return note(id, emptyText);
+        if (!rec) return note(id, agentError ? `Not searched: ${agentError}` : "Not searched for this diagnosis yet. Press Run again.");
+        return null;
+      };
+      return el("div", { id: "agent-evidence", class: "mt-2 border-t border-slate-200 pt-1.5" },
+        el("h3", { class: "text-xs font-bold text-slate-900" }, "Agent — Supporting evidence"),
+        el("div", { id: "agent-similar-cases", class: "mt-1 text-xs text-slate-700" },
+          el("b", {}, "Similar cases (3)"),
+          state_(similar, simRows, "No similar cases found", "agent-similar-empty"),
+          !working && simRows.length > 0 && el("ul", { class: "mt-0.5 space-y-1" }, ...simRows.map((r) => el("li", { dataset: { similarCase: r.caseId } },
+            el("span", { class: "font-semibold" }, String(r.caseId || "")),
+            ` · similarity ${Number.isFinite(Number(r.similarity)) ? Number(r.similarity).toFixed(2) : "—"}`,
+            el("div", {}, String(r.line || String(r.officialReport || "").replace(/\s+/g, " ").slice(0, 160))),
+            // "Why similar" is shown only when the checked shared features exist; "Outcome" only when the record has one.
+            String(r.whySimilar || "").trim() && el("div", { dataset: { whySimilar: "1" } }, el("b", {}, "Why similar: "), String(r.whySimilar)),
+            String(r.outcome || "").trim() && el("div", { dataset: { outcome: "1" } }, el("b", {}, "Outcome: "), String(r.outcome))))),
+        ),
+        el("div", { id: "agent-guidelines", class: "mt-1 text-xs text-slate-700" },
+          el("b", {}, "Guideline (up to 2)"),
+          state_(guide, guideRows, "No relevant guideline found", "agent-guideline-empty"),
+          !working && guideRows.length > 0 && el("ul", { class: "mt-0.5 space-y-1" }, ...guideRows.map((r) => el("li", { dataset: { guidelineSource: r.source } },
+            el("span", { class: "font-semibold" }, String(r.source || "")),
+            " · ",
+            safeUrl(r.url)
+              ? el("a", { href: safeUrl(r.url), target: "_blank", rel: "noopener noreferrer", class: "text-ha-blue underline" }, String(r.title || "Source link"))
+              : String(r.title || ""),
+            el("ul", { class: "mt-0.5 list-disc space-y-0.5 pl-4" }, ...bulletLines(r.bullets).map(([label, text]) =>
+              el("li", { dataset: { checklist: label } }, el("b", {}, `${label}: `), text)))))),
+        ),
+      );
+    }
+
+    // Plain text only: no Accept, no Edit. The radiologist edits the report in Findings above.
+    function secondOpinionPanel() {
+      if (generating || awaitingAi || !canEditReport(state.user)) return null;
+      if (!second && !edit) return null;
+      const listOf = (v) => (Array.isArray(v) ? v.map((x) => String(x ?? "").trim()).filter(Boolean) : []);
+      const diffs = (Array.isArray(second?.differentials) ? second.differentials : [])
+        .filter((d) => d && typeof d === "object" && String(d.diagnosis || "").trim());
+      const part = (id, label, body) => el("p", { id, class: "mt-1 text-xs text-slate-700" }, el("b", {}, `${label}: `), body);
+      return el("div", { id: "second-opinion-panel", class: `card shrink-0 !p-3 ${showSecondOpinion && second ? "lg:max-h-[40vh] lg:overflow-y-auto" : ""}` },
+        el("div", { class: "flex flex-wrap items-center justify-between gap-2" },
+          el("div", { class: "flex flex-wrap items-center gap-1.5" },
+            el("h2", { class: "text-base font-bold text-slate-900" }, "Second Reader"),
+            el("span", { class: "text-xs text-slate-500" }, second ? `Likely: ${second.diagnosis}` : "Not run yet")
+          ),
+          el("div", { class: "flex items-center gap-1.5" },
+            edit && el("button", {
+              id: "run-second-opinion",
+              type: "button",
+              class: btnLight,
+              disabled: busy || unsavedDraft || reportDirty,
+              title: unsavedDraft || reportDirty
+                ? "Press Save draft first. The Second Reader runs on the saved draft."
+                : "An independent AI reads the X-ray and the patient chart, then similar cases and guidelines are looked up for its diagnosis. It does not see the report. Nothing in the report or on the film is changed.",
+              onClick: runSecondOpinion,
+            }, soRunning ? "Working…" : second ? "Run again" : "Run Second Reader"),
+            second && el("button", {
+              id: "toggle-second-opinion",
+              type: "button",
+              class: "text-xs font-semibold text-ha-blue",
+              "aria-expanded": showSecondOpinion ? "true" : "false",
+              onClick: () => { showSecondOpinion = !showSecondOpinion; render(); },
+            }, showSecondOpinion ? "Hide" : "Show")
+          )
+        ),
+        (showSecondOpinion && second || !second) && el("p", { id: "so-subtitle", class: "mt-0.5 text-xs text-slate-500" },
+          "A different AI from CURV. CURV reads the image only — this reader also reads medical history, medicines, labs and sepsis screen. It has not seen CURV's report."),
+        soRunning && el("p", { id: "second-opinion-working", role: "status", class: "mt-1 animate-pulse text-xs font-semibold text-slate-600" },
+          soStage === "agent"
+            ? "Looking up similar cases and guidelines for the diagnosis. This usually takes 20 to 60 seconds."
+            : "Reading the X-ray and the patient chart. This usually takes 15 to 30 seconds."),
+        edit && !second && !soRunning && (unsavedDraft || reportDirty) && el("p", { id: "second-opinion-save-first", class: "mt-1 text-xs text-slate-500" },
+          "Save the draft, then run the Second Reader."),
+        showSecondOpinion && second && el("div", { id: "second-opinion-body", class: "mt-1" },
+          part("so-summary", "Summary", String(second.summary || "—")),
+          part("so-diagnosis", "Diagnosis", String(second.diagnosis || "—")),
+          el("div", { id: "so-differentials", class: "mt-1 text-xs text-slate-700" },
+            el("b", {}, "Differentials:"),
+            diffs.length
+              ? el("ul", { class: "mt-0.5 space-y-1" }, ...diffs.map((d) => el("li", { dataset: { soDifferential: d.diagnosis } },
+                  el("span", { class: "font-semibold" }, d.diagnosis),
+                  ` (${d.confidence || "low"} confidence)`,
+                  listOf(d.supporting).length > 0 && el("div", {}, `For: ${listOf(d.supporting).join("; ")}`),
+                  listOf(d.against).length > 0 && el("div", {}, `Against: ${listOf(d.against).join("; ")}`))))
+              : " none listed"),
+          part("so-next-step", "Suggested next step", String(second.suggested_next_step || "—")),
+          agentEvidence(),
+          el("p", { class: "mt-2 text-[11px] text-slate-500" },
+            "Reference only. An AI that has not seen the report wrote this. Edit the report in Findings above; only a radiologist endorses it.")
+        )
+      );
+    }
 
     const viewLabel = (v) => (v === "PA" ? "PA (erect)" : v || "not recorded");
 
@@ -1698,6 +1902,14 @@ export async function renderReviewPage({ target }) {
             disabled: busy || generating || awaitingAi,
             onClick: () => download("preview"),
           }, svgIcon("eye", { size: 14 }), "Preview PDF"),
+          localCase.status === "finalized" && (canEditReport(state.user) || isReferringDoctor(state.user)) && el("button", {
+            id: "patient-view-toggle",
+            type: "button",
+            class: btnLight,
+            "aria-pressed": showPatientView ? "true" : "false",
+            title: "Preview the plain-language summary the patient will read",
+            onClick: () => { showPatientView = !showPatientView; render(); },
+          }, "Patient view"),
           canExport(state.user) && el("button", {
             class: btnLight,
             disabled: busy || generating || awaitingAi,
@@ -1970,8 +2182,8 @@ export async function renderReviewPage({ target }) {
           )
         ),
 
-        el("section", { class: "flex min-h-0 flex-col gap-3" },
-          el("div", { class: "flex min-h-0 flex-1 flex-col" },
+        el("section", { class: `flex min-h-0 flex-col gap-3${soOpen ? " lg:overflow-y-auto" : ""}` },
+          el("div", { class: `flex min-h-0 flex-1 flex-col${soOpen ? " lg:min-h-[26rem]" : ""}` },
             edit && el("div", { class: "mb-2 flex justify-end" },
               el("button", {
                 id: "save-draft",
@@ -2031,7 +2243,6 @@ export async function renderReviewPage({ target }) {
                             onInput: (e) => changeComment(e.target.value),
                           }, localCase.comment || "")
                         : el("p", { id: "comment-text", class: "mt-0.5" }, String(localCase.comment || "").trim() ? `– ${String(localCase.comment).trim()}` : ""),
-                      el("p", { class: "mt-3" }, THANKS_LINE),
                       el("p", { id: "endorser", class: localCase.status === "finalized" ? "font-semibold" : "text-slate-400 italic" },
                         localCase.status === "finalized"
                           ? (localCase.finalizedByName || "")
@@ -2044,6 +2255,7 @@ export async function renderReviewPage({ target }) {
               canRemark && el("p", { id: "mongo-report-status", class: "mt-0.5 shrink-0 text-xs font-medium text-ha-blue" })
             )
           ),
+          secondOpinionPanel(),
           showProvenance && (localCase.editLog || []).length > 0 && el("div", { class: "card shrink-0 !p-0" },
             el("button", {
               id: "toggle-log",
@@ -2113,6 +2325,39 @@ export async function renderReviewPage({ target }) {
         )
       )
     );
+
+    // Patient view: only the plain-language summary, as the patient reads it. Nothing here edits anything.
+    if (showPatientView && localCase.status === "finalized") {
+      const refresh = async () => {
+        try {
+          const data = await api.getCase(getEffectiveCaseId());
+          localCase = { ...localCase, ...(data.case || data) };
+        } catch (err) { toast(err.message); }
+        render();
+      };
+      const rewrite = async () => {
+        layBusy = true; render();
+        try {
+          const data = await api.writeLaySummary(getEffectiveCaseId());
+          localCase = { ...localCase, ...(data.case || {}) };
+          if (data.state === "failed") toast("The summary could not be written. It was not saved.");
+        } catch (err) { toast(err.message); }
+        layBusy = false; render();
+      };
+      root.appendChild(el("div", { id: "patient-view-preview", class: "fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4" },
+        el("div", { class: "max-h-[85vh] w-full max-w-2xl overflow-auto rounded-xl bg-white p-3 shadow-xl" },
+          el("div", { class: "mb-2 flex items-center justify-between gap-2" },
+            el("p", { class: "text-xs text-slate-500" }, "Patient view (preview). The patient reads this below their endorsed report."),
+            el("button", { id: "patient-view-close", type: "button", class: btnLight, onClick: () => { showPatientView = false; render(); } }, "Close")),
+          laySummaryCard({
+            caseData: localCase,
+            lang: patientLang,
+            onLang: (key) => { patientLang = key; render(); },
+            onRefresh: refresh,
+            onRewrite: canEditReport(state.user) ? rewrite : null,
+            rewriting: layBusy,
+          }))));
+    }
 
     mount(target, root);
     applyHover();

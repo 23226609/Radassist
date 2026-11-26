@@ -28,6 +28,7 @@ function toSafeUser(user) {
     email: u.email,
     role: u.role,
     department: u.department,
+    patientId: u.patientId || '',
     isActive: u.isActive,
     createdAt: u.createdAt,
   };

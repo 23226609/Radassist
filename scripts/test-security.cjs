@@ -38,20 +38,20 @@ const goodEnv = () => Object.fromEntries(DEMO_ACCOUNTS.map((a, i) => [a.env, `pw
 
 console.log('\n=== reading the demo passwords ===');
 
-test('five demo accounts, each with its own SEED_*_PASSWORD variable', () => {
-  assert.deepStrictEqual(DEMO_ACCOUNTS.map((a) => a.username), ['admin', 'tech', 'priya', 'marcus', 'doctor']);
+test('six demo accounts, each with its own SEED_*_PASSWORD variable', () => {
+  assert.deepStrictEqual(DEMO_ACCOUNTS.map((a) => a.username), ['admin', 'tech', 'priya', 'marcus', 'doctor', 'patient']);
   assert.deepStrictEqual(DEMO_ACCOUNTS.map((a) => a.env), [
-    'SEED_ADMIN_PASSWORD', 'SEED_TECH_PASSWORD', 'SEED_PRIYA_PASSWORD', 'SEED_MARCUS_PASSWORD', 'SEED_DOCTOR_PASSWORD',
+    'SEED_ADMIN_PASSWORD', 'SEED_TECH_PASSWORD', 'SEED_PRIYA_PASSWORD', 'SEED_MARCUS_PASSWORD', 'SEED_DOCTOR_PASSWORD', 'SEED_PATIENT_PASSWORD',
   ]);
 });
 
-test('with all five set, each account gets its own value and there are no problems', () => {
+test('with all six set, each account gets its own value and there are no problems', () => {
   const env = goodEnv();
   const { passwords, problems } = readDemoPasswords(env);
   assert.deepStrictEqual(problems, []);
   assert.strictEqual(passwords.admin, env.SEED_ADMIN_PASSWORD);
   assert.strictEqual(passwords.doctor, env.SEED_DOCTOR_PASSWORD);
-  assert.strictEqual(new Set(Object.values(passwords)).size, 5);
+  assert.strictEqual(new Set(Object.values(passwords)).size, 6);
 });
 
 test('a missing, blank, placeholder or too-short value is named in the problems', () => {
@@ -66,7 +66,7 @@ test('a missing, blank, placeholder or too-short value is named in the problems'
   assert.ok(problems.some((p) => p.startsWith('SEED_TECH_PASSWORD') && /not set/.test(p)));
   assert.ok(problems.some((p) => p.startsWith('SEED_PRIYA_PASSWORD') && /placeholder/.test(p)));
   assert.ok(problems.some((p) => p.startsWith('SEED_MARCUS_PASSWORD') && /at least/.test(p)));
-  assert.deepStrictEqual(Object.keys(passwords), ['doctor']);
+  assert.deepStrictEqual(Object.keys(passwords), ['doctor', 'patient']);
 });
 
 test('requireDemoPasswords exits with 1 and a clear message when one is missing', () => {
@@ -81,11 +81,11 @@ test('requireDemoPasswords exits with 1 and a clear message when one is missing'
   assert.ok(message.includes('Nothing was changed'));
 });
 
-test('requireDemoPasswords does not exit when all five are fine', () => {
+test('requireDemoPasswords does not exit when all six are fine', () => {
   let exited = false;
   const passwords = requireDemoPasswords(goodEnv(), { exit: () => { exited = true; }, log: () => {} });
   assert.strictEqual(exited, false);
-  assert.strictEqual(Object.keys(passwords).length, 5);
+  assert.strictEqual(Object.keys(passwords).length, 6);
 });
 
 console.log('\n=== the seed and reset scripts stop before any database ===');

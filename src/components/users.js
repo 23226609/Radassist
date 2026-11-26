@@ -13,7 +13,7 @@ export async function renderUsersPage({ target }) {
   let busyId = "";
   let saving = false;
   let created = null;
-  const form = { name: "", email: "", role: "doctor" };
+  const form = { name: "", email: "", role: "doctor", patientId: "" };
 
   async function refresh() {
     loading = true;
@@ -56,6 +56,10 @@ export async function renderUsersPage({ target }) {
       toast("Enter a name and an email.");
       return;
     }
+    if (form.role === "patient" && !form.patientId.trim()) {
+      toast("Enter the patient ID this account belongs to.");
+      return;
+    }
     saving = true;
     render();
     try {
@@ -63,6 +67,7 @@ export async function renderUsersPage({ target }) {
         name: form.name.trim(),
         email: form.email.trim(),
         role: form.role,
+        ...(form.role === "patient" ? { patientId: form.patientId.trim() } : {}),
       });
       created = {
         email: data.user?.email || form.email.trim(),
@@ -131,12 +136,19 @@ export async function renderUsersPage({ target }) {
           }),
           el("select", {
             class: "rounded-xl border border-slate-300 bg-white px-3 py-2",
-            onChange: (e) => { form.role = e.target.value; },
+            onChange: (e) => { form.role = e.target.value; render(); },
           },
-            ...["doctor", "radiologist", "technician", "admin"].map((role) =>
+            ...["doctor", "radiologist", "technician", "admin", "patient"].map((role) =>
               el("option", { value: role, selected: form.role === role }, role)
             )
           ),
+          form.role === "patient" && el("input", {
+            id: "new-user-patient-id",
+            class: "rounded-xl border border-slate-300 px-3 py-2",
+            placeholder: "Patient ID (e.g. PT-2026-0018)",
+            value: form.patientId,
+            onInput: (e) => { form.patientId = e.target.value; },
+          }),
           el("button", {
             class: "rounded-xl bg-ha-blue px-4 py-2 text-sm font-semibold text-white hover:bg-[#074f85] disabled:opacity-50",
             disabled: saving,

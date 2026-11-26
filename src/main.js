@@ -12,6 +12,8 @@ import { renderAuditPage } from "./components/audit.js";
 import { renderPatientsPage, renderPatientPage } from "./components/patients.js";
 import { renderNewPatientPage } from "./components/newPatient.js";
 import { renderCasesPage, renderCasePage, renderRequestedPage } from "./components/cases.js";
+import { renderMyReportsPage } from "./components/myReports.js";
+import { renderMyAppointmentsPage } from "./components/myAppointments.js";
 import { renderUsersPage } from "./components/users.js";
 import { renderBedsPage, renderMonitorPage, renderLabsPage, renderNotesPage } from "./components/clinical.js";
 import { renderSharePage } from "./components/shareView.js";
@@ -19,7 +21,7 @@ import { isReportPopup, renderReportViewPage } from "./components/reportView.js"
 import { el, mount } from "./dom.js";
 import { stopAnalysisWatch } from "./lib/analysisJob.js";
 import { isChartWindow, renderChartWindow } from "./lib/chartWindow.js";
-import { canUpload, canEditPatient, canSeeAudit, isAdmin, isTechnician, roleOf } from "./lib/roles.js";
+import { canUpload, canEditPatient, canSeeAudit, isAdmin, allowedPage, isTechnician, roleOf } from "./lib/roles.js";
 import "./index.css";
 
 const app = document.getElementById("app");
@@ -121,6 +123,11 @@ function render() {
     return;
   }
 
+  // A patient account has one page: their own reports. Every other page sends them back to it.
+  if (allowedPage(state.user, state.page) !== state.page) {
+    setPage("my-reports");
+    return;
+  }
   if (!canSeeAudit(state.user) && state.page === "audit") {
     setPage("dashboard");
     return;
@@ -172,6 +179,8 @@ function render() {
     case "labs":      pageNode = "labs";      break;
     case "notes":     pageNode = "notes";     break;
     case "requests":  pageNode = "requests";  break;
+    case "my-reports": pageNode = "my-reports"; break;
+    case "my-appointments": pageNode = "my-appointments"; break;
     default:          pageNode = "dashboard";
   }
 
@@ -213,6 +222,10 @@ function render() {
     renderNotesPage({ target });
   } else if (pageNode === "requests") {
     renderRequestedPage({ target });
+  } else if (pageNode === "my-reports") {
+    renderMyReportsPage({ target });
+  } else if (pageNode === "my-appointments") {
+    renderMyAppointmentsPage({ target });
   }
 }
 

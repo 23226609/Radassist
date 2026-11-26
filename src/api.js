@@ -113,6 +113,9 @@ export const api = {
   me: () => request("GET", "/auth/me"),
   logout: () => request("POST", "/auth/logout"),
 
+  // A patient's own appointments
+  listAppointments: () => request("GET", "/appointments"),
+
   // Cases
   listCases: (params = {}, opts = {}) => {
     const q = new URLSearchParams(params).toString();
@@ -138,10 +141,16 @@ export const api = {
   updateCase: (id, payload) => request("PUT", `/cases/${encodeURIComponent(id)}`, payload),
   analyzeCase: (id) => request("POST", `/cases/${encodeURIComponent(id)}/analyze`),
   finalizeCase: (id) => request("POST", `/cases/${encodeURIComponent(id)}/finalize`),
+  writeLaySummary: (id) => request("POST", `/cases/${encodeURIComponent(id)}/lay-summary`, {}),
   summariseFindings: (id) =>
     request("POST", `/cases/${encodeURIComponent(id)}/summarise-findings`),
   summariseDiagnosis: (id) =>
     request("POST", `/cases/${encodeURIComponent(id)}/summarise-diagnosis`),
+  secondOpinion: (id, sepsisScreen = null) =>
+    request("POST", `/cases/${encodeURIComponent(id)}/second-opinion`, { sepsisScreen }),
+  // The agent's supporting evidence for the Second Reader's diagnosis. No notify: that is never asked for here.
+  runAgent: (id) =>
+    request("POST", `/cases/${encodeURIComponent(id)}/agent`, {}),
   rewriteChartFindings: (id) =>
     request("POST", `/cases/${encodeURIComponent(id)}/chart-findings`),
   shareCase: (id) => request("POST", `/cases/${encodeURIComponent(id)}/share`),

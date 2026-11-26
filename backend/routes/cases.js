@@ -1,10 +1,11 @@
 // routes/cases.js
 const router = require('express').Router();
 const c = require('../controllers/caseController');
-const { authenticate, authorize } = require('../middleware/auth');
+const { authenticate, authorize, patientReadsOwnOnly } = require('../middleware/auth');
 const upload = require('../middleware/upload');
 
 router.use(authenticate);
+router.use(patientReadsOwnOnly);
 
 router.get('/', c.listCases);
 router.get('/availability', c.availability);
@@ -20,6 +21,10 @@ router.post('/:id/share', authorize('radiologist', 'admin'), c.createShareLink);
 router.delete('/:id/share', authorize('radiologist', 'admin'), c.revokeShareLink);
 router.post('/:id/summarise-findings', authorize('radiologist', 'admin'), c.summariseFindings);
 router.post('/:id/summarise-diagnosis', authorize('radiologist', 'admin'), c.summariseDiagnosis);
+router.post('/:id/reason', authorize('radiologist', 'admin'), c.reasonCase);
+router.post('/:id/second-opinion', authorize('radiologist', 'admin'), c.secondOpinionCase);
+router.post('/:id/agent', authorize('radiologist', 'admin'), c.agentCase);
+router.post('/:id/lay-summary', authorize('radiologist', 'admin'), c.laySummaryCase);
 router.post('/:id/chart-findings', authorize('radiologist', 'admin'), c.rewriteChartFindings);
 router.delete('/:id', authorize('admin'), c.deleteCase);
 

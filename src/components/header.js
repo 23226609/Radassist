@@ -6,7 +6,7 @@ import { state, setPage } from "../state.js";
 import { api } from "../api.js";
 import { svgIcon } from "./icons.js";
 import { bindListHotkeys } from "../lib/ui.js";
-import { canUpload, canSeeAudit, isAdmin, isTechnician, roleOf } from "../lib/roles.js";
+import { canUpload, canSeeAudit, isAdmin, isPatient, isTechnician, roleOf } from "../lib/roles.js";
 
 let requestCount = 0;
 let requestPoll = null;
@@ -35,7 +35,9 @@ function watchRequests() {
 }
 
 function go(page) {
-  setPage(page);
+  // Choosing My reports always opens at the list of reports, not at the report that was last open.
+  if (page === "my-reports") setPage(page, { selectedCaseId: null, patientBrowse: false });
+  else setPage(page);
 }
 
 function isActive(item) {
@@ -79,10 +81,13 @@ function deptCode(user) {
   const role = roleOf(user);
   if (role === "admin") return "IT";
   if (role === "doctor") return "MED";
+  if (role === "patient") return "PT";
   return "RAD";
 }
 
 function sidebar({ drawer = false } = {}) {
+  // A patient has one module.
+  const patientOnly = isPatient(state.user);
   const index = [
     { page: "patients", icon: "users", label: "Patient Master" },
   ];
@@ -104,7 +109,12 @@ function sidebar({ drawer = false } = {}) {
     ...(canSeeAudit(state.user) ? [{ page: "audit", icon: "shield", label: "Audit log" }] : []),
     ...(isAdmin(state.user) ? [{ page: "users", icon: "users", label: "Users" }] : []),
   ];
-  const groups = [index, ward, imaging, admin].filter((group) => group.length);
+  const groups = patientOnly
+    ? [[
+      { page: "my-appointments", icon: "calendar", label: "My appointments" },
+      { page: "my-reports", icon: "file-text", label: "My reports" },
+    ]]
+    : [index, ward, imaging, admin].filter((group) => group.length);
 
   return el("aside", {
     id: "app-modules",
@@ -132,7 +142,7 @@ export function Shell({ onLogout }) {
   // pinned to the window height.
   const focus = state.page === "review";
   // Work lists and registration stay inside the window, with no page scroll.
-  const pinned = focus || state.page === "dashboard" || state.page === "cases" || state.page === "requests" || state.page === "new" || state.page === "patient" || state.page === "monitor";
+  const pinned = focus || state.page === "dashboard" || state.page === "cases" || state.page === "requests" || state.page === "new" || state.page === "patient" || state.page === "monitor" || state.page === "my-reports" || state.page === "my-appointments";
   const main = el("div", { class: pinned ? "flex h-full min-h-0 min-w-0 flex-col" : "min-w-0 flex-1 overflow-auto" });
   const modules = sidebar({ drawer: focus });
   const backdrop = focus

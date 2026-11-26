@@ -6,6 +6,7 @@ const User = require('../models/User');
 const ApiError = require('../utils/ApiError');
 const catchAsync = require('../utils/catchAsync');
 const addAuditLog = require('../utils/auditLogger');
+const Patient = require('../models/Patient');
 const { ROLES } = require('../utils/roles');
 
 const EMAIL_RE = /^[\w-.]+@([\w-]+\.)+[\w-]{2,4}$/;
@@ -45,6 +46,7 @@ exports.listUsers = catchAsync(async (req, res) => {
 
 exports.createUser = catchAsync(async (req, res, next) => {
   const { name, email, role } = req.body || {};
+  const cleanPatientId = String(req.body?.patientId || '').trim();
   const cleanEmail = String(email || '').trim().toLowerCase();
   const cleanName = String(name || '').trim();
   if (!cleanName || !cleanEmail) {
@@ -56,10 +58,17 @@ exports.createUser = catchAsync(async (req, res, next) => {
   if (!ROLES.includes(role)) {
     return next(ApiError.badRequest('Choose a role.'));
   }
+  // A patient account is tied to one existing patient record, and sees only that patient's reports.
+  if (role === 'patient') {
+    if (!cleanPatientId) return next(ApiError.badRequest('Enter the patient ID this account belongs to.'));
+    if (!(await Patient.exists({ patientId: cleanPatientId }))) {
+      return next(ApiError.badRequest(`There is no patient with ID ${cleanPatientId}.`));
+    }
+  }
   const password = temporaryPassword();
   const username = await uniqueUsername(cleanEmail);
   const userId = `${role.toUpperCase()}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-  const department = role === 'doctor' ? 'Medicine' : role === 'admin' ? 'IT' : 'Radiology';
+  const department = role === 'doctor' ? 'Medicine' : role === 'admin' ? 'IT' : role === 'patient' ? 'Patient' : 'Radiology';
   try {
     const user = await User.create({
       userId,
@@ -69,8 +78,9 @@ exports.createUser = catchAsync(async (req, res, next) => {
       email: cleanEmail,
       role,
       department,
+      patientId: role === 'patient' ? cleanPatientId : '',
     });
-    await addAuditLog(req.user.userId, 'USER_UPDATED', `Added user ${user.username} (${user.email}) as ${role}`);
+    await addAuditLog(req.user.userId, 'USER_UPDATED', `Added user ${user.username} (${user.email}) as ${role}${role === 'patient' ? ` for ${cleanPatientId}` : ''}`);
     res.status(201).json({
       success: true,
       temporaryPassword: password,

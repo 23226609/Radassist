@@ -61,11 +61,11 @@ const sample = {
   measurements: [lesion, heart, thorax],
 };
 
-await test("the report reads XRAY CHEST / FINDINGS / sentences / COMMENT / thanks / endorser", () => {
+await test("the report reads XRAY CHEST / FINDINGS / sentences / COMMENT / endorser", () => {
   const body = buildReportSections(sample).body;
   assert.equal(body, [
     "XRAY CHEST (PA)", "", "FINDINGS", "The lungs are clear.", "Small right pleural effusion.", ctr.text, "No pneumothorax.",
-    "", "COMMENT", "– Small right pleural effusion with cardiomegaly.", "", "Thank you for your referral.", "Dr. Priya Nair",
+    "", "COMMENT", "– Small right pleural effusion with cardiomegaly.", "", "Dr. Priya Nair",
   ].join("\n"));
   assert.ok(!body.includes("SECRET MODEL REASONING"), "Thinking stays hidden");
 });

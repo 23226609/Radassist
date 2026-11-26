@@ -18,6 +18,16 @@ export function isReferringDoctor(user) {
   return roleOf(user) === "doctor";
 }
 
+export function isPatient(user) {
+  return roleOf(user) === "patient";
+}
+
+// A patient has two pages: their appointments and their reports. Any other page asks for My reports instead.
+export const PATIENT_PAGES = ["my-appointments", "my-reports"];
+export function allowedPage(user, page) {
+  return isPatient(user) && !PATIENT_PAGES.includes(page) ? "my-reports" : page;
+}
+
 export function canRequestExam(user) {
   const r = roleOf(user);
   return r === "doctor" || r === "admin";

@@ -6,7 +6,6 @@
 //   one sentence per line
 //   COMMENT
 //   – one conclusive line
-//   Thank you for your referral.
 //
 // No DOM and no imports beyond the sibling text rules, so the browser and the
 // Express API split, classify and assemble a report the same way.
@@ -17,8 +16,6 @@ import {
   withoutThinking,
   thinkingBlockOf,
 } from "./reportText.js";
-
-export const THANKS_LINE = "Thank you for your referral.";
 
 // Views the radiologist can pick. Only a PA film is read as an erect PA.
 // Lateral is kept so a lateral film is not shown as "not recorded".
@@ -291,7 +288,12 @@ export function parseReportSections(reportText) {
       continue;
     }
     if (current === "findings") findings.push(raw);
-    else if (current === "impression") impression.push(raw);
+    else if (current === "impression") {
+      // A blank line ends the comment. The closing "Thank you" line used to
+      // do this; without it the next section would be read as comment text.
+      if (!raw.trim()) current = "done";
+      else impression.push(raw);
+    }
     else pre.push(raw);
   }
   // Prose with no heading, or an Impression with no Findings heading before it.
@@ -332,7 +334,6 @@ export function assembleReport({ view = "", tags = [], comment = "", thinking = 
   }
   lines.push("", "COMMENT");
   for (const line of commentLines(comment)) lines.push(`– ${line}`);
-  lines.push("", THANKS_LINE);
   const body = lines.join("\n");
   const thought = String(thinking || "").trim();
   return thought ? `${body}\n\n${thought}` : body;

@@ -10,6 +10,7 @@ export const state = {
   page: "login",      // current page: login | register | dashboard | new | review | cases | audit
   cases: [],          // all cases cached in memory
   selectedCaseId: null,
+  patientBrowse: false, // a patient pressed Back: show the list of reports even when there is only one
   selectedPatientId: null,
   pendingRequestId: null,
   shareToken: null,
@@ -69,6 +70,8 @@ export function parseHash(hash = currentHash()) {
   if (head === "labs") return { page: "labs" };
   if (head === "notes") return { page: "notes" };
   if (head === "requests") return { page: "requests" };
+  if (head === "my-appointments") return { page: "my-appointments" };
+  if (head === "my-reports") return { page: "my-reports", selectedCaseId: parts[1] || null };
   if (head === "new") return { page: "new" };
   return { page: "dashboard" };
 }
@@ -104,6 +107,8 @@ export function hashFor(s = state) {
     case "labs": return "#/labs";
     case "notes": return "#/notes";
     case "requests": return "#/requests";
+    case "my-appointments": return "#/my-appointments";
+    case "my-reports": return s.selectedCaseId ? `#/my-reports/${encodeURIComponent(s.selectedCaseId)}` : "#/my-reports";
     default: return "#/dashboard";
   }
 }

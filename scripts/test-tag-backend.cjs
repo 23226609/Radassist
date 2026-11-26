@@ -55,7 +55,7 @@ const box = (tagKey, extra = {}) => ({ label: tagKey, bbox: [10, 10, 20, 20], ta
   await test('assemble writes the layout and keeps the Thinking block from the previous text', async () => {
     const d = await tagReport.derive(CURV);
     const text = await tagReport.assemble({ view: 'PA', tags: d.findingTags, comment: d.comment, previousReportText: CURV, remarks: '' });
-    assert.ok(text.startsWith('XRAY CHEST (PA)\n\nFINDINGS\nThe lung volumes are low.\nThere is bibasilar atelectasis.\nThe heart size is normal.\n\nCOMMENT\n– Bibasilar atelectasis.\n\nThank you for your referral.'));
+    assert.ok(text.startsWith('XRAY CHEST (PA)\n\nFINDINGS\nThe lung volumes are low.\nThere is bibasilar atelectasis.\nThe heart size is normal.\n\nCOMMENT\n– Bibasilar atelectasis.'));
     assert.ok(text.includes('Low volumes favour atelectasis.'), 'Thinking stays stored');
   });
 

@@ -3,7 +3,7 @@
 // (backend/.env), never from the source code.
 //
 //   SEED_ADMIN_PASSWORD   SEED_TECH_PASSWORD   SEED_PRIYA_PASSWORD
-//   SEED_MARCUS_PASSWORD  SEED_DOCTOR_PASSWORD
+//   SEED_MARCUS_PASSWORD  SEED_DOCTOR_PASSWORD  SEED_PATIENT_PASSWORD
 //
 // backend/.env.example lists them with a placeholder. The placeholder itself
 // is refused, so a copied-but-unedited file cannot create accounts with a
@@ -18,6 +18,7 @@ const DEMO_ACCOUNTS = [
   { username: 'priya', env: 'SEED_PRIYA_PASSWORD' },
   { username: 'marcus', env: 'SEED_MARCUS_PASSWORD' },
   { username: 'doctor', env: 'SEED_DOCTOR_PASSWORD' },
+  { username: 'patient', env: 'SEED_PATIENT_PASSWORD' },
 ];
 
 // { passwords: { admin: '...', ... }, problems: ['SEED_X_PASSWORD is not set', ...] }

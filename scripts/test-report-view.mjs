@@ -163,7 +163,7 @@ test("referring doctors see a read-only report", () => {
 
 const TAGGED_REPORT = [
   "XRAY CHEST (PA)", "", "FINDINGS", "Heart size is normal.", "Small right pleural effusion.", "",
-  "COMMENT", "– Small right pleural effusion.", "", "Thank you for your referral.", "", "Thinking:", "Hidden reasoning.",
+  "COMMENT", "– Small right pleural effusion.", "", "Thinking:", "Hidden reasoning.",
 ].join("\n");
 const taggedCase = {
   ...testCase,

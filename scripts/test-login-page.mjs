@@ -57,12 +57,12 @@ const quick = () => [...app.querySelectorAll("button.quick-login")];
 
 console.log("\n=== the login screen ===");
 
-await test("it offers the four one-click demo accounts", () => {
+await test("it offers the five one-click demo accounts, patient included", () => {
   state.page = "login";
   renderLoginPage();
   const text = quick().map((b) => b.textContent.replace(/\s+/g, " ").trim());
-  assert.equal(text.length, 4);
-  for (const role of ["technician", "radiologist", "doctor", "admin"]) {
+  assert.equal(text.length, 5);
+  for (const role of ["technician", "radiologist", "doctor", "admin", "patient"]) {
     assert.ok(text.some((t) => t.toLowerCase().includes(role)), `${role} account missing`);
   }
 });
@@ -79,8 +79,8 @@ await test("clicking a demo account signs in with that account's username and a 
   assert.equal(JSON.parse(store["radassist.auth"]).token, "tok", "the session is kept as before");
 });
 
-await test("each of the four demo accounts signs in under its own username", async () => {
-  for (const [role, username] of [["radiologist", "priya"], ["doctor", "doctor"], ["admin", "admin"]]) {
+await test("each of the demo accounts signs in under its own username", async () => {
+  for (const [role, username] of [["radiologist", "priya"], ["doctor", "doctor"], ["admin", "admin"], ["patient", "patient"]]) {
     logins.length = 0;
     state.page = "login";
     renderLoginPage();

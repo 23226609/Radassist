@@ -240,7 +240,7 @@ test("dashboard asks Azure to replace a leftover first-sentence diagnosis", () =
 }
 
 test("the COMMENT line is the conclusion when the report has no Impression", () => {
-  const reportText = "XRAY CHEST (PA)\n\nFINDINGS\nHeart size is normal.\n\nCOMMENT\n\u2013 Small right pleural effusion.\n\nThank you for your referral.";
+  const reportText = "XRAY CHEST (PA)\n\nFINDINGS\nHeart size is normal.\n\nCOMMENT\n\u2013 Small right pleural effusion.";
   assert.equal(needsAzureDiagnosis({
     clinicianEdited: true, reportText, diagnosis: "No acute cardiopulmonary abnormality",
   }), true);

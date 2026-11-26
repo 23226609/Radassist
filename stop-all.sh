@@ -1,24 +1,38 @@
 #!/usr/bin/env bash
-# stop-all.sh — kill every service that start-all.sh brings up.
+# stop-all.sh — stop the RadAssist stack and leave it stopped.
 # Usage:  bash stop-all.sh
 #
-# Strategy:
+# The four com.radassist launchd agents have KeepAlive, so killing the
+# process alone makes launchd start it again. Unload the agents first.
+# They are not loaded again here. Run start-all-agents.sh to bring them back.
+# The .plist files are left where they are.
+#
+# Then:
 #   1. Kill by PIDs file (precise, avoids collateral damage).
-#   2. Kill by per-service .pid files written next to each log (extra safety).
+#   2. Kill by per-service .pid files written next to each log.
 #   3. Kill anything still on :5173 / :5002 / :8001 / :8080.
 #   4. Kill by process pattern as a fallback.
-#   5. Optionally reload the launchd agents we silenced at start.
+#   5. Last-resort sweep by basename.
 
 set -u
 
 PROJECT_ROOT="/Users/PHY/Downloads/radassist-ai-frontend"
 LOG_DIR="$PROJECT_ROOT/.logs"
 PIDS_FILE="$PROJECT_ROOT/.logs/pids"
+UID_NUM="$(id -u)"
 
-# Colors for output
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 say()  { printf "${GREEN}[stop-all]${NC} %s\n" "$*"; }
 warn() { printf "${YELLOW}[stop-all]${NC} %s\n" "$*"; }
+
+say "Unloading launchd agents so KeepAlive cannot restart them ..."
+for label in com.radassist.mlxvlm com.radassist.middleware com.radassist.nodebackend com.radassist.frontend; do
+  if launchctl bootout "gui/$UID_NUM/$label" 2>/dev/null; then
+    say "unloaded $label"
+  else
+    warn "$label was not loaded (bootout returned nothing to unload)"
+  fi
+done
 
 say "Stopping RadAssist stack on :5173 / :5002 / :8001 / :8080 ..."
 
@@ -73,16 +87,29 @@ done
 sleep 1
 
 echo ""
+say "Verification"
+fail=0
+
 for p in 5173 5002 8001 8080; do
-  if lsof -i:$p >/dev/null 2>&1; then warn "$p: still BUSY"; else say "$p: free"; fi
+  if lsof -ti:"$p" >/dev/null 2>&1; then warn ":$p still BUSY"; fail=1; else say ":$p free"; fi
 done
 
-# 6. Re-enable the launchd agents so the services stay up between sessions.
-UID_NUM="$(id -u)"
-say "Re-loading launchd agents ..."
-launchctl bootstrap "gui/$UID_NUM/com.radassist.mlxvlm"     "/Users/PHY/Library/LaunchAgents/com.radassist.mlxvlm.plist"     2>/dev/null || true
-launchctl bootstrap "gui/$UID_NUM/com.radassist.middleware"  "/Users/PHY/Library/LaunchAgents/com.radassist.middleware.plist"  2>/dev/null || true
-launchctl bootstrap "gui/$UID_NUM/com.radassist.nodebackend" "/Users/PHY/Library/LaunchAgents/com.radassist.nodebackend.plist" 2>/dev/null || true
-launchctl bootstrap "gui/$UID_NUM/com.radassist.frontend"    "/Users/PHY/Library/LaunchAgents/com.radassist.frontend.plist"    2>/dev/null || true
+leftover=$(pgrep -fl "mlx_vlm.server|uvicorn middleware:app|node.*server\.js|vite" 2>/dev/null || true)
+if [ -n "$leftover" ]; then
+  warn "processes still running:"
+  printf '%s\n' "$leftover"
+  fail=1
+else
+  say "no mlx_vlm.server, uvicorn middleware, node server.js or vite process"
+fi
 
-say "Done."
+agents=$(launchctl list 2>/dev/null | grep 'com\.radassist\.' || true)
+if [ -n "$agents" ]; then
+  warn "launchd still has com.radassist jobs:"
+  printf '%s\n' "$agents"
+  fail=1
+else
+  say "launchctl list has no com.radassist job"
+fi
+
+if [ "$fail" -eq 0 ]; then say "Stopped. Nothing will restart until start-all-agents.sh."; else warn "Stop finished, but something is still up. See the lines above."; fi

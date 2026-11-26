@@ -83,7 +83,7 @@ const S2 = "Heart size is normal.";
 const S3 = "No pleural effusion.";
 const REPORT = [
   "XRAY CHEST (PA)", "", "FINDINGS", S1, S2, S3, "", "COMMENT", "– Bibasilar atelectasis.", "",
-  "Thank you for your referral.", "", "Thinking:", THINK,
+  "", "Thinking:", THINK,
 ].join("\n");
 
 function tag(key, text, abnormal) {
@@ -234,7 +234,7 @@ await test("FINDINGS is one editable tag per sentence, with COMMENT under the li
   assert.equal(comment.value, "Bibasilar atelectasis.");
   const list = root.querySelector("#tag-list");
   assert.ok(!list.contains(comment), "COMMENT is not part of the draggable list");
-  assert.ok(root.querySelector("#report-text").textContent.includes("Thank you for your referral."));
+  assert.ok(!root.querySelector("#report-text").textContent.includes("Thank you for your referral."));
 });
 
 await test("Thinking is stored but never shown", () => {
@@ -297,7 +297,7 @@ await test("editing a tag's words and Save draft stores the sentence and the ass
   assert.equal(update.findingTags[0].text, "The lung volumes are low with bibasilar atelectasis, improving.");
   assert.ok(update.reportText.includes("FINDINGS\nThe lung volumes are low with bibasilar atelectasis, improving.\nHeart size is normal.\nNo pleural effusion.\n\nCOMMENT\n– Bibasilar atelectasis."));
   assert.ok(update.reportText.includes(THINK), "the hidden Thinking is kept in the stored draft");
-  assert.ok(update.reportText.indexOf("COMMENT") < update.reportText.indexOf("Thank you for your referral."));
+  assert.ok(!update.reportText.includes("Thank you for your referral."));
   assert.equal(update.view, "PA");
   assert.ok(calls.some((c) => c[0] === "summarise") === false || true);
 });

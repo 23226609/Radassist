@@ -9,6 +9,7 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 const connectDB = require('./config/db');
 const errorHandler = require('./middleware/errorHandler');
 const ApiError = require('./utils/ApiError');
+const { syncNotifyReady } = require('./utils/agentTools');
 
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
@@ -61,6 +62,7 @@ app.use('/api/images', imageRoutes);
 app.use('/api/share', require('./routes/share'));
 app.use('/api/audit-logs', auditRoutes);
 app.use('/api/stats', statsRoutes);
+app.use('/api/appointments', require('./routes/appointments'));
 
 // 404
 app.use('*', (req, res, next) => next(ApiError.notFound(`Route ${req.originalUrl} not found`)));
@@ -80,6 +82,15 @@ async function start() {
     // belt-and-suspenders guard in case that contract ever changes.
     console.error('Refusing to start without database:', err.message);
     process.exit(1);
+  }
+
+  // Record when the email service became ready, so notify never sends a catch-up
+  // email for a report endorsed before that. A failure here only keeps notify off.
+  try {
+    const readyAt = await syncNotifyReady();
+    console.log(readyAt ? `Notification email ready since ${readyAt.toISOString()}` : 'Notification email is not set up (ACS_CONNECTION_STRING).');
+  } catch (err) {
+    console.error('Could not record when notification email became ready:', err.message);
   }
 
   const PORT = process.env.PORT || 5002;

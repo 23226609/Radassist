@@ -12,6 +12,9 @@ const { analyzeXray } = require('../utils/aiService');
 const { prepareFilm } = require('../utils/dicom');
 const { buildEditChanges } = require('../utils/editDiff');
 const azureFindings = require('../utils/azureFindings');
+const { reasonAboutHistory } = require('../utils/historyReasoning');
+const { secondOpinion } = require('../utils/secondOpinion');
+const { runAgent } = require('../utils/agent');
 const { dedupeFindings, mergeTagBoxes } = require('../utils/findingsMerge');
 const tagReport = require('../utils/tagReport');
 const { bucket, downloadImage } = require('./_gridfs');
@@ -20,7 +23,8 @@ const { toPublicCase, statusFilter, publicStatus, clinicianEdited } = require('.
 const { upsertPatientFromCase, removeCaseRecord } = require('../utils/recordSync');
 const { queueChartFindings } = require('../utils/chartFindings');
 const xraySlots = require('../utils/xraySlots');
-const { normalizeRole, isReferringDoctor, isTechnician } = require('../utils/roles');
+const { normalizeRole, isReferringDoctor, isTechnician, isPatient } = require('../utils/roles');
+const { queueLaySummary } = require('../utils/laySummary');
 
 let requestRules;
 function radiologyRequest() {
@@ -37,6 +41,8 @@ function publicCaseOpts(req, doc) {
     includeEditLog: (role === 'radiologist' || role === 'admin') && !finalized,
     stripProvenance: role === 'doctor' || finalized,
     hideFilm: role === 'technician',
+    hideReasoning: role === 'doctor',
+    patientView: role === 'patient',
   };
 }
 
@@ -175,6 +181,11 @@ exports.listCases = catchAsync(async (req, res) => {
   } else if (isTechnician(req.user)) {
     filter.status = 'requested';
   }
+  // A patient sees their own endorsed cases only. Set last so nothing in the query string can widen it.
+  const patientScope = () => {
+    filter.patientId = String(req.user.patientId || '').trim() || '__none__';
+    filter.status = 'finalized';
+  };
   if (q) {
     const re = new RegExp(escapeRegex(q), 'i');
     filter.$or = [
@@ -190,6 +201,8 @@ exports.listCases = catchAsync(async (req, res) => {
       { history: re },
     ];
   }
+
+  if (isPatient(req.user)) patientScope();
 
   // Cosmos DB can't sort by indexed fields the index doesn't cover reliably;
   // do an in-memory sort to be safe across all fields.
@@ -222,6 +235,11 @@ exports.getCase = catchAsync(async (req, res, next) => {
   }
   if (isTechnician(req.user) && visibleStatus !== 'requested') {
     return next(ApiError.forbidden('Technicians can only open requested cases.'));
+  }
+  // Another patient's case, and an own case that is not endorsed yet, look the same as one that does not exist.
+  if (isPatient(req.user)
+    && (!req.user.patientId || raw.patientId !== req.user.patientId || visibleStatus !== 'finalized')) {
+    return next(ApiError.notFound(`Case ${req.params.id} not found`));
   }
   res.json({ success: true, case: toPublicCase(raw, publicCaseOpts(req, raw)) });
 });
@@ -863,7 +881,26 @@ exports.finalizeCase = catchAsync(async (req, res, next) => {
   await addAuditLog(req.user.userId, 'CASE_FINALIZED', `Finalized case ${c.caseId || c._id}`, c.caseId || String(c._id), null, 'finalized');
 
   c.chartFindingsState = await queueChartFindings(c, { userId: req.user.userId });
+  // The lay summary is written only now, from the endorsed report, in the background. It does not slow
+  // endorsement down and a failure cannot undo it.
+  c.laySummaryState = await queueLaySummary(c, { userId: req.user.userId });
   res.json({ success: true, case: toPublicCase(c, publicCaseOpts(req, c)) });
+});
+
+// Write the lay summary again (after a failure, or when Azure was not set up at endorsement).
+// Refused for a report that is not endorsed. Waits for the result.
+exports.laySummaryCase = catchAsync(async (req, res, next) => {
+  const c = await findCaseByAnyId(req.params.id);
+  if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
+  if (c.status !== 'finalized') {
+    return next(ApiError.badRequest('A lay summary is written only after the report is endorsed.'));
+  }
+  if (!azureFindings.isConfigured()) {
+    return next(ApiError.badRequest('Azure OpenAI is not configured on the server. See docs/azure-findings.md.'));
+  }
+  const state = await queueLaySummary(c, { userId: req.user.userId, force: true, wait: true });
+  const fresh = await findCaseByAnyId(req.params.id);
+  res.json({ success: true, state, case: toPublicCase(fresh, publicCaseOpts(req, fresh)) });
 });
 
 // Retry from the patient chart when Azure failed on an endorsed report.
@@ -1014,6 +1051,7 @@ exports.deleteCases = catchAsync(async (req, res, next) => {
 // ---------------------------------------------------------------------------
 
 exports.streamImage = catchAsync(async (req, res, next) => {
+  if (isPatient(req.user)) return next(ApiError.forbidden('Patients cannot open the X-ray image.'));
   let oid;
   try { oid = new mongoose.Types.ObjectId(req.params.id); }
   catch (_) { return next(ApiError.badRequest('Invalid image id.')); }
@@ -1099,6 +1137,142 @@ exports.summariseFindings = catchAsync(async (req, res, next) => {
   res.json({
     success: true,
     case: toPublicCase(c),
+  });
+});
+
+// History LLM: summary, differentials and questions from the patient's chart
+// history alone. The logic is in utils/historyReasoning.js; this stores it.
+// It does not run the second opinion and does not touch the report or the film.
+// Allowed on a finalized case because it does not touch the stored report.
+exports.reasonCase = catchAsync(async (req, res, next) => {
+  if (!azureFindings.isConfigured()) {
+    return next(ApiError.badRequest(
+      'Azure OpenAI is not configured on the server. See docs/azure-findings.md.'
+    ));
+  }
+
+  const c = await findCaseByAnyId(req.params.id);
+  if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
+
+  let analysis;
+  try {
+    analysis = await reasonAboutHistory(c);
+  } catch (err) {
+    return next(ApiError.badRequest(err.message));
+  }
+
+  c.historyAnalysis = { ...analysis, generatedAt: new Date().toISOString() };
+  await c.save();
+
+  await addAuditLog(
+    req.user.userId,
+    'AI_ANALYZED',
+    `History reasoning for ${c.caseId || c._id} (${analysis.differentials.length} differentials)`,
+    c.caseId || String(c._id)
+  );
+
+  res.json({
+    success: true,
+    historyAnalysis: c.historyAnalysis,
+    case: toPublicCase(c, publicCaseOpts(req, c)),
+  });
+});
+
+// Independent second opinion (utils/secondOpinion.js): the AI reads the film and the
+// patient's chart, never CURV's sentences, the report or the boxes. It runs only when the
+// radiologist asks, on a stored draft, and its answer is kept on Case.fusionResult as
+// reference text. It never edits the report and never finalises a case: only
+// finalizeCase does, and only a radiologist can call that.
+exports.secondOpinionCase = catchAsync(async (req, res, next) => {
+  if (!azureFindings.isConfigured()) {
+    return next(ApiError.badRequest(
+      'Azure OpenAI is not configured on the server. See docs/azure-findings.md.'
+    ));
+  }
+
+  const c = await findCaseByAnyId(req.params.id);
+  if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
+  if (c.analysisState === 'running') {
+    return next(ApiError.badRequest('The report is still generating.'));
+  }
+  if (!c.imageId) return next(ApiError.badRequest('This case has no X-ray image.'));
+  if (!String(c.reportText || '').trim() && !plainTags(c.findingTags).length) {
+    return next(ApiError.badRequest('There is no saved draft yet. Save a draft first.'));
+  }
+
+  let result;
+  try {
+    const image = await downloadImage(c.imageId);
+    // Only these three case fields go in: no reportText, findingTags, findings or boxes.
+    result = await secondOpinion({
+      caseId: c.caseId,
+      patientId: c.patientId,
+      history: c.history,
+      image,
+      sepsisScreen: req.body?.sepsisScreen,
+    });
+  } catch (err) {
+    return next(ApiError.badRequest(err.message));
+  }
+
+  // Saved with a targeted update, so a draft edit made while Azure was thinking is not overwritten.
+  const fusionResult = { ...result, generatedAt: new Date().toISOString() };
+  await Case.updateOne({ caseId: c.caseId }, { $set: { fusionResult } });
+  c.fusionResult = fusionResult;
+
+  await addAuditLog(
+    req.user.userId,
+    'AI_ANALYZED',
+    `Second opinion for ${c.caseId || c._id}: ${result.diagnosis}`,
+    c.caseId || String(c._id)
+  );
+
+  res.json({
+    success: true,
+    secondOpinion: fusionResult,
+    case: toPublicCase(c, publicCaseOpts(req, c)),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The reasoning agent (utils/agent.js). It runs after the Second Reader, on demand, for a
+// radiologist or admin, and its two searches use the Second Reader's diagnosis. It never edits
+// the report: it returns suggestions and the results of its tools, and keeps them on
+// Case.agentResult. Each tool call is in the audit log. notify is part of a run only when the
+// request body says {"notify": true}; the review panel never sends that.
+// ---------------------------------------------------------------------------
+exports.agentCase = catchAsync(async (req, res, next) => {
+  if (!azureFindings.isConfigured()) {
+    return next(ApiError.badRequest(
+      'Azure OpenAI is not configured on the server. See docs/azure-findings.md.'
+    ));
+  }
+
+  const c = await findCaseByAnyId(req.params.id);
+  if (!c) return next(ApiError.notFound(`Case ${req.params.id} not found`));
+  if (!c.caseId) return next(ApiError.badRequest('This record cannot be analysed by the agent.'));
+  if (c.analysisState === 'running') {
+    return next(ApiError.badRequest('The report is still generating.'));
+  }
+  if (!String(c.reportText || '').trim() && !plainTags(c.findingTags).length) {
+    return next(ApiError.badRequest('There is no saved draft yet. Save a draft first.'));
+  }
+
+  let outcome;
+  try {
+    // The review panel's run is for supporting evidence only. notify is offered only when asked for.
+    outcome = await runAgent({ caseDoc: c.toObject(), userId: req.user.userId, allowNotify: req.body?.notify === true });
+  } catch (err) {
+    return next(ApiError.badRequest(err.message));
+  }
+
+  const fresh = await findCaseByAnyId(req.params.id);
+  res.json({
+    success: true,
+    agent: outcome.agent,
+    toolCalls: outcome.calls,
+    reusedTools: outcome.reused,
+    case: toPublicCase(fresh || c, publicCaseOpts(req, fresh || c)),
   });
 });
 

@@ -1,6 +1,6 @@
 // Role helpers. `nurse` is treated as technician for leftover demo accounts.
 
-const ROLES = ['technician', 'radiologist', 'doctor', 'admin'];
+const ROLES = ['technician', 'radiologist', 'doctor', 'admin', 'patient'];
 
 function normalizeRole(role) {
   if (role === 'nurse') return 'technician';
@@ -30,6 +30,10 @@ function isReferringDoctor(user) {
   return normalizeRole(user?.role) === 'doctor';
 }
 
+function isPatient(user) {
+  return normalizeRole(user?.role) === 'patient';
+}
+
 function isTechnician(user) {
   return normalizeRole(user?.role) === 'technician';
 }
@@ -43,4 +47,5 @@ module.exports = {
   canEditReport,
   isReferringDoctor,
   isTechnician,
+  isPatient,
 };

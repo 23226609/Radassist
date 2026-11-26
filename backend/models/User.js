@@ -16,10 +16,19 @@ const userSchema = new mongoose.Schema(
       match: [/^[\w-.]+@([\w-]+\.)+[\w-]{2,4}$/, 'Please provide a valid email'] },
     role: { type: String, required: true, enum: ROLES, default: 'doctor' },
     department: { type: String, default: 'Radiology', trim: true },
+    // A patient account is tied to exactly one patient record, and sees only that patient's cases.
+    patientId: { type: String, default: '', trim: true },
     isActive: { type: Boolean, default: true },
   },
   { timestamps: true }
 );
+
+userSchema.pre('validate', function (next) {
+  if (this.role === 'patient' && !String(this.patientId || '').trim()) {
+    this.invalidate('patientId', 'A patient account needs a patient ID.');
+  }
+  next();
+});
 
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();

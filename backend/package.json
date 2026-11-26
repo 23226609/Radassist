@@ -11,6 +11,9 @@
     "reset-demo-passwords": "node scripts/reset-demo-passwords.js"
   },
   "dependencies": {
+    "@azure/communication-email": "^1.1.0",
+    "@langchain/core": "^1.5.1",
+    "@langchain/langgraph": "^1.7.5",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dcmjs": "^0.51.1",

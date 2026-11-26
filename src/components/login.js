@@ -11,6 +11,7 @@ const DEMO_USERS = [
   { role: "radiologist", username: "priya", password: "priya123", label: "Radiologist · Dr. Priya Nair" },
   { role: "doctor", username: "doctor", password: "doctor123", label: "Doctor · Dr. Alex Wong" },
   { role: "admin", username: "admin", password: "admin123", label: "Admin · System Admin" },
+  { role: "patient", username: "patient", password: "patient123", label: "Patient · Mei Chen" },
 ];
 
 export function renderLoginPage() {

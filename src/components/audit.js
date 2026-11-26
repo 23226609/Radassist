@@ -14,6 +14,8 @@ const ACTION_TONE = {
   LOGOUT: "bg-slate-100 text-slate-700",
   REGISTER: "bg-blue-50 text-ha-blue",
   AI_ANALYZED: "bg-purple-50 text-purple-700",
+  AGENT_TOOL_CALL: "bg-purple-50 text-purple-700",
+  LAY_SUMMARY: "bg-teal-50 text-teal-700",
   CASE_CREATED: "bg-blue-50 text-ha-blue",
   CASE_UPDATED: "bg-amber-50 text-amber-700",
   CASE_FINALIZED: "bg-green-50 text-green-700",

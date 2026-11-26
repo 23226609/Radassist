@@ -69,6 +69,17 @@ const DEMO_USERS = [
     role: 'doctor',
     department: 'Medicine',
   },
+  {
+    // The patient demo account: it can read only Mei Chen's own endorsed report and its lay summary.
+    userId: 'USR-PATIENT-0001',
+    username: 'patient',
+    password: demoPasswords.patient,
+    name: 'Mei Chen',
+    email: 'mei.chen@radassist.demo',
+    role: 'patient',
+    department: 'Patient',
+    patientId: 'PT-2026-0018',
+  },
 ];
 
 // Demo cases: a mix of pending_approve / finalized. Images will be

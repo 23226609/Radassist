@@ -275,7 +275,7 @@ test("an endorsed report drops Thinking and keeps the signature", () => {
   assert.ok(!sections.body.includes("Thinking"));
   assert.ok(!sections.body.includes("The model compared both lungs."));
   assert.ok(sections.body.includes("COMMENT\n– No acute findings."));
-  assert.ok(sections.body.endsWith("Thank you for your referral.\nDr. Priya Nair"));
+  assert.ok(sections.body.endsWith("\nDr. Priya Nair"));
   assert.equal(sections.signOff.doctor, "Dr. Priya Nair");
   const pdf = new TextDecoder("latin1").decode(buildReportPdfBytes({
     status: "finalized",

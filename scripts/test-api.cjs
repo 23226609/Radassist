@@ -51,6 +51,7 @@ function buildApp() {
   app.use(express.json({ limit: '15mb' }));
   app.use('/api/auth', backend('routes/auth'));
   app.use('/api/cases', backend('routes/cases'));
+  app.use('/api/share', backend('routes/share'));
   app.use('*', (req, res, next) => next(backend('utils/ApiError').notFound(`Route ${req.originalUrl} not found`)));
   app.use(backend('middleware/errorHandler'));
   return app;
@@ -435,6 +436,434 @@ function buildApp() {
       }
       assert.strictEqual(await Case.countDocuments({ shareToken: { $exists: true } }), 0);
     });
+
+    console.log('\n=== history reasoning (POST /api/cases/:id/reason) ===');
+
+    // Azure is faked: any call to *.openai.azure.com is answered here and recorded.
+    const realFetch = globalThis.fetch;
+    const azureCalls = [];
+    let azureReply = null;
+    globalThis.fetch = async (url, init) => {
+      if (!String(url).includes('openai.azure.com')) return realFetch(url, init);
+      const body = JSON.parse(init.body);
+      azureCalls.push(body);
+      const reply = typeof azureReply === 'function' ? azureReply(body) : azureReply;
+      if (reply && reply.__status) {
+        return new Response(JSON.stringify({ error: { message: 'upstream said no' } }), { status: reply.__status });
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(reply) } }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    };
+    const useAzure = (on) => {
+      for (const key of ['ENDPOINT', 'KEY', 'DEPLOYMENT']) {
+        if (on) process.env[`AZURE_OPENAI_${key}`] = key === 'ENDPOINT' ? 'https://fake.openai.azure.com' : 'test';
+        else delete process.env[`AZURE_OPENAI_${key}`];
+      }
+    };
+    const GOOD_REPLY = {
+      summary: 'Three days of cough and fever in a smoker.',
+      differentials: [
+        { diagnosis: 'Community-acquired pneumonia', supporting: ['Fever', 'Cough'], against: [], confidence: 'MEDIUM' },
+        { diagnosis: '', supporting: [], against: [], confidence: 'high' },
+      ],
+      questions_for_doctor: ['Any recent travel?'],
+      invented_field: 'must be dropped',
+    };
+
+    try {
+      await resetData();
+      await Patient.create({
+        patientId: 'PT-API-R', firstName: 'Api', lastName: 'PatientR', name: 'Api PatientR', age: '60', sex: 'Male',
+        history: 'Smoker for 30 years.', medicines: 'Salbutamol inhaler', labResults: 'CRP 80 mg/L',
+      });
+      await Case.create({
+        caseId: 'CASE-API-R1', patientId: 'PT-API-R', status: 'pending_approve', history: 'Cough and fever for three days',
+        reportText: 'FINDINGS\nThe lungs are clear.', analysisState: 'done',
+      });
+      await Case.create({
+        caseId: 'CASE-API-R0', patientId: 'PT-API-R', status: 'finalized', finalizedAt: new Date('2026-01-02'),
+        reportText: 'FINDINGS\nOld right lower zone scarring.\n\nCOMMENT\n– Stable.',
+      });
+
+      await test('a technician and a referring doctor get 403, and Azure is never called', async () => {
+        useAzure(true);
+        azureReply = GOOD_REPLY;
+        for (const role of ['technician', 'doctor']) {
+          const res = await api('POST', '/api/cases/CASE-API-R1/reason', { token: tokens[role] });
+          assert.strictEqual(res.status, 403, `${role} must not run history reasoning`);
+        }
+        assert.strictEqual((await api('POST', '/api/cases/CASE-API-R1/reason')).status, 401);
+        assert.strictEqual(azureCalls.length, 0);
+        assert.strictEqual((await Case.findOne({ caseId: 'CASE-API-R1' })).historyAnalysis, null);
+      });
+
+      await test('without Azure settings it is a 400 and nothing is saved', async () => {
+        useAzure(false);
+        const res = await api('POST', '/api/cases/CASE-API-R1/reason', { token: tokens.radiologist });
+        assert.strictEqual(res.status, 400);
+        assert.match(res.body.error, /not configured/i);
+        assert.strictEqual((await Case.findOne({ caseId: 'CASE-API-R1' })).historyAnalysis, null);
+      });
+
+      await test('an unknown case is 404', async () => {
+        useAzure(true);
+        const res = await api('POST', '/api/cases/CASE-API-NONE/reason', { token: tokens.radiologist });
+        assert.strictEqual(res.status, 404);
+      });
+
+      await test('a radiologist gets the parsed JSON, stored on the case as an object', async () => {
+        useAzure(true);
+        azureReply = GOOD_REPLY;
+        const res = await api('POST', '/api/cases/CASE-API-R1/reason', { token: tokens.radiologist });
+        assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+        const h = res.body.historyAnalysis;
+        assert.strictEqual(h.summary, GOOD_REPLY.summary);
+        assert.strictEqual(h.differentials.length, 1, 'a differential with no diagnosis is dropped');
+        assert.strictEqual(h.differentials[0].confidence, 'medium');
+        assert.deepStrictEqual(h.questions_for_doctor, ['Any recent travel?']);
+        assert.strictEqual(h.invented_field, undefined);
+        const saved = (await Case.findOne({ caseId: 'CASE-API-R1' }).lean()).historyAnalysis;
+        assert.strictEqual(typeof saved, 'object');
+        assert.strictEqual(saved.differentials[0].diagnosis, 'Community-acquired pneumonia');
+        assert.strictEqual(res.body.case.historyAnalysis.summary, GOOD_REPLY.summary);
+      });
+
+      await test('the prompt is filled from the database and never includes this case\'s own report', async () => {
+        const sent = azureCalls[azureCalls.length - 1];
+        const prompt = sent.messages[0].content;
+        assert.ok(prompt.startsWith('You are a clinical reasoning assistant. Use ONLY the patient history below.'));
+        assert.match(prompt, /Smoker for 30 years\./);
+        assert.match(prompt, /Cough and fever for three days/);
+        assert.match(prompt, /Medications: Salbutamol inhaler/);
+        assert.match(prompt, /Lab results: CRP 80 mg\/L/);
+        assert.match(prompt, /Old right lower zone scarring/, 'the earlier endorsed report is a prior report');
+        assert.ok(!/The lungs are clear/.test(prompt), 'this case\'s own draft is not sent');
+        assert.ok(!/\{(history|medicines|labResults|priorReports)\}/.test(prompt), 'no placeholder is left');
+        assert.deepStrictEqual(sent.response_format, { type: 'json_object' });
+      });
+
+      await test('an admin may call it, and a thin chart is sent as "Not recorded"', async () => {
+        await Case.create({ caseId: 'CASE-API-R2', patientId: 'PT-API-NOPE', status: 'pending_approve' });
+        azureReply = { summary: 'History is thin.', differentials: [], questions_for_doctor: [] };
+        const res = await api('POST', '/api/cases/CASE-API-R2/reason', { token: tokens.admin });
+        assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+        const prompt = azureCalls[azureCalls.length - 1].messages[0].content;
+        assert.match(prompt, /Patient history:\nNot recorded\nMedications: Not recorded\nLab results: Not recorded\nPrior reports: Not recorded/);
+      });
+
+      await test('an Azure answer with no summary is a 400 and is not stored', async () => {
+        azureReply = { differentials: [] };
+        const res = await api('POST', '/api/cases/CASE-API-R2/reason', { token: tokens.radiologist });
+        assert.strictEqual(res.status, 400);
+        assert.strictEqual((await Case.findOne({ caseId: 'CASE-API-R2' })).historyAnalysis.summary, 'History is thin.');
+      });
+
+      await test('the History LLM output is hidden from a technician and a referring doctor', async () => {
+        await Case.updateOne({ caseId: 'CASE-API-R1' }, { $set: { status: 'finalized' } });
+        const doctor = await api('GET', '/api/cases/CASE-API-R1', { token: tokens.doctor });
+        assert.strictEqual(doctor.status, 200);
+        assert.strictEqual(doctor.body.case.historyAnalysis, undefined);
+        await Case.updateOne({ caseId: 'CASE-API-R1' }, { $set: { status: 'requested' } });
+        const tech = await api('GET', '/api/cases/CASE-API-R1', { token: tokens.technician });
+        assert.strictEqual(tech.status, 200);
+        assert.strictEqual(tech.body.case.historyAnalysis, undefined);
+        const rad = await api('GET', '/api/cases/CASE-API-R1', { token: tokens.radiologist });
+        assert.ok(rad.body.case.historyAnalysis.summary);
+      });
+
+      console.log('\n=== second opinion (POST /api/cases/:id/second-opinion) ===');
+
+      // A 1x1 PNG stands in for the film.
+      const FILM = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+      const { bucket } = backend('controllers/_gridfs');
+      async function storeFilm(contentType = 'image/png') {
+        const up = bucket('images').openUploadStream('film.png', { contentType });
+        await new Promise((resolve, reject) => up.end(FILM, (err) => (err ? reject(err) : resolve())));
+        return up.id;
+      }
+      const isSecondOpinion = (body) => /independent second-opinion AI/.test(body.messages[0].content);
+      const isHistory = (body) => /clinical reasoning assistant/.test(body.messages[0].content);
+      const SO_REPLY = {
+        summary: 'The film and the history together suggest a right lower zone infection.',
+        diagnosis: 'Right lower lobe pneumonia',
+        differentials: [
+          { diagnosis: 'Pneumonia', supporting: ['Fever', 'Cough'], against: ['No sputum result'], confidence: 'HIGH' },
+          { diagnosis: '', supporting: [], against: [], confidence: 'low' },
+          { diagnosis: 'Atelectasis', supporting: ['Volume loss'], against: [], confidence: 'certain' },
+        ],
+        suggested_next_step: 'Compare with the earlier film. Ask for a sputum culture.',
+        recommendation: 'must be dropped',
+        agreed: [{ tagKey: 't1' }],
+      };
+      const soReply = (body) => (isSecondOpinion(body) ? SO_REPLY : GOOD_REPLY);
+      const secondAs = (id, role = 'radiologist', sepsisScreen) => api('POST', `/api/cases/${id}/second-opinion`, {
+        token: tokens[role],
+        body: sepsisScreen === undefined ? {} : { sepsisScreen },
+      });
+      const stored = (id) => Case.findOne({ caseId: id }).lean();
+      const lastSecond = () => azureCalls.filter(isSecondOpinion).pop();
+
+      await Patient.create({
+        patientId: 'PT-API-S', firstName: 'Api', lastName: 'PatientS', name: 'Api PatientS', age: '64', sex: 'Female',
+        history: 'Ex-smoker with COPD.', medicines: 'Tiotropium; amoxicillin', labResults: 'WBC 16.2; CRP 120 mg/L',
+        observations: [
+          { at: '2026-11-20T01:00:00.000Z', hr: '88', rr: '18', sbp: '120', spo2: '97', temp: '37.0' },
+          { at: '2026-11-20T02:00:00.000Z', hr: '96', rr: '20', sbp: '112', spo2: '95', temp: '37.6' },
+          { at: '2026-11-20T03:00:00.000Z', hr: '104', rr: '24', sbp: '104', spo2: '93', temp: '38.2' },
+          { at: '2026-11-20T04:00:00.000Z', hr: '112', rr: '26', sbp: '98', spo2: '90', temp: '38.6' },
+        ],
+      });
+      for (const [n, day] of [[1, '2025-01-05'], [2, '2025-02-05'], [3, '2025-03-05'], [4, '2025-04-05']]) {
+        await Case.create({ caseId: `CASE-API-SP${n}`, patientId: 'PT-API-S', status: 'finalized', finalizedAt: new Date(day),
+          reportText: `FINDINGS\nPrior study number ${n} showed hyperinflation.` });
+      }
+      const filmId = await storeFilm();
+      const CURV_MARK = 'ZZCURVMARKER';
+      const mkCase = (caseId, extra = {}) => Case.create({
+        caseId, patientId: 'PT-API-S', status: 'pending_approve', analysisState: 'done', imageId: filmId,
+        history: 'Cough and fever for three days',
+        reportText: `FINDINGS\n${CURV_MARK} right lower zone consolidation.\n\nCOMMENT\n– ${CURV_MARK} comment line.`,
+        findingTags: [{ key: 't1', text: `${CURV_MARK} right lower zone consolidation.`, abnormal: true }],
+        findings: [{ label: 'ZZBOXLABEL', bbox: [11.5, 52.25, 31.75, 22.5], tagKey: 't1', status: 'pending', source: 'Azure' }],
+        ...extra,
+      });
+      await mkCase('CASE-API-S1');
+
+      await test('a technician and a referring doctor get 403, an anonymous caller 401, and Azure is never called', async () => {
+        useAzure(true);
+        azureReply = soReply;
+        azureCalls.length = 0;
+        for (const role of ['technician', 'doctor']) {
+          assert.strictEqual((await secondAs('CASE-API-S1', role)).status, 403, role);
+        }
+        assert.strictEqual((await api('POST', '/api/cases/CASE-API-S1/second-opinion')).status, 401);
+        assert.strictEqual(azureCalls.length, 0);
+        assert.strictEqual((await stored('CASE-API-S1')).fusionResult, null);
+      });
+
+      await test('without Azure settings it is a 400; an unknown case is 404', async () => {
+        useAzure(false);
+        const res = await secondAs('CASE-API-S1');
+        assert.strictEqual(res.status, 400);
+        assert.match(res.body.error, /not configured/i);
+        useAzure(true);
+        assert.strictEqual((await secondAs('CASE-API-NONE')).status, 404);
+      });
+
+      await test('no film, a report still generating, or no saved draft is a 400 and Azure is not called', async () => {
+        await mkCase('CASE-API-S2', { imageId: null });
+        await mkCase('CASE-API-S3', { analysisState: 'running' });
+        await mkCase('CASE-API-S4', { reportText: '', findingTags: [] });
+        azureCalls.length = 0;
+        for (const [id, why] of [['CASE-API-S2', /no x-ray image/i], ['CASE-API-S3', /still generating/i], ['CASE-API-S4', /no saved draft/i]]) {
+          const res = await secondAs(id);
+          assert.strictEqual(res.status, 400, id);
+          assert.match(res.body.error, why);
+        }
+        assert.strictEqual(azureCalls.length, 0);
+      });
+
+      await test('a film Azure cannot read (wrong type) is a 400 and nothing is stored', async () => {
+        const tiff = await storeFilm('image/tiff');
+        await mkCase('CASE-API-S5', { imageId: tiff });
+        const res = await secondAs('CASE-API-S5');
+        assert.strictEqual(res.status, 400);
+        assert.match(res.body.error, /x-ray image/i);
+        assert.strictEqual((await stored('CASE-API-S5')).fusionResult, null);
+      });
+
+      await test('a radiologist gets the answer, stored on Case.fusionResult as an object with only the documented keys', async () => {
+        azureCalls.length = 0;
+        const res = await secondAs('CASE-API-S1');
+        assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+        assert.strictEqual(azureCalls.length, 1, 'one call: no History step, no merge');
+        const so = res.body.secondOpinion;
+        assert.deepStrictEqual(Object.keys(so).sort(), ['differentials', 'diagnosis', 'generatedAt', 'suggested_next_step', 'summary'].sort());
+        assert.strictEqual(so.diagnosis, 'Right lower lobe pneumonia');
+        assert.deepStrictEqual(so.differentials.map((d) => [d.diagnosis, d.confidence]), [['Pneumonia', 'high'], ['Atelectasis', 'low']],
+          'a differential with no name is dropped; an unknown confidence becomes low');
+        const saved = (await stored('CASE-API-S1')).fusionResult;
+        assert.strictEqual(typeof saved, 'object');
+        assert.strictEqual(saved.suggested_next_step, SO_REPLY.suggested_next_step);
+        assert.strictEqual(saved.recommendation, undefined);
+        assert.strictEqual(saved.agreed, undefined);
+        assert.deepStrictEqual(res.body.case.fusionResult, saved.generatedAt ? { ...saved, generatedAt: res.body.case.fusionResult.generatedAt } : saved);
+      });
+
+      await test('the prompt is the exact second-opinion prompt, with the film attached', async () => {
+        const sent = lastSecond();
+        const prompt = sent.messages[0].content;
+        assert.ok(prompt.startsWith("You are an independent second-opinion AI for a chest X-ray case. You have NOT seen any other AI's report for this case. Do not invent symptoms, tests, or diagnoses that are not in the inputs. Use the actual lab values given — if CRP is elevated, do NOT say inflammatory markers are normal.\n\nImage: [the chest X-ray image]\nPatient history: "));
+        assert.match(prompt, /Return JSON only, and keep the whole output under 120 words:/);
+        assert.match(prompt, /"summary": "At most 2 sentences\. What the image and history together suggest\. Do not repeat the diagnosis here\."/);
+        assert.match(prompt, /"diagnosis": "One line only\./);
+        assert.match(prompt, /\["one short phrase only"\], "against": \["one short phrase only"\]/);
+        assert.match(prompt, /"suggested_next_step": "At most 2 sentences\. What the radiologist should do next\."/);
+        assert.match(prompt, /Rules: at most 3 differentials\. Each supporting \/ against entry is one short phrase, not a sentence\./);
+        assert.match(prompt, /Sepsis screen: .* — this is a frontend-calculated screening score, not a diagnosis\. Use it only as one signal\./);
+        assert.ok(prompt.endsWith("Never state a diagnosis as certain. Never invent a finding that is not in the image or history."));
+        assert.ok(!/\{(history|medicines|labResults|priorReports|observations|sepsisScreen)\}/.test(prompt), 'no placeholder is left');
+        const user = sent.messages[1].content;
+        assert.ok(Array.isArray(user));
+        const image = user.find((p) => p.type === 'image_url');
+        assert.ok(image.image_url.url.startsWith('data:image/png;base64,'), 'the film itself is sent');
+        assert.strictEqual(Buffer.from(image.image_url.url.split(',')[1], 'base64').length > 0, true);
+        assert.deepStrictEqual(sent.response_format, { type: 'json_object' });
+      });
+
+      await test('it is given the chart: history, medicines, labs, the 3 newest prior reports and the latest observations with times', async () => {
+        const prompt = lastSecond().messages[0].content;
+        assert.match(prompt, /Patient history: Ex-smoker with COPD\.\nCough and fever for three days/);
+        assert.match(prompt, /Medications: Tiotropium; amoxicillin/);
+        assert.match(prompt, /Lab results: WBC 16\.2; CRP 120 mg\/L/);
+        assert.match(prompt, /2025-04-05: FINDINGS Prior study number 4/);
+        assert.match(prompt, /2025-03-05: FINDINGS Prior study number 3/);
+        assert.match(prompt, /2025-02-05: FINDINGS Prior study number 2/);
+        assert.ok(!/Prior study number 1/.test(prompt), 'only 3 prior reports');
+        const obs = prompt.match(/Observations: ([\s\S]*?)\nSepsis screen:/)[1].split('\n');
+        assert.strictEqual(obs.length, 3, 'the latest three readings');
+        assert.strictEqual(obs[0], '- 2026-11-20T04:00:00.000Z: heart rate 112 bpm, temperature 38.6 °C, systolic blood pressure 98 mmHg, respiratory rate 26/min');
+        assert.match(obs[2], /^- 2026-11-20T02:00:00\.000Z: heart rate 96 bpm/);
+        assert.ok(!/2026-11-20T01:00/.test(prompt), 'the oldest reading is left out');
+        assert.ok(!/spo2|SpO/i.test(obs.join('\n')), 'only the four listed observations');
+      });
+
+      await test('it never receives CURV\'s findings, this case\'s report, the sentence tags or the Azure boxes', async () => {
+        const sent = JSON.stringify(lastSecond());
+        assert.ok(!sent.includes(CURV_MARK), 'no CURV text');
+        assert.ok(!/right lower zone consolidation/i.test(sent), 'no report wording');
+        assert.ok(!/ZZBOXLABEL|11\.5|52\.25|31\.75/.test(sent), 'no box label or coordinates');
+        assert.ok(!/FINDINGS\\nZZ|COMMENT/.test(sent), 'no report layout');
+        // Even a history field that happened to hold the report text would be only the history; the
+        // report itself is never read.
+        const c = await Case.findOne({ caseId: 'CASE-API-S1' }).lean();
+        assert.ok(c.reportText.includes(CURV_MARK) && c.findingTags[0].text.includes(CURV_MARK));
+      });
+
+      await test('the sepsis screen is passed on as one signal, and a hostile one is cleaned', async () => {
+        await secondAs('CASE-API-S1', 'radiologist', { level: 'urgent', score: 52.4, reasons: ['Respiratory rate ≥25 breaths/min', 'SpO₂ ≤91%'] });
+        assert.match(lastSecond().messages[0].content, /Sepsis screen: Urgent review, teaching score 52% \(Respiratory rate ≥25 breaths\/min; SpO₂ ≤91%\) — this is a frontend-calculated/);
+        for (const bad of [undefined, null, 'urgent', 7, { level: 'definitely sepsis' }, { level: ['urgent'] }, { score: 90 }]) {
+          await secondAs('CASE-API-S1', 'radiologist', bad);
+          assert.match(lastSecond().messages[0].content, /Sepsis screen: Not available — this is a frontend/, JSON.stringify(bad));
+        }
+        await secondAs('CASE-API-S1', 'radiologist', { level: 'abnormal', score: 999, reasons: ['x'.repeat(500), ...Array(20).fill('r')] });
+        const line = lastSecond().messages[0].content.match(/Sepsis screen: (.*?) — this is/)[1];
+        assert.ok(line.startsWith('Abnormal observations — review (') && !/teaching score/.test(line), 'a score outside 0-100 is dropped');
+        assert.ok(line.length < 260, `reasons are clamped (${line.length})`);
+      });
+
+      await test('a thin chart is sent as "Not recorded"', async () => {
+        await Case.create({ caseId: 'CASE-API-S6', patientId: 'PT-API-NOPE', status: 'pending_approve', analysisState: 'done', imageId: filmId,
+          findingTags: [{ key: 't1', text: 'Opacity.', abnormal: true }] });
+        assert.strictEqual((await secondAs('CASE-API-S6')).status, 200);
+        assert.match(lastSecond().messages[0].content,
+          /Patient history: Not recorded\nMedications: Not recorded\nLab results: Not recorded\nPrior reports: Not recorded\nObservations: Not recorded\nSepsis screen: Not available/);
+      });
+
+      await test('text in the chart that looks like a placeholder is not filled in a second time', async () => {
+        await Patient.create({ patientId: 'PT-API-S2', name: 'Api S2', history: 'Pain {medicines} and $& here', medicines: 'Aspirin' });
+        await Case.create({ caseId: 'CASE-API-S7', patientId: 'PT-API-S2', status: 'pending_approve', analysisState: 'done', imageId: filmId,
+          findingTags: [{ key: 't1', text: 'x', abnormal: true }] });
+        assert.strictEqual((await secondAs('CASE-API-S7')).status, 200);
+        const prompt = lastSecond().messages[0].content;
+        assert.ok(prompt.includes('Pain {medicines} and $& here'));
+        assert.strictEqual(prompt.split('Aspirin').length - 1, 1);
+      });
+
+      await test('it changes nothing in the report, the boxes or the case status, and never finalises', async () => {
+        const before = await stored('CASE-API-S1');
+        await secondAs('CASE-API-S1');
+        await secondAs('CASE-API-S1', 'admin');
+        const after = await stored('CASE-API-S1');
+        for (const key of ['status', 'reportText', 'findingTags', 'findings', 'remarks', 'comment', 'diagnosis', 'analysisState', 'boxesState', 'historyAnalysis', 'editLog']) {
+          assert.deepStrictEqual(after[key], before[key], key);
+        }
+        assert.strictEqual(after.status, 'pending_approve');
+        assert.ok(!after.finalizedBy && !after.finalizedAt, 'nobody is recorded as endorsing');
+      });
+
+      await test('it runs only when asked: saving a draft, the History step and loading the case never call it', async () => {
+        azureCalls.length = 0;
+        const put = await api('PUT', '/api/cases/CASE-API-S1', { token: tokens.radiologist, body: { remarks: 'draft saved' } });
+        assert.strictEqual(put.status, 200);
+        await api('GET', '/api/cases/CASE-API-S1', { token: tokens.radiologist });
+        const keep = (await stored('CASE-API-S1')).fusionResult;
+        azureReply = soReply;
+        const reason = await api('POST', '/api/cases/CASE-API-S1/reason', { token: tokens.radiologist });
+        assert.strictEqual(reason.status, 200, JSON.stringify(reason.body));
+        assert.strictEqual(azureCalls.length, 1, 'History only');
+        assert.ok(isHistory(azureCalls[0]));
+        assert.ok(!azureCalls.some(isSecondOpinion));
+        assert.strictEqual(reason.body.fusionResult, undefined);
+        assert.strictEqual(reason.body.fusionError, undefined);
+        const after = await stored('CASE-API-S1');
+        assert.deepStrictEqual(after.fusionResult, keep, 'the History step leaves the second opinion alone');
+        assert.ok(after.historyAnalysis.summary);
+      });
+
+      await test('the old Fusion merge is gone: no merging prompt is ever sent, and the old fusionReview is not stored', async () => {
+        azureCalls.length = 0;
+        await api('POST', '/api/cases/CASE-API-S1/reason', { token: tokens.radiologist });
+        await secondAs('CASE-API-S1');
+        assert.ok(!azureCalls.some((b) => /merging two independent analyses/.test(b.messages[0].content)));
+        const res = await api('PUT', '/api/cases/CASE-API-S1', { token: tokens.radiologist, body: { fusionReview: { agreed: [{ status: 'accepted' }] } } });
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual((await stored('CASE-API-S1')).fusionResult.review, undefined);
+      });
+
+      await test('Azure failing or answering badly is a 400 and the earlier opinion is kept', async () => {
+        await secondAs('CASE-API-S1');
+        const before = (await stored('CASE-API-S1')).fusionResult;
+        for (const bad of [{ __status: 500 }, { ...SO_REPLY, summary: '' }, { ...SO_REPLY, diagnosis: '  ' }, { ...SO_REPLY, suggested_next_step: '' }, 'just text', null, [], 7]) {
+          azureReply = bad;
+          const res = await secondAs('CASE-API-S1');
+          assert.strictEqual(res.status, 400, JSON.stringify(bad));
+          assert.deepStrictEqual((await stored('CASE-API-S1')).fusionResult, before, JSON.stringify(bad));
+        }
+        azureReply = soReply;
+      });
+
+      await test('an admin can run it, a re-run replaces the old answer, and it works on an endorsed report without reopening it', async () => {
+        azureReply = (body) => (isSecondOpinion(body) ? { ...SO_REPLY, diagnosis: 'No acute abnormality' } : GOOD_REPLY);
+        assert.strictEqual((await secondAs('CASE-API-S1', 'admin')).status, 200);
+        assert.strictEqual((await stored('CASE-API-S1')).fusionResult.diagnosis, 'No acute abnormality');
+        await Case.updateOne({ caseId: 'CASE-API-S1' }, { $set: { status: 'finalized', finalizedAt: new Date(), finalizedBy: 'RAD' } });
+        azureReply = soReply;
+        assert.strictEqual((await secondAs('CASE-API-S1')).status, 200);
+        const done = await stored('CASE-API-S1');
+        assert.strictEqual(done.status, 'finalized');
+        assert.strictEqual(done.fusionResult.diagnosis, 'Right lower lobe pneumonia');
+      });
+
+      await test('the second opinion reaches no one but the radiologist and admin: case, list, technician, doctor and share link', async () => {
+        await Case.updateOne({ caseId: 'CASE-API-S1' }, { $set: { shareToken: 'share-tok-s1' } });
+        const hidden = /fusionResult|historyAnalysis|suggested_next_step|Right lower lobe pneumonia/;
+        assert.ok(!hidden.test(JSON.stringify((await api('GET', '/api/cases/CASE-API-S1', { token: tokens.doctor })).body)), 'doctor case');
+        assert.ok(!hidden.test(JSON.stringify((await api('GET', '/api/cases', { token: tokens.doctor })).body)), 'doctor list');
+        assert.ok(!hidden.test(JSON.stringify((await api('GET', '/api/cases', { token: tokens.technician })).body)), 'technician list');
+        const shared = await api('GET', '/api/share/share-tok-s1');
+        assert.strictEqual(shared.status, 200, JSON.stringify(shared.body));
+        assert.ok(!hidden.test(JSON.stringify(shared.body)) && !/laySummary/.test(JSON.stringify(shared.body)), 'share link');
+        const rad = await api('GET', '/api/cases/CASE-API-S1', { token: tokens.radiologist });
+        assert.strictEqual(rad.body.case.fusionResult.diagnosis, 'Right lower lobe pneumonia');
+      });
+
+      await test('two runs at once leave one complete answer', async () => {
+        await mkCase('CASE-API-S8');
+        azureReply = soReply;
+        const [a, b] = await Promise.all([secondAs('CASE-API-S8'), secondAs('CASE-API-S8')]);
+        assert.deepStrictEqual([a.status, b.status], [200, 200]);
+        const f = (await stored('CASE-API-S8')).fusionResult;
+        assert.strictEqual(f.diagnosis, 'Right lower lobe pneumonia');
+        assert.strictEqual(f.differentials.length, 2);
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+      useAzure(false);
+    }
   } finally {
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));

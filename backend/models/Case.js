@@ -149,6 +149,24 @@ const caseSchema = new mongoose.Schema(
     chartFindingsState: { type: String, enum: ['', 'running', 'done', 'failed', 'unavailable'], default: '' },
     chartFindingsAt: { type: Date, default: null },
     chartFindingsError: { type: String, default: '' },
+    // History LLM output (POST /api/cases/:id/reason), the independent second opinion
+    // (POST /api/cases/:id/second-opinion, stored in fusionResult: summary, diagnosis,
+    // differentials, suggested_next_step), and the plain-language summary.
+    // Stored as JSON objects, null until produced.
+    historyAnalysis: { type: mongoose.Schema.Types.Mixed, default: null },
+    fusionResult: { type: mongoose.Schema.Types.Mixed, default: null },
+    // The reasoning agent (POST /api/cases/:id/agent): `tools` holds the one saved call of each of
+    // search_similar_cases, search_guideline and notify ({at, input, output, error}), so none runs twice;
+    // `summary`, `suggestions` and `notes` are for the radiologist to review. It never changes the report.
+    agentResult: { type: mongoose.Schema.Types.Mixed, default: null },
+    // Plain-language summary of the ENDORSED report only: { english, traditionalChinese }, each with the
+    // four parts and the fixed disclaimer. Written after endorsement (utils/laySummary.js), never before.
+    laySummary: { type: mongoose.Schema.Types.Mixed, default: null },
+    laySummaryState: { type: String, enum: ['', 'running', 'done', 'failed', 'unavailable'], default: '' },
+    laySummaryError: { type: String, default: '' },
+    laySummaryAt: { type: Date, default: null },
+    // Hash of the report text the summary was written from; a summary is not rewritten for the same report.
+    laySummaryFor: { type: String, default: '' },
     editLog: {
       type: [{
         at: { type: Date, default: Date.now },

@@ -66,7 +66,7 @@ api.getSharedCase = async () => ({
     view: "PA",
     reportText: [
       "XRAY CHEST (PA)", "", "FINDINGS", "Heart size is normal.", "Small right pleural effusion.", "",
-      "COMMENT", "– Small right pleural effusion.", "", "Thank you for your referral.", "", "Thinking:", "Hidden reasoning.",
+      "COMMENT", "– Small right pleural effusion.", "", "Thinking:", "Hidden reasoning.",
     ].join("\n"),
     findingTags: [
       { key: "t1", text: "Heart size is normal.", abnormal: false },
@@ -85,7 +85,7 @@ test("shows the film report without asking to log in", () => {
   assert.ok(root.textContent.includes("Ada Wong"));
   const body = root.querySelector("#report-body").textContent;
   assert.ok(body.includes("FINDINGS\nHeart size is normal.\nSmall right pleural effusion.\n\nCOMMENT\n– Small right pleural effusion."));
-  assert.ok(body.includes("Thank you for your referral."));
+  assert.ok(!body.includes("Thank you for your referral."));
 });
 
 test("never shows the hidden Thinking", () => {
